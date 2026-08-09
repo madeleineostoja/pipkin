@@ -16,7 +16,6 @@ describe("Subagent Activity projector", () => {
           owner: "public-tool",
           type: "Explore",
           description: "Inspect the code\ncarefully",
-          rosterVisibility: "show",
           status: "running",
           timestamps: {
             startedAt: "2026-03-09T10:00:00.000Z",
@@ -37,6 +36,48 @@ describe("Subagent Activity projector", () => {
     });
   });
 
+  it("excludes Implement-owned agents from generic Subagent activity", () => {
+    const events = createEventBus();
+    const store = new ActivityStore();
+    events.on(ACTIVITY_CHANNEL, (event) => store.accept(event));
+    const implementOwner = {
+      kind: "pipkin:implement" as const,
+      runId: "run",
+      role: "implementer" as const,
+    };
+    const runtime = {
+      snapshots: () => [
+        {
+          id: "implement-1",
+          owner: implementOwner,
+          type: "pipkin:implement:implementer",
+          description: "Implement a workstream",
+          status: "running",
+          timestamps: { updatedAt: "2026-03-09T10:00:00.000Z" },
+        },
+        {
+          id: "nested-1",
+          owner: {
+            kind: "nested",
+            parentId: "implement-1",
+            tool: "explore",
+            parentOwner: implementOwner,
+          },
+          type: "Explore",
+          description: "Explore implementation details",
+          status: "running",
+          timestamps: { updatedAt: "2026-03-09T10:00:00.000Z" },
+        },
+      ],
+      subscribeSnapshots: vi.fn(() => () => {}),
+    };
+
+    const projector = new SubagentActivityProjector(runtime as never, events);
+    projector.start();
+
+    expect(store.records).toEqual([]);
+  });
+
   it("removes terminal work and notifies a public-agent failure once", () => {
     const events = createEventBus();
     const store = new ActivityStore();
@@ -47,7 +88,6 @@ describe("Subagent Activity projector", () => {
         owner: "public-tool",
         type: "Explore",
         description: "Inspect renderer ownership",
-        rosterVisibility: "show",
         status: "running" as const,
         health: {
           contextUsage: { tokens: 82_000 },

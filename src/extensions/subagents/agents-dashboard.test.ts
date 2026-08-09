@@ -12,7 +12,6 @@ function snapshot(overrides: Partial<RuntimeSnapshot> = {}): RuntimeSnapshot {
     description: "inspect a focused task",
     cwd: "/repo",
     extensionBinding: "bound",
-    rosterVisibility: "show",
     timestamps: {
       queuedAt: "2024-01-01T00:00:00.000Z",
       updatedAt: "2024-01-01T00:00:00.000Z",
@@ -22,18 +21,45 @@ function snapshot(overrides: Partial<RuntimeSnapshot> = {}): RuntimeSnapshot {
 }
 
 describe("/agents non-TUI projection", () => {
-  it("uses one bounded status-driven projection with typed Implement roles", () => {
+  it("summarizes active Implement agents above public agents", () => {
+    const implementOwner = {
+      kind: "pipkin:implement" as const,
+      runId: "run",
+      role: "reviewer" as const,
+    };
     const runtime = {
       snapshots: () => [
+        snapshot({ owner: implementOwner }),
         snapshot({
-          owner: { kind: "pipkin:implement", runId: "run", role: "reviewer" },
+          id: "nested",
+          key: "nested",
+          owner: {
+            kind: "nested",
+            parentId: "agent-1",
+            tool: "explore",
+            parentOwner: implementOwner,
+          },
         }),
         snapshot({ id: "done", key: "done", status: "completed" }),
       ],
     } as unknown as SubagentRuntime;
 
     expect(staticAgentsProjection(runtime)).toBe(
-      "● Implement: Reviewer · inspect a focused task\n✓ Worker · inspect a focused task",
+      "Implement · 2 active agents\n\n✓ Worker · inspect a focused task",
+    );
+  });
+
+  it("shows a public-agent empty state beneath active Implement context", () => {
+    const runtime = {
+      snapshots: () => [
+        snapshot({
+          owner: { kind: "pipkin:implement", runId: "run", role: "reviewer" },
+        }),
+      ],
+    } as unknown as SubagentRuntime;
+
+    expect(staticAgentsProjection(runtime)).toBe(
+      "Implement · 1 active agent\n\nNo public agents.",
     );
   });
 

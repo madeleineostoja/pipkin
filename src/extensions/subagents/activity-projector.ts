@@ -7,6 +7,7 @@ import {
 } from "#ui/activity";
 import { formatCompactTokens } from "#lib/ui/metrics";
 import type { EventBus } from "@earendil-works/pi-coding-agent";
+import { isImplementOwned } from "./ownership.js";
 import type {
   RuntimeOwner,
   RuntimeSnapshot,
@@ -51,7 +52,7 @@ export class SubagentActivityProjector {
     }
     const snapshots = this.runtime
       .snapshots({ includeNested: true })
-      .filter((snapshot) => snapshot.rosterVisibility === "show");
+      .filter((snapshot) => !isImplementOwned(snapshot.owner));
     for (const snapshot of snapshots) {
       this.notifyDetachedFailure(snapshot, notify);
     }

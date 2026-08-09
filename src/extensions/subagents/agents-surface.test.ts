@@ -34,7 +34,6 @@ function snapshot(overrides: Partial<RuntimeSnapshot> = {}): RuntimeSnapshot {
     cwd: "/repo",
     extensionBinding: "bound",
     canSteer: true,
-    rosterVisibility: "show",
     timestamps: {
       queuedAt: "2024-01-01T00:00:00.000Z",
       startedAt: "2024-01-01T00:00:01.000Z",
@@ -153,7 +152,12 @@ describe("AgentsSurface roster and landing", () => {
     expect(text).toContain("No agents.");
   });
 
-  it("renders one compact status-driven hierarchy with right durations and no hidden Implement workers", () => {
+  it("summarizes active Implement agents above the public roster", () => {
+    const implementOwner = {
+      kind: "pipkin:implement" as const,
+      runId: "run",
+      role: "implementer" as const,
+    };
     const runtime = new FakeRuntime("runtime", [
       snapshot({ id: "parent", key: "runtime:parent", description: "parent" }),
       snapshot({
@@ -163,11 +167,21 @@ describe("AgentsSurface roster and landing", () => {
         description: "child",
       }),
       snapshot({
-        id: "hidden",
-        key: "runtime:hidden",
-        owner: { kind: "pipkin:implement", runId: "run", role: "implementer" },
-        rosterVisibility: "hide",
-        description: "hidden worker",
+        id: "implement",
+        key: "runtime:implement",
+        owner: implementOwner,
+        description: "internal implement agent",
+      }),
+      snapshot({
+        id: "implement-child",
+        key: "runtime:implement-child",
+        owner: {
+          kind: "nested",
+          parentId: "implement",
+          tool: "explore",
+          parentOwner: implementOwner,
+        },
+        description: "internal nested agent",
       }),
       snapshot({
         id: "done",
@@ -179,8 +193,10 @@ describe("AgentsSurface roster and landing", () => {
     ]);
     const text = plain(rendered(fixture([runtime]).surface, 100));
 
+    expect(text).toContain("Implement · 2 active agents\n");
+    expect(text).not.toContain("internal implement agent");
+    expect(text).not.toContain("internal nested agent");
     expect(text).not.toMatch(/^\s*(Active|Retained)$/m);
-    expect(text).not.toContain("hidden worker");
     const lines = text.split("\n");
     const parentIndex = lines.findIndex((line) => line.includes("parent"));
     const childIndex = lines.findIndex((line) => line.includes("child"));
@@ -192,6 +208,49 @@ describe("AgentsSurface roster and landing", () => {
     expect(childIndex).toBeLessThan(retainedIndex);
     expect(lines[parentIndex]).toMatch(/\d/);
     expect(lines[childIndex]).toMatch(/\d/);
+  });
+
+  it("shows Implement context without suggesting selectable public agents", () => {
+    const runtime = new FakeRuntime("runtime", [
+      snapshot({
+        owner: {
+          kind: "pipkin:implement",
+          runId: "run",
+          role: "reviewer",
+        },
+        description: "internal reviewer",
+      }),
+    ]);
+    const text = plain(rendered(fixture([runtime]).surface));
+
+    expect(text).toContain("Implement · 1 active agent");
+    expect(text).toContain("No public agents.");
+    expect(text).not.toContain("internal reviewer");
+    expect(text).not.toContain("navigate");
+    expect(text).not.toContain("select");
+  });
+
+  it("removes the Implement summary when its agents settle", () => {
+    const runtime = new FakeRuntime("runtime", [
+      snapshot({
+        owner: {
+          kind: "pipkin:implement",
+          runId: "run",
+          role: "reviewer",
+        },
+      }),
+    ]);
+    const { surface, notify } = fixture([runtime]);
+
+    runtime.items = runtime.items.map((item) => ({
+      ...item,
+      status: "completed" as const,
+    }));
+    runtime.emit();
+
+    expect(plain(rendered(surface))).toContain("No agents.");
+    expect(plain(rendered(surface))).not.toContain("Implement ·");
+    expect(notify).not.toHaveBeenCalled();
   });
 
   it("keeps a stable roster selection and falls back safely when the selected record disappears", () => {

@@ -52,13 +52,15 @@ Activity is a full-width chronological timeline: assistant prose is rendered as 
 
 A completed agent’s Result is a separate scrollable Markdown page containing its complete final result. Activity deliberately excludes that final result.
 
-The shared Activity view shows only queued, running, or waiting public-agent and Implement work in a bounded hierarchy; settled rows disappear immediately. A Subagent row may include current context usage and one bounded latest-assistant preview, but never prompts, commands, cwd, raw output, hidden runtime objects, cost, or aggregate token telemetry. Public-agent failures are notified once and remain inspectable in `/agents`, which is the complete inspector including Implement-managed workers and retained records.
+The shared Activity view shows only queued, running, or waiting public-agent and Implement work in a bounded hierarchy; settled rows disappear immediately. A Subagent row may include current context usage and one bounded latest-assistant preview, but never prompts, commands, cwd, raw output, hidden runtime objects, cost, or aggregate token telemetry. Public-agent failures are notified once and remain inspectable in `/agents` with retained current-session records.
+
+Implement owns its scheduler-managed agents and represents their work through its run and workstream Activity. `/agents` reports their active count as non-selectable context above the public-agent roster; direct and nested Implement agents are not individually inspectable or stoppable there. When that count is present without any public roster entries, the dashboard states `No public agents.`
 
 Child sessions are in-memory only. They do not appear in `/resume` and cannot be resumed after the parent session ends. Stopped or failed partial progress is recoverable only while the current parent session remains alive; inspection does not create persistent or resumable child sessions.
 
 ## Tools and context
 
-Subagents inherit the parent extension environment except public agent tools (`Agent`, `get_subagent_result`, and `steer_subagent`), which are withheld to prevent recursive fan-out. Nested Explore used by managed Pipkin workflows is private and remains visible to the operator.
+Subagents inherit the parent extension environment except public agent tools (`Agent`, `get_subagent_result`, and `steer_subagent`), which are withheld to prevent recursive fan-out. Nested Explore used by managed Pipkin workflows is private; public-agent children remain inspectable with their parent, while Implement-owned children contribute only to the active Implement count.
 
 Where Bash is available:
 

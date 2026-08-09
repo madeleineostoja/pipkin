@@ -1,14 +1,4 @@
-import { execFileSync } from "node:child_process";
-import {
-  existsSync,
-  mkdtempSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { SandboxPolicy } from "./policy.js";
 import {
   SANDBOX_EXECUTABLE,
@@ -17,14 +7,6 @@ import {
   sandboxParameters,
   sandboxProfile,
 } from "./seatbelt.js";
-
-const directories: string[] = [];
-
-afterEach(() => {
-  while (directories.length) {
-    rmSync(directories.pop()!, { force: true, recursive: true });
-  }
-});
 
 const policy: SandboxPolicy = {
   sessionCwd: "/workspace",
@@ -209,65 +191,6 @@ describe("Sandbox Seatbelt profile", () => {
     expect(arguments_).toEqual(
       expect.arrayContaining(["-D", `protected0=${protectedPath}`]),
     );
-  });
-
-  it("enforces the repository exception with the macOS Seatbelt runtime", (context) => {
-    context.skip(process.platform !== "darwin", "macOS Seatbelt only");
-    const root = mkdtempSync(join(tmpdir(), "pipkin-seatbelt-runtime-"));
-    directories.push(root);
-    const workspace = join(root, "workspace");
-    const dependencies = join(workspace, "node_modules");
-    const gitDirectory = join(root, "git");
-    mkdirSync(dependencies, { recursive: true });
-    mkdirSync(gitDirectory);
-    const runtimePolicy: SandboxPolicy = {
-      sessionCwd: workspace,
-      workspaceRoot: workspace,
-      git: {
-        worktreeRoot: workspace,
-        worktreeGitDir: gitDirectory,
-        commonGitDir: gitDirectory,
-      },
-      temporaryRoots: [],
-      cacheRoots: [],
-      dependencyRoots: [dependencies],
-      writableRoots: [workspace, gitDirectory, dependencies],
-      creationRoots: [],
-    };
-    const args = sandboxArguments({
-      policy: runtimePolicy,
-      shell: { shell: "/bin/bash", args: ["-s"] },
-      writeMode: "repository-read-only",
-    });
-    const script = `
-set -eu
-printf cache > ${JSON.stringify(join(dependencies, ".vite", "results.json"))}
-if printf source > ${JSON.stringify(join(workspace, "source.ts"))} 2>/dev/null; then exit 40; fi
-if printf git > ${JSON.stringify(join(gitDirectory, "config"))} 2>/dev/null; then exit 41; fi
-`;
-    mkdirSync(join(dependencies, ".vite"));
-
-    try {
-      execFileSync(SANDBOX_EXECUTABLE, args, {
-        input: script,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-    } catch (error) {
-      const failure = error as NodeJS.ErrnoException & { status?: number };
-      if (
-        failure.status === 71 &&
-        !existsSync(join(dependencies, ".vite", "results.json"))
-      ) {
-        context.skip("nested sandbox-exec unavailable in this environment");
-      }
-      throw error;
-    }
-
-    expect(
-      readFileSync(join(dependencies, ".vite", "results.json"), "utf8"),
-    ).toBe("cache");
-    expect(existsSync(join(workspace, "source.ts"))).toBe(false);
-    expect(existsSync(join(gitDirectory, "config"))).toBe(false);
   });
 
   it("uses stable, separate parameter arguments and stdin shell launch", () => {

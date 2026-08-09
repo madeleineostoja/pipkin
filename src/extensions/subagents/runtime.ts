@@ -59,7 +59,6 @@ export type SubagentRuntimeStatus =
   | "stopped";
 
 export type ExtensionBindingStatus = "bound" | "unbound";
-export type RosterVisibility = "show" | "hide";
 export type ImplementWorkerRole = "planner" | "implementer" | "reviewer";
 
 export type RuntimeTimestamps = {
@@ -137,7 +136,6 @@ export type RuntimeSnapshot<TResult = unknown> = {
   effectiveThinking?: ThinkingLevel;
   extensionBinding: ExtensionBindingStatus;
   canSteer?: boolean;
-  rosterVisibility: RosterVisibility;
   timestamps: RuntimeTimestamps;
   health?: RuntimeHealth;
   result?: TResult;
@@ -154,7 +152,6 @@ export type QueueSubagentInput = {
   model?: string;
   thinking?: ThinkingLevel;
   extensionBinding?: ExtensionBindingStatus;
-  rosterVisibility?: RosterVisibility;
 };
 
 export type ManagedAgentMode = "foreground" | "background";
@@ -198,7 +195,6 @@ export type RunManagedAgentInput<
   noTools?: boolean;
   systemPrompt?: string;
   systemPromptMode?: PromptMode;
-  rosterVisibility?: RosterVisibility;
   sandboxWriteMode?: SandboxWriteMode;
   completion?: ManagedCompletion<
     TSchemaValue extends TSchema ? TSchemaValue : TSchema
@@ -477,7 +473,6 @@ function projectSnapshot(record: RuntimeRecord): RuntimeSnapshot {
       : { effectiveThinking: record.effectiveThinking }),
     extensionBinding: record.extensionBinding,
     ...(record.canSteer === undefined ? {} : { canSteer: record.canSteer }),
-    rosterVisibility: record.rosterVisibility,
     timestamps: {
       queuedAt: record.queuedAt,
       ...(record.startedAt === undefined
@@ -940,7 +935,6 @@ export class SubagentRuntime {
       ...(model === undefined ? {} : { model }),
       ...(thinking === undefined ? {} : { thinking }),
       extensionBinding: input.extensionBinding ?? "unbound",
-      rosterVisibility: input.rosterVisibility ?? "show",
       queuedAt: timestamp,
       updatedAt: timestamp,
       steeringQueue: [],
@@ -982,7 +976,6 @@ export class SubagentRuntime {
       model: input.model,
       thinking: input.thinking,
       extensionBinding: "unbound",
-      rosterVisibility: input.rosterVisibility,
     });
     const record = this.#requireRecord(queued.id);
     if (input.completion) {

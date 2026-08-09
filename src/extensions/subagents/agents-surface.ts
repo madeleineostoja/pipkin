@@ -25,6 +25,7 @@ import { Panel } from "#lib/ui/panel";
 import { ScrollViewport } from "#lib/ui/scroll-viewport";
 import { WideSelectList, type WideListItem } from "#lib/ui/wide-select-list";
 import type { InspectionToolArguments } from "./inspection.js";
+import { isImplementOwned } from "./ownership.js";
 import type {
   RuntimeInspection,
   RuntimeSnapshot,
@@ -154,7 +155,7 @@ export class AgentsSurface implements Component, Focusable {
     }
     const options =
       this.#mode === "roster"
-        ? { title: "Agents", child: this.#roster as Component }
+        ? { title: "Agents", child: this.#rosterComponent() }
         : this.#mode === "landing"
           ? {
               title: `Agent · ${displayType(this.#entry()?.snapshot)}`,
@@ -186,10 +187,43 @@ export class AgentsSurface implements Component, Focusable {
 
   #footer(): Component {
     const hints =
-      this.#mode === "roster" || this.#mode === "landing"
-        ? `${rawKeyHint("↑↓", "navigate")}  ${keyHint("tui.select.confirm", "select")}  ${keyHint("tui.select.cancel", this.#mode === "roster" ? "close" : "back")}`
-        : `${rawKeyHint("↑↓", "scroll")}  ${keyHint("tui.select.cancel", "back")}`;
+      this.#mode === "roster" && this.#rosterEntries.length === 0
+        ? keyHint("tui.select.cancel", "close")
+        : this.#mode === "roster" || this.#mode === "landing"
+          ? `${rawKeyHint("↑↓", "navigate")}  ${keyHint("tui.select.confirm", "select")}  ${keyHint("tui.select.cancel", this.#mode === "roster" ? "close" : "back")}`
+          : `${rawKeyHint("↑↓", "scroll")}  ${keyHint("tui.select.cancel", "back")}`;
     return { render: () => [hints], invalidate() {} };
+  }
+
+  #rosterComponent(): Component {
+    return {
+      render: (width) => {
+        const activeImplementAgents = this.#activeImplementAgentCount();
+        const roster = this.#roster.render(width);
+        if (activeImplementAgents === 0) {
+          return roster;
+        }
+        const summary = truncateToWidth(
+          implementSummary(activeImplementAgents),
+          width,
+        );
+        return [this.theme.fg("muted", summary), "", ...roster];
+      },
+      invalidate: () => this.#roster.invalidate(),
+    };
+  }
+
+  #activeImplementAgentCount(): number {
+    return this.runtimes.reduce(
+      (total, runtime) =>
+        total +
+        runtime
+          .snapshots({ includeNested: true })
+          .filter(
+            (snapshot) => isImplementOwned(snapshot.owner) && isLive(snapshot),
+          ).length,
+      0,
+    );
   }
 
   #entries(): Entry[] {
@@ -198,7 +232,7 @@ export class AgentsSurface implements Component, Focusable {
     for (const [runtimeIndex, runtime] of this.runtimes.entries()) {
       const entries = runtime
         .snapshots({ includeNested: true })
-        .filter((snapshot) => snapshot.rosterVisibility !== "hide")
+        .filter((snapshot) => !isImplementOwned(snapshot.owner))
         .map((snapshot) => ({
           runtime,
           key: snapshotKey(runtime, snapshot),
@@ -263,7 +297,10 @@ export class AgentsSurface implements Component, Focusable {
       selectedPrefix: (text) => this.theme.fg("accent", text),
       keybindings: this.keybindings,
       empty: {
-        text: "No agents.",
+        text:
+          this.#activeImplementAgentCount() > 0
+            ? "No public agents."
+            : "No agents.",
         style: (text) => this.theme.fg("muted", text),
       },
       onSelect: (item) => {
@@ -621,6 +658,10 @@ export class AgentsSurface implements Component, Focusable {
     }
     this.done();
   }
+}
+
+function implementSummary(count: number): string {
+  return `Implement · ${count} active ${count === 1 ? "agent" : "agents"}`;
 }
 
 function rosterPrefix(entry: Entry): string {

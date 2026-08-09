@@ -1,5 +1,6 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { showAgentsSurface } from "./agents-surface.js";
+import { isImplementOwned } from "./ownership.js";
 import type { RuntimeSnapshot, SubagentRuntime } from "./runtime.js";
 
 export async function showAgentsDashboard(
@@ -26,18 +27,32 @@ export function staticAgentsProjection(
   const snapshots: RuntimeSnapshot[] = runtimes.flatMap((runtime) =>
     runtime.snapshots({ includeNested: true }),
   );
-  if (snapshots.length === 0) {
-    return "No current-session agents.";
-  }
-  return snapshots
+  const activeImplementAgents = snapshots.filter(
+    (snapshot) => isImplementOwned(snapshot.owner) && isLive(snapshot),
+  ).length;
+  const publicAgents = snapshots.filter(
+    (snapshot) => !isImplementOwned(snapshot.owner),
+  );
+  const summary =
+    activeImplementAgents > 0
+      ? `Implement · ${activeImplementAgents} active ${activeImplementAgents === 1 ? "agent" : "agents"}`
+      : undefined;
+  const roster = publicAgents
     .sort((left, right) => Number(isLive(right)) - Number(isLive(left)))
     .slice(0, 24)
     .map(
       (snapshot) =>
         `${glyph(snapshot.status)} ${displayType(snapshot)} · ${bounded(snapshot.description, 180)}`,
-    )
-    .join("\n")
-    .slice(0, 4096);
+    );
+  if (roster.length === 0) {
+    return summary
+      ? `${summary}\n\nNo public agents.`
+      : "No current-session agents.";
+  }
+  return `${summary ? `${summary}\n\n` : ""}${roster.join("\n")}`.slice(
+    0,
+    4096,
+  );
 }
 
 function isLive(snapshot: RuntimeSnapshot): boolean {
@@ -55,17 +70,6 @@ function glyph(status: RuntimeSnapshot["status"]): string {
 }
 
 function displayType(snapshot: RuntimeSnapshot): string {
-  if (
-    typeof snapshot.owner === "object" &&
-    snapshot.owner.kind === "pipkin:implement"
-  ) {
-    const roles = {
-      planner: "Planner",
-      implementer: "Implementer",
-      reviewer: "Reviewer",
-    } as const;
-    return `Implement: ${roles[snapshot.owner.role]}`;
-  }
   return bounded(snapshot.type, 80);
 }
 
