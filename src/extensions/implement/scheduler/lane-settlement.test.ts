@@ -119,6 +119,76 @@ describe("lane-local settlement", () => {
     );
   });
 
+  it("retries a malformed reviewer packet without mutating the candidate", async () => {
+    const store = await createSchedulerStore();
+    const selected = reduceRunEvent(store.read(), {
+      kind: "workstreams_selected",
+      now: "2026-01-01T00:01:00.000Z",
+      baseShas: { "first-stream": "base-sha" },
+    });
+    const implementation = selected.effects[0];
+    if (implementation?.kind !== "run_implementation") {
+      throw new Error("expected implementation");
+    }
+    const admitted = reduceRunEvent(selected.state, {
+      kind: "implementation_completed",
+      workstream: implementation.workstream,
+      leaseId: implementation.leaseId,
+      outcome: {
+        kind: "candidate_ready",
+        candidate: {
+          id: "candidate:first-stream",
+          workstream: implementation.workstream,
+          baseSha: "base-sha",
+          commitSha: "candidate-sha",
+          treeSha: "candidate-tree",
+        },
+        checkpoints: { first: "candidate-sha" },
+        satisfied: {},
+      },
+    });
+    const requested = reduceRunEvent(admitted.state, {
+      kind: "review_requested",
+      workstream: implementation.workstream,
+      now: "2026-01-01T00:02:00.000Z",
+    });
+    const review = requested.effects[0];
+    if (review?.kind !== "run_review") {
+      throw new Error("expected review");
+    }
+
+    const failed = reduceRunEvent(requested.state, {
+      kind: "effect_failed",
+      effect: "review",
+      workstream: review.workstream,
+      leaseId: review.leaseId,
+      category: "protocol_failure",
+      evidence:
+        "Invalid anchored review completion. Review artifact: /artifact.json",
+    });
+
+    expect(failed.accepted).toBe(true);
+    expect(failed.state.workstreams.source["first-stream"]).toMatchObject({
+      phase: "candidate_ready",
+      candidateId: "candidate:first-stream",
+    });
+    expect(failed.state.reviews).toEqual({});
+    expect(failed.state.findings).toEqual({});
+    expect(Object.values(failed.state.operationalRetries)).toContainEqual(
+      expect.objectContaining({
+        lane: "review",
+        workstream: { kind: "source", id: "first-stream" },
+        status: "open",
+      }),
+    );
+    expect(Object.values(failed.state.failures)).toContainEqual(
+      expect.objectContaining({
+        category: "protocol_failure",
+        gate: "review",
+      }),
+    );
+  });
+
   it("propagates queued dependency skips transitively with direct evidence", async () => {
     const store = await createSchedulerStore();
     let state = store.read();

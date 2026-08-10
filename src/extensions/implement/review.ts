@@ -1,5 +1,10 @@
 import { mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import {
+  AssessmentCoverageError,
+  assertAssessmentCoverage,
+  formatAssessmentCoverage,
+} from "./assessment-coverage.js";
 import type { ExecutionPlan } from "./execution-plan.js";
 import { changedPathsBetween, type GitClient } from "./git.js";
 import {
@@ -613,6 +618,13 @@ export async function runWorkstreamReview(args: {
     packet,
     completion: result.result,
   });
+  if (workerPacket.mode === "anchored") {
+    assertCapturedAssessmentCoverage(
+      workerPacket.outstandingFindings.map((finding) => finding.id),
+      (result.result as AnchoredWorkstreamReviewCompletion).assessments,
+      evidence,
+    );
+  }
   return assessment
     ? {
         kind: "repository_state",
@@ -842,6 +854,11 @@ Open source review context: ${JSON.stringify(sourceResidualContext(args.state, a
       candidate,
       completion: result.result,
     },
+  );
+  assertCapturedAssessmentCoverage(
+    packet.outstandingFindings.map((finding) => finding.id),
+    (result.result as AnchoredOverallReviewCompletion).assessments,
+    evidence,
   );
   return {
     kind: "anchored",
@@ -1134,23 +1151,19 @@ function sameIds(left: string[], right: string[]): boolean {
   );
 }
 
-function assertAssessmentCoverage(
-  pendingCorrectionIds: string[],
+function assertCapturedAssessmentCoverage(
+  expectedIds: string[],
   assessments: AnchoredWorkstreamReviewCompletion["assessments"],
+  evidence: string,
 ): void {
-  const expected = new Set(pendingCorrectionIds);
-  const seen = new Set<string>();
-  for (const assessment of assessments) {
-    if (!expected.has(assessment.id) || seen.has(assessment.id)) {
-      throw new Error(
-        "Anchored review must assess each outstanding finding exactly once.",
+  try {
+    assertAssessmentCoverage(expectedIds, assessments);
+  } catch (error) {
+    if (error instanceof AssessmentCoverageError) {
+      throw new WorkerPacketError(
+        `Invalid anchored review completion.\n${formatAssessmentCoverage(error.coverage)}\nReview artifact: ${evidence}`,
       );
     }
-    seen.add(assessment.id);
-  }
-  if (seen.size !== expected.size) {
-    throw new Error(
-      "Anchored review must assess each outstanding finding exactly once.",
-    );
+    throw error;
   }
 }

@@ -1,5 +1,10 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import {
+  AssessmentCoverageError,
+  assertAssessmentCoverage,
+  formatAssessmentCoverage,
+} from "./assessment-coverage.js";
 import type { ExecutionPlan } from "./execution-plan.js";
 import type { GitClient } from "./git.js";
 import {
@@ -16,7 +21,10 @@ import type { SchedulerEvent } from "./scheduler/scheduler.js";
 import type { ImplementRoles, SubagentClient } from "./subagents.js";
 import { writeAtomicJson } from "./atomic-json.js";
 import { protectedArtifactsMatch, type RunState } from "./store.js";
-import { spawnValidatedWorker } from "./worker-invocation.js";
+import {
+  spawnValidatedWorker,
+  WorkerPacketError,
+} from "./worker-invocation.js";
 
 export type WholePlanReviewPacket = {
   role: "reviewer";
@@ -371,6 +379,11 @@ export async function runWholePlanReview(args: {
     completion,
   });
   if (anchored) {
+    assertCapturedAssessmentCoverage(
+      outstandingFindings.map((finding) => finding.id),
+      (result.result as AnchoredOverallReviewCompletion).assessments,
+      evidence,
+    );
     await args.dispatch({
       kind: "whole_plan_review_completed",
       outcome: {
@@ -416,6 +429,23 @@ export async function runWholePlanReview(args: {
       reviewedTargetTreeSha: targetTree,
     },
   });
+}
+
+function assertCapturedAssessmentCoverage(
+  expectedIds: string[],
+  assessments: AnchoredOverallReviewCompletion["assessments"],
+  evidence: string,
+): void {
+  try {
+    assertAssessmentCoverage(expectedIds, assessments);
+  } catch (error) {
+    if (error instanceof AssessmentCoverageError) {
+      throw new WorkerPacketError(
+        `Invalid anchored whole-plan review completion.\n${formatAssessmentCoverage(error.coverage)}\nReview artifact: ${evidence}`,
+      );
+    }
+    throw error;
+  }
 }
 
 export async function completeWholePlanRun(args: {

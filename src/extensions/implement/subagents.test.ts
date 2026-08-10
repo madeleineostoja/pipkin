@@ -283,7 +283,7 @@ describe("managed Pipkin Implement worker tools", () => {
             satisfiedEvidence: {},
             outstandingFindings: [],
           } as never),
-        sentinel: "Assess every outstanding ID exactly once",
+        sentinel: "Findings requiring assessment in this review",
       },
       {
         kind: "anchored-review",
@@ -314,7 +314,7 @@ describe("managed Pipkin Implement worker tools", () => {
             satisfiedEvidence: {},
             outstandingFindings: [],
           } as never),
-        sentinel: "Assess every outstanding ID exactly once",
+        sentinel: "Findings requiring assessment in this review",
       },
       {
         kind: "initial-overall-review",

@@ -1,5 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -12,6 +19,7 @@ import { parsePlan } from "./plan.js";
 import { runReconciliation } from "./reconciliation.js";
 import { writeSourceCorpus } from "./requirements-context.js";
 import { retargetAnchoredReview, runWorkstreamReview } from "./review.js";
+import { WorkerPacketError } from "./worker-invocation.js";
 import { sha256 } from "./source-integrity.js";
 import type { SchedulerEffect } from "./scheduler/scheduler.js";
 import type { ImplementRoles, SubagentClient } from "./subagents.js";
@@ -185,6 +193,112 @@ describe("semantic reconciliation admission", () => {
     expect(reviewer.invocations[0]?.prompt).not.toContain(
       `git diff --stat ${fixture.candidate.commitSha}..${reconciliation.candidate.commitSha}`,
     );
+  });
+
+  it("retains and classifies a malformed anchored completion before dispatch", async () => {
+    const fixture = await reconciliationFixture(
+      "first=candidate\nsecond=base\n",
+      "first=base\nsecond=target\n",
+    );
+    const plan = reviewPlan(fixture.root, fixture.candidate.baseSha);
+    const review = retargetAnchoredReview({
+      state: {
+        candidateId: fixture.candidate.id,
+        candidateCommitSha: fixture.candidate.commitSha,
+        candidateTreeSha: fixture.candidate.treeSha,
+        comparisonBase: fixture.candidate.baseSha,
+        round: 0,
+        pendingCorrectionIds: [],
+        correctionConsumed: false,
+        evidence: ["initial review"],
+        observations: [],
+        publicationCommitSubject: "feat: publish candidate",
+      },
+      candidate: fixture.candidate,
+      comparisonBase: fixture.candidate.baseSha,
+      correctionRange: {
+        baseSha: fixture.candidate.commitSha,
+        headSha: fixture.candidate.commitSha,
+      },
+      correction: {
+        fromCandidateId: fixture.candidate.id,
+        changedPaths: [],
+        evidence: "no source change",
+      },
+    });
+    const state = {
+      ...fixture.state,
+      executionPlan: {
+        path: join(
+          fixture.root,
+          ".pi",
+          "pipkin",
+          "implement",
+          "runs",
+          "run-1",
+          "execution-plan.json",
+        ),
+        hash: plan.executionPlanHash,
+      },
+      workstreams: {
+        source: {
+          "first-stream": {
+            ...fixture.state.workstreams.source["first-stream"],
+            phase: "candidate_ready",
+            taskIds: ["preserve-behavior"],
+            candidateId: fixture.candidate.id,
+          },
+        },
+        overall: {},
+      },
+      tasks: {},
+      candidates: { [fixture.candidate.id]: fixture.candidate },
+      findings: {},
+      reviews: { "source:first-stream": review },
+      satisfaction: { assessments: {}, receipts: {} },
+    } as unknown as RunState;
+    const artifactsPath = join(fixture.root, "artifacts");
+    const reviewer = new ScriptedSubagentClient(
+      [
+        {
+          status: "completed",
+          result: {
+            assessments: [{ id: "historical-finding", status: "resolved" }],
+            regressions: [],
+          },
+        },
+      ],
+      [fixture.root],
+    );
+
+    const error = await runWorkstreamReview({
+      state,
+      plan,
+      workstream: fixture.candidate.workstream,
+      git: fixture.git,
+      subagents: reviewer,
+      artifactsPath,
+      roles,
+    }).catch((error: unknown) => error);
+
+    expect(error).toBeInstanceOf(WorkerPacketError);
+    expect(error).toHaveProperty(
+      "message",
+      expect.stringContaining(
+        "Invalid anchored review completion.\nExpected IDs: none\nReceived IDs: historical-finding\nMissing IDs: none\nUnexpected IDs: historical-finding",
+      ),
+    );
+    expect(reviewer.invocations).toHaveLength(1);
+    const artifacts = readdirSync(artifactsPath);
+    expect(artifacts).toHaveLength(1);
+    const artifactPath = join(artifactsPath, artifacts[0]!);
+    expect(existsSync(artifactPath)).toBe(true);
+    expect(JSON.parse(readFileSync(artifactPath, "utf8"))).toMatchObject({
+      completion: {
+        assessments: [{ id: "historical-finding", status: "resolved" }],
+        regressions: [],
+      },
+    });
   });
 
   it("keeps an observed textual-conflict merge when semantic completion is unavailable", async () => {

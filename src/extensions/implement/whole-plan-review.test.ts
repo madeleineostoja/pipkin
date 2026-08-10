@@ -1,15 +1,39 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildAnchoredOverallReviewPrompt } from "./prompts.js";
 import {
   buildWholePlanReviewPacket,
   completeWholePlanRun,
+  runWholePlanReview,
 } from "./whole-plan-review.js";
 import {
   cleanupSchedulerStores,
   createUnboundSchedulerRun,
 } from "./scheduler/scheduler-test-support.js";
+import { ScriptedSubagentClient } from "./e2e-test-support.js";
+import { WorkerPacketError } from "./worker-invocation.js";
+import type { ImplementRoles } from "./subagents.js";
 
 afterEach(() => cleanupSchedulerStores());
+
+const roles: ImplementRoles = {
+  implementer: {
+    type: "pipkin:implement:implementer",
+    model: "test",
+    thinking: "medium",
+  },
+  reviewer: {
+    type: "pipkin:implement:reviewer",
+    model: "test",
+    thinking: "high",
+  },
+  planner: {
+    type: "pipkin:implement:planner",
+    model: "test",
+    thinking: "high",
+  },
+};
 
 describe("whole-plan review packet", () => {
   it("rejects closure when an approved review omits or blanks its draft", async () => {
@@ -34,6 +58,102 @@ describe("whole-plan review packet", () => {
         "Whole-plan closure cannot prove the reviewed target boundary.",
       );
     }
+  });
+
+  it("retains a malformed anchored completion before whole-plan dispatch", async () => {
+    const { run, plan } = createUnboundSchedulerRun();
+    await run.bindExecutionPlan(plan);
+    const state = run.read();
+    for (const workstream of Object.values(state.workstreams.source)) {
+      workstream.phase = "completed";
+    }
+    const workstream = { kind: "overall" as const, repairId: "repair-1" };
+    const candidateId = "overall-repair:repair-1";
+    const findingId = "overall-repair-1";
+    state.candidates[candidateId] = {
+      id: candidateId,
+      workstream,
+      baseSha: "target-sha",
+      commitSha: "repair-sha",
+      treeSha: "repair-tree",
+    };
+    state.findings[findingId] = {
+      id: findingId,
+      candidateId,
+      workstream,
+      scope: {
+        kind: "whole_plan",
+        initialTargetSha: "target-sha",
+        initialTargetTreeSha: "target-tree",
+      },
+      origin: "initial",
+      introducedRound: 0,
+      status: "open",
+      summary: "A material repair finding",
+      evidence: "Observed in the repaired target.",
+      requiredChange: "Correct the behavior.",
+      acceptanceCriteria: ["Behavior is correct."],
+    };
+    state.wholePlanReview = {
+      status: "pending",
+      handoffDraft: "Prior handoff.",
+      epoch: {
+        initialTargetSha: "target-sha",
+        initialTargetTreeSha: "target-tree",
+        findingIds: [findingId],
+        pendingCorrectionIds: [findingId],
+        latestRepair: {
+          candidateId,
+          targetBaseSha: "target-sha",
+          publishedCommitSha: "repair-sha",
+          publishedTreeSha: "repair-tree",
+          changedPaths: ["src/repair.ts"],
+        },
+      },
+    };
+    const artifactsPath = `${state.run.checkout.root}/artifacts`;
+    const dispatch = vi.fn();
+    const error = await runWholePlanReview({
+      state,
+      plan,
+      git: {
+        isCleanExcept: async () => true,
+        hasStagedChangesInPaths: async () => false,
+        activeOperation: async () => undefined,
+        head: async () => "repair-sha",
+        treeAt: async () => "repair-tree",
+      } as never,
+      subagents: new ScriptedSubagentClient(
+        [
+          {
+            status: "completed",
+            result: {
+              assessments: [],
+              regressions: [],
+              handoffDraft: "Replacement handoff.",
+            },
+          },
+        ],
+        [state.run.checkout.root],
+      ),
+      artifactsPath,
+      dispatch,
+      roles,
+    }).catch((error: unknown) => error);
+
+    expect(error).toBeInstanceOf(WorkerPacketError);
+    expect(error).toHaveProperty(
+      "message",
+      expect.stringContaining(`Review artifact: ${artifactsPath}/`),
+    );
+    const artifacts = readdirSync(artifactsPath);
+    expect(artifacts).toHaveLength(1);
+    const artifactPath = join(artifactsPath, artifacts[0]!);
+    expect(existsSync(artifactPath)).toBe(true);
+    expect(JSON.parse(readFileSync(artifactPath, "utf8"))).toMatchObject({
+      completion: { assessments: [], regressions: [] },
+    });
+    expect(dispatch).not.toHaveBeenCalled();
   });
 
   it("includes the latest published overall repair evidence in an anchored review", async () => {

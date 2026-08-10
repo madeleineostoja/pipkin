@@ -59,6 +59,9 @@ describe("whole-plan and repair prompts", () => {
     expect(anchored).toContain("Comparison base SHA: run-base");
     expect(anchored).toContain("run-base..current-repair");
     expect(anchored).toContain("Latest handoff draft");
+    expect(anchored).toContain("Complete prior findings are context only");
+    expect(anchored).toContain("Findings requiring assessment in this review");
+    expect(anchored).toContain("Return `assessments: []`");
     expect(anchored).toContain("Preserve unaffected facts");
     for (const prompt of [initial, anchored]) {
       expect(prompt).toContain("handoff transfers the entire Implement run");
@@ -148,7 +151,9 @@ describe("whole-plan and repair prompts", () => {
       "final source review: no further source correction follows",
     );
     expect(prompt).toContain("Only this reviewer completion may resolve");
-    expect(prompt).toContain("Assess every outstanding ID exactly once");
+    expect(prompt).toContain("Findings requiring assessment in this review");
+    expect(prompt).toContain("Return `assessments: []`");
+    expect(prompt).toContain("Do not assess historical or residual findings");
     expect(prompt).toContain("direct causal regressions only");
     expect(prompt).not.toMatch(/blocking|advisory|disposition/);
   });
