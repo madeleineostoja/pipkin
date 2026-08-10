@@ -66,6 +66,29 @@ describe("GitHub fixed fetch adapter", () => {
     );
   });
 
+  it("returns failed requests without writing through Octokit's terminal logger", async () => {
+    const terminalError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const client = createGithubSearch({
+      token: "secret",
+      signal: new AbortController().signal,
+      fetch: vi.fn(
+        async () =>
+          new Response('{"message":"forbidden"}', {
+            status: 403,
+            headers: { "content-type": "application/json" },
+          }),
+      ) as typeof fetch,
+    });
+
+    await expect(
+      client.searchCode({ q: "useWidget", per_page: 1 }),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(terminalError).not.toHaveBeenCalled();
+    terminalError.mockRestore();
+  });
+
   it("normalizes exhausted 403 rate limits without disclosing headers", () => {
     expect(
       normalizeGithubError({

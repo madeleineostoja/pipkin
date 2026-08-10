@@ -49,6 +49,13 @@ export function createGithubSearch(options: {
   const octokit = new Octokit({
     auth: options.token,
     baseUrl: GITHUB_ORIGIN,
+    // Octokit's request-log plugin otherwise writes failures over Pi's TUI.
+    log: {
+      debug() {},
+      info() {},
+      warn() {},
+      error() {},
+    },
     request: {
       headers: {
         accept: "application/vnd.github+json",
