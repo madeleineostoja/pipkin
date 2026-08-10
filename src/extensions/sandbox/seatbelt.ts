@@ -183,7 +183,7 @@ function protectedRoots(policy: SandboxPolicy): readonly string[] {
   );
 }
 
-function writableProjection(
+export function writableProjection(
   policy: SandboxPolicy,
   writeMode: SandboxWriteMode,
 ): readonly string[] {
@@ -192,11 +192,15 @@ function writableProjection(
   }
   return [
     ...policy.temporaryRoots,
-    ...policy.cacheRoots,
+    ...policy.runtimeRoots,
     ...policy.dependencyRoots,
   ].filter(
     (root, index, roots) =>
-      roots.findIndex((candidate) => candidate === root) === index,
+      roots.findIndex((candidate) => candidate === root) === index &&
+      (!protectedRoots(policy).some((protectedRoot) =>
+        pathIsWithin(root, protectedRoot),
+      ) ||
+        policy.dependencyRoots.includes(root)),
   );
 }
 

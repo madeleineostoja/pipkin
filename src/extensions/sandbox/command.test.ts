@@ -12,7 +12,7 @@ const policy = {
   sessionCwd: "/workspace/subdirectory",
   workspaceRoot: "/workspace",
   temporaryRoots: ["/temporary"],
-  cacheRoots: ["/cache"],
+  runtimeRoots: ["/cache"],
   dependencyRoots: [],
   writableRoots: ["/workspace", "/git", "/temporary", "/cache"],
   creationRoots: [],

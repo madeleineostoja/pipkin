@@ -53,11 +53,15 @@ describe("Sandbox policy", () => {
     });
     expect(policy.workspaceRoot).toBe(realpathSync(root));
     expect(policy.git).toBeUndefined();
-    expect(policy.cacheRoots).toEqual([
+    expect(policy.runtimeRoots).toEqual([
       join(realpathSync(home), "missing-npm"),
       join(realpathSync(home), "Library", "pnpm", "store"),
-      join(realpathSync(home), "Library", "Caches", "pnpm"),
+      join(realpathSync(home), "missing-xdg", "pnpm"),
+      join(realpathSync(home), ".local", "state", "pnpm"),
       join(realpathSync(home), "missing-xdg", "gh"),
+      join(realpathSync(home), ".local", "state", "gh"),
+      join(realpathSync(home), "missing-xdg", "nix"),
+      join(realpathSync(home), "Library", "Caches", "mise"),
     ]);
   });
 
@@ -95,9 +99,9 @@ describe("Sandbox policy", () => {
       join(canonicalHome, "Library"),
       join(canonicalHome, "Library", "pnpm"),
       join(canonicalHome, "Library", "Caches"),
-      join(canonicalHome, ".cache"),
       join(canonicalHome, ".local"),
       join(canonicalHome, ".local", "state"),
+      join(canonicalHome, ".cache"),
     ]);
   });
 
@@ -305,6 +309,8 @@ describe("Sandbox policy", () => {
     const npm = join(root, "npm");
     const xdgCache = join(root, "xdg-cache");
     const ghCache = join(xdgCache, "gh");
+    const nixCache = join(root, "nix-cache");
+    const miseCache = join(root, "mise-cache");
     const xdgState = join(root, "xdg-state");
     const ghState = join(xdgState, "gh");
     const pnpmStore = join(home, "Library", "pnpm", "store");
@@ -315,6 +321,8 @@ describe("Sandbox policy", () => {
       temporary,
       npm,
       ghCache,
+      nixCache,
+      miseCache,
       ghState,
       pnpmStore,
       pnpmCache,
@@ -330,18 +338,27 @@ describe("Sandbox policy", () => {
         npm_config_cache: npm,
         XDG_CACHE_HOME: xdgCache,
         XDG_STATE_HOME: xdgState,
+        NIX_CACHE_HOME: nixCache,
+        MISE_CACHE_DIR: miseCache,
         PNPM_HOME: join(home, "pnpm-bin"),
       },
     });
-    const canonicalRoots = [npm, pnpmStore, pnpmCache, ghCache].map((path) =>
-      realpathSync(path),
-    );
-    expect(policy.cacheRoots).toEqual(canonicalRoots);
+    const canonicalRootPath = realpathSync(root);
+    const canonicalRoots = [
+      realpathSync(npm),
+      join(canonicalRootPath, "home", "pnpm-bin", "store"),
+      join(canonicalRootPath, "xdg-cache", "pnpm"),
+      join(canonicalRootPath, "xdg-state", "pnpm"),
+      realpathSync(ghCache),
+      realpathSync(ghState),
+      realpathSync(nixCache),
+      realpathSync(miseCache),
+    ];
+    expect(policy.runtimeRoots).toEqual(canonicalRoots);
     expect(policy.writableRoots).toEqual(
       expect.arrayContaining([
         realpathSync(workspace),
         realpathSync(temporary),
-        realpathSync(ghState),
         ...canonicalRoots,
       ]),
     );
@@ -367,7 +384,67 @@ describe("Sandbox policy", () => {
     );
   });
 
-  it("grants gh default cache and state without its config or data directories", async () => {
+  it("honors effective npm, pnpm, and Nix runtime overrides", async () => {
+    const root = directory("runtime-overrides");
+    const workspace = join(root, "workspace");
+    const home = join(root, "home");
+    const temporary = join(root, "temporary");
+    mkdirSync(workspace);
+    mkdirSync(home);
+    mkdirSync(temporary);
+    const policy = await resolveSandboxPolicy({
+      sessionCwd: workspace,
+      homeDir: home,
+      temporaryDir: temporary,
+      standardTemporaryRoots: [],
+      env: {
+        npm_config_cache: "ignored-npm-cache",
+        NPM_CONFIG_CACHE: "npm-cache",
+        PNPM_HOME: "~/pnpm-home",
+        npm_config_cache_dir: "pnpm-cache",
+        npm_config_state_dir: "pnpm-state",
+        NIX_CACHE_HOME: "nix-cache",
+        MISE_CACHE_DIR: "~/mise-cache",
+      },
+    });
+    const canonicalWorkspace = realpathSync(workspace);
+
+    expect(policy.runtimeRoots).toEqual(
+      expect.arrayContaining([
+        join(canonicalWorkspace, "npm-cache"),
+        join(realpathSync(home), "pnpm-home", "store"),
+        join(canonicalWorkspace, "pnpm-cache"),
+        join(canonicalWorkspace, "pnpm-state"),
+        join(canonicalWorkspace, "nix-cache"),
+        join(realpathSync(home), "mise-cache"),
+      ]),
+    );
+    expect(policy.runtimeRoots).not.toContain(
+      join(canonicalWorkspace, "ignored-npm-cache"),
+    );
+    expect(policy.runtimeRoots).not.toContain(join(realpathSync(home), ".npm"));
+  });
+
+  it("treats bare tilde as a relative npm path", async () => {
+    const root = directory("bare-tilde");
+    const workspace = join(root, "workspace");
+    const home = join(root, "home");
+    mkdirSync(workspace);
+    mkdirSync(home);
+
+    const policy = await resolveSandboxPolicy({
+      sessionCwd: workspace,
+      homeDir: home,
+      temporaryDir: workspace,
+      standardTemporaryRoots: [],
+      env: { npm_config_cache: "~" },
+    });
+
+    expect(policy.runtimeRoots).toContain(join(realpathSync(workspace), "~"));
+    expect(policy.runtimeRoots).not.toContain(realpathSync(home));
+  });
+
+  it("grants gh and Nix default runtime roots without durable config, data, or state", async () => {
     const root = directory("gh-roots");
     const workspace = join(root, "workspace");
     const home = join(root, "home");
@@ -377,6 +454,7 @@ describe("Sandbox policy", () => {
     mkdirSync(temporary);
     const canonicalHome = realpathSync(home);
     const ghCache = join(canonicalHome, ".cache", "gh");
+    const nixCache = join(canonicalHome, ".cache", "nix");
     const ghState = join(canonicalHome, ".local", "state", "gh");
 
     const policy = await resolveSandboxPolicy({
@@ -387,9 +465,11 @@ describe("Sandbox policy", () => {
       env: {},
     });
 
-    expect(policy.cacheRoots).toContain(ghCache);
+    expect(policy.runtimeRoots).toEqual(
+      expect.arrayContaining([ghCache, nixCache]),
+    );
     expect(policy.writableRoots).toEqual(
-      expect.arrayContaining([ghCache, ghState]),
+      expect.arrayContaining([ghCache, nixCache, ghState]),
     );
     expect(policy.writableRoots).not.toContain(
       join(canonicalHome, ".config", "gh"),
@@ -397,9 +477,64 @@ describe("Sandbox policy", () => {
     expect(policy.writableRoots).not.toContain(
       join(canonicalHome, ".local", "share", "gh"),
     );
+    expect(policy.writableRoots).not.toContain(
+      join(canonicalHome, ".config", "nix"),
+    );
+    expect(policy.writableRoots).not.toContain(
+      join(canonicalHome, ".local", "state", "nix"),
+    );
   });
 
-  it("omits gh roots that overlap its protected config or data", async () => {
+  it("rejects runtime overrides that overlap system or tool installations", async () => {
+    const root = directory("protected-runtime-overrides");
+    const workspace = join(root, "workspace");
+    const home = join(root, "home");
+    const tools = join(root, "tools");
+    mkdirSync(workspace);
+    mkdirSync(home);
+    mkdirSync(join(tools, "installs"), { recursive: true });
+    mkdirSync(join(tools, "plugins"), { recursive: true });
+
+    const policy = await resolveSandboxPolicy({
+      sessionCwd: workspace,
+      homeDir: home,
+      temporaryDir: workspace,
+      standardTemporaryRoots: [],
+      env: {
+        npm_config_cache: "/opt/homebrew",
+        NIX_CACHE_HOME: "/nix",
+        MISE_CACHE_DIR: tools,
+        MISE_INSTALLS_DIR: join(tools, "installs"),
+        MISE_PLUGINS_DIR: join(tools, "plugins"),
+      },
+    });
+
+    expect(policy.runtimeRoots).not.toContain("/opt/homebrew");
+    expect(policy.runtimeRoots).not.toContain("/nix");
+    expect(policy.runtimeRoots).not.toContain(realpathSync(tools));
+  });
+
+  it("does not replace a defined-empty Nix cache with the default root", async () => {
+    const root = directory("empty-nix-cache");
+    const workspace = join(root, "workspace");
+    const home = join(root, "home");
+    mkdirSync(workspace);
+    mkdirSync(home);
+
+    const policy = await resolveSandboxPolicy({
+      sessionCwd: workspace,
+      homeDir: home,
+      temporaryDir: workspace,
+      standardTemporaryRoots: [],
+      env: { NIX_CACHE_HOME: "" },
+    });
+
+    expect(policy.runtimeRoots).not.toContain(
+      join(realpathSync(home), ".cache", "nix"),
+    );
+  });
+
+  it("omits tool runtime roots that overlap protected config, data, or state", async () => {
     const root = directory("gh-overlap");
     const workspace = join(root, "workspace");
     const home = join(root, "home");
@@ -425,6 +560,9 @@ describe("Sandbox policy", () => {
 
     expect(policy.writableRoots).not.toContain(realpathSync(config));
     expect(policy.writableRoots).not.toContain(realpathSync(data));
+    expect(policy.writableRoots).not.toContain(
+      join(realpathSync(cacheAlias), "nix"),
+    );
   });
 
   it("canonicalizes aliases and collapses covered roots", async () => {
@@ -468,11 +606,15 @@ describe("Sandbox policy", () => {
         XDG_CACHE_HOME: join(parent, "cache"),
       },
     });
-    expect(policy.cacheRoots).not.toContain(dangling);
-    expect(policy.cacheRoots).not.toContain(join(parent, "cache"));
-    expect(policy.cacheRoots).not.toContain(pnpmStore);
-    expect(policy.cacheRoots).not.toContain(pnpmCache);
-    expect(policy.cacheRoots).toEqual([]);
+    expect(policy.runtimeRoots).not.toContain(dangling);
+    expect(policy.runtimeRoots).not.toContain(join(parent, "cache"));
+    expect(policy.runtimeRoots).not.toContain(pnpmStore);
+    expect(policy.runtimeRoots).not.toContain(pnpmCache);
+    expect(policy.runtimeRoots).toEqual([
+      join(realpathSync(home), ".local", "state", "pnpm"),
+      join(realpathSync(home), ".local", "state", "gh"),
+      join(realpathSync(home), "Library", "Caches", "mise"),
+    ]);
     expect(existsSync(join(home, ".npm"))).toBe(false);
   });
 

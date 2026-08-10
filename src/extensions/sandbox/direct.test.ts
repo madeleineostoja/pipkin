@@ -33,7 +33,7 @@ function fixture() {
     sessionCwd: canonicalWorkspace,
     workspaceRoot: canonicalWorkspace,
     temporaryRoots: [],
-    cacheRoots: [],
+    runtimeRoots: [],
     dependencyRoots: [],
     writableRoots: [canonicalWorkspace],
     creationRoots: [],

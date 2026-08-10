@@ -17,21 +17,9 @@ import { isAbsolute, relative } from "node:path";
 import { Panel } from "#lib/ui/panel";
 import { WideSelectList, type WideListItem } from "#lib/ui/wide-select-list";
 import type { SandboxDenial, SandboxDenialRecorder } from "./denials.js";
+import { writableProjection } from "./seatbelt.js";
 import type { SandboxSessionState } from "./state.js";
 import { sandboxStatus, syncSandboxStatus } from "./status.js";
-
-function effectiveBashWriteScopes(
-  repositoryReadOnly: boolean,
-  policy: NonNullable<ReturnType<SandboxSessionState["policy"]>>,
-): readonly string[] {
-  return repositoryReadOnly
-    ? [
-        ...policy.temporaryRoots,
-        ...policy.cacheRoots,
-        ...policy.dependencyRoots,
-      ].filter((root, index, roots) => roots.indexOf(root) === index)
-    : policy.writableRoots;
-}
 
 function effectivePolicyFields(
   state: SandboxSessionState,
@@ -70,7 +58,10 @@ function effectivePolicyFields(
     ],
     [
       "Bash writable roots",
-      effectiveBashWriteScopes(repositoryReadOnly, policy).join(", ") || "none",
+      writableProjection(
+        policy,
+        repositoryReadOnly ? "repository-read-only" : "workspace-write",
+      ).join(", ") || "none",
     ],
   ];
 }

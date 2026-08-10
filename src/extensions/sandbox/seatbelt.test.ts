@@ -12,7 +12,7 @@ const policy: SandboxPolicy = {
   sessionCwd: "/workspace",
   workspaceRoot: "/workspace",
   temporaryRoots: ["/temporary"],
-  cacheRoots: ["/home/user/cache/store"],
+  runtimeRoots: ["/home/user/cache/store"],
   dependencyRoots: [],
   writableRoots: ["/workspace", "/temporary", "/home/user/cache/store"],
   creationRoots: ["/home/user/cache"],
@@ -115,11 +115,11 @@ describe("Sandbox Seatbelt profile", () => {
     );
   });
 
-  it("keeps safe cache creation and disposable dependency runtime authority", () => {
+  it("keeps safe runtime-root creation and disposable dependency authority", () => {
     const readOnly: SandboxPolicy = {
       ...policy,
       workspaceRoot: "/tmp/checkout",
-      cacheRoots: ["/home/user/missing-cache/store"],
+      runtimeRoots: ["/home/user/missing-cache/store"],
       dependencyRoots: [
         "/tmp/checkout/node_modules",
         "/package-workspace/node_modules",
@@ -164,6 +164,32 @@ describe("Sandbox Seatbelt profile", () => {
     expect(profile).toContain('(literal (param "create0"))');
     expect(profile).toContain("(require-not\n      (require-any");
     expect(profile).toContain('(subpath (param "exception0"))');
+  });
+
+  it("drops repository-contained runtime roots without dropping dependency exceptions", () => {
+    const contained: SandboxPolicy = {
+      ...policy,
+      workspaceRoot: "/workspace",
+      runtimeRoots: ["/workspace/cache"],
+      dependencyRoots: ["/workspace/node_modules"],
+      writableRoots: [
+        "/workspace",
+        "/temporary",
+        "/workspace/cache",
+        "/workspace/node_modules",
+      ],
+      creationRoots: [],
+    };
+    const arguments_ = sandboxArguments({
+      policy: contained,
+      shell: { shell: "/bin/bash", args: ["-s"] },
+      writeMode: "repository-read-only",
+    });
+
+    expect(arguments_).not.toContain("root1=/workspace/cache");
+    expect(arguments_).toContain("root1=/workspace/node_modules");
+    expect(arguments_).not.toContain("/_tmp_42_probe");
+    expect(arguments_).not.toContain("/workspace/../_tmp_42_probe");
   });
 
   it("binds arbitrary protected paths without interpolating them into the profile", () => {

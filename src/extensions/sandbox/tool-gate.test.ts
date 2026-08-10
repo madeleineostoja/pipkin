@@ -27,7 +27,7 @@ function fixture() {
     sessionCwd: realpathSync(workspace),
     workspaceRoot: realpathSync(workspace),
     temporaryRoots: [],
-    cacheRoots: [],
+    runtimeRoots: [],
     dependencyRoots: [],
     writableRoots: [realpathSync(workspace)],
     creationRoots: [],

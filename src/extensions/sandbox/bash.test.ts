@@ -89,7 +89,7 @@ child.once("close", (code) => process.exit(code ?? 1));
     sessionCwd: workspace,
     workspaceRoot: workspace,
     temporaryRoots: [],
-    cacheRoots: [],
+    runtimeRoots: [],
     dependencyRoots: [],
     writableRoots: [workspace],
     creationRoots: [],
