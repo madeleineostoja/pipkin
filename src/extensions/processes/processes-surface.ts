@@ -58,6 +58,7 @@ export class ProcessesSurface implements Component {
     | undefined;
   #outputRevision = 0;
   #renderQueued = false;
+  #stoppingIds = new Set<string>();
   #disposed = false;
   #lastLost: string | undefined;
   #unsubscribe: () => void;
@@ -411,6 +412,9 @@ export class ProcessesSurface implements Component {
     }
     const id = this.#selectedId;
     const snapshot = this.#selectedSnapshot();
+    if (id && this.#stoppingIds.has(id)) {
+      return;
+    }
     if (
       !id ||
       !snapshot ||
@@ -420,22 +424,13 @@ export class ProcessesSurface implements Component {
       this.#warning("Process already settled or is no longer available.");
       return;
     }
-    const confirmed = await this.ctx.ui.confirm(
-      "Stop process",
-      "Stop this running managed process?",
-    );
-    if (!confirmed) {
-      return;
-    }
-    const current = this.#selectedSnapshot();
-    if (!current || current.id !== id || current.status !== "running") {
-      this.#warning("Process already settled or is no longer available.");
-      return;
-    }
+    this.#stoppingIds.add(id);
     try {
       await this.runtime.stop(id);
     } catch {
       this.#warning("Process already settled or is no longer available.");
+    } finally {
+      this.#stoppingIds.delete(id);
     }
     this.#refresh();
   }

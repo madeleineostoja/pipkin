@@ -43,7 +43,7 @@ Use foreground Bash when completion is immediately required. Use managed process
 | `start_process`      | Start one foreground, non-interactive command and return an ID |
 | `get_process_result` | Wait once or inspect bounded output/status                     |
 | `stop_process`       | Stop a process and return final output or a recallable outcome |
-| `/processes`         | Human live inspection and confirmed stop controls              |
+| `/processes`         | Human live inspection and direct stop controls                 |
 
 `untilContains` waits eventfully for one case-sensitive literal on either stream; timeout ends only the wait. Results state process status, wait outcome, and output selection in prose before the complete bounded selected output. Their `details` retain bounded normalized snapshots and selectors; `resultMode: "outcome"` retains that same point-in-time result for `context_recall`. A later output-mode request is required for newer output. Do not poll.
 

@@ -601,18 +601,11 @@ export class AgentsSurface implements Component, Focusable {
     }
   }
 
-  async #stop(entry: Entry): Promise<void> {
+  #stop(entry: Entry): void {
     if (!eligibleStop(entry)) {
       return this.#warning("Agent already settled or is no longer available.");
     }
     const generation = this.#generation;
-    const confirmed = await this.ctx.ui.confirm(
-      "Stop agent",
-      "Stop this running agent?",
-    );
-    if (!confirmed) {
-      return;
-    }
     const current = this.#entry();
     if (
       !current ||

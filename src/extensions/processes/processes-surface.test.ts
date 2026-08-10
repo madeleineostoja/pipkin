@@ -206,47 +206,38 @@ describe("ProcessesSurface", () => {
     expect(output).not.toContain("output from process one");
   });
 
-  it("does not stop an evicted selection during confirmation", async () => {
-    let records = [snapshot("process-1", "running")];
-    let recordListener:
-      | ((value: ProcessSnapshot | undefined) => void)
-      | undefined;
-    let resolveConfirmation!: (value: boolean) => void;
-    const confirmation = new Promise<boolean>((resolve) => {
-      resolveConfirmation = resolve;
-    });
-    const stop = vi.fn();
-    const notify = vi.fn();
+  it("stops directly without closing the surface and ignores repeated activation", async () => {
+    const current = snapshot("process-1", "running");
+    let resolveStop!: () => void;
+    const stop = vi.fn(
+      () => new Promise<void>((resolve) => (resolveStop = resolve)),
+    );
+    const done = vi.fn();
     const runtime = {
-      snapshots: () => records,
-      snapshot: (id: string) => records.find((record) => record.id === id),
+      snapshots: () => [current],
+      snapshot: (id: string) => (id === current.id ? current : undefined),
       subscribe: vi.fn(() => () => {}),
-      subscribeRecord: vi.fn((_: string, next: typeof recordListener) => {
-        recordListener = next;
-        return () => {};
-      }),
+      subscribeRecord: vi.fn(() => () => {}),
       stop,
     };
     const surface = new ProcessesSurface(
       runtime as never,
-      { ui: { confirm: vi.fn(() => confirmation), notify } } as never,
+      { ui: { notify: vi.fn() } } as never,
       { requestRender: vi.fn() } as never,
       theme,
-      vi.fn(),
+      done,
     );
 
     surface.handleInput("\r");
     surface.handleInput("\u001b[B");
     surface.handleInput("\r");
-    records = [snapshot("process-2", "running")];
-    recordListener?.(undefined);
-    resolveConfirmation(true);
-    await flush();
+    surface.handleInput("\r");
 
-    expect(stop).not.toHaveBeenCalled();
-    expect(notify).toHaveBeenCalledWith(
-      "Process already settled or is no longer available.",
-      "warning",
-    );
+    expect(stop).toHaveBeenCalledOnce();
+    expect(stop).toHaveBeenCalledWith("process-1");
+    expect(done).not.toHaveBeenCalled();
+
+    resolveStop();
+    await flush();
   });
 });

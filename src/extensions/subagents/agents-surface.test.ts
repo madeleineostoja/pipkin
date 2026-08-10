@@ -101,10 +101,7 @@ class FakeRuntime {
   }
 }
 
-function fixture(
-  runtimes: FakeRuntime[],
-  confirm: () => Promise<boolean> = async () => false,
-) {
+function fixture(runtimes: FakeRuntime[]) {
   const theme = {
     fg: (color: string, text: string) =>
       color === "muted" ? `\x1b[2m${text}\x1b[22m` : text,
@@ -116,7 +113,7 @@ function fixture(
   const requestRender = vi.fn();
   const done = vi.fn();
   const notify = vi.fn();
-  const ctx = { ui: { notify, confirm } } as unknown as ExtensionCommandContext;
+  const ctx = { ui: { notify } } as unknown as ExtensionCommandContext;
   const surface = new AgentsSurface(
     runtimes as unknown as SubagentRuntime[],
     ctx,
@@ -285,21 +282,16 @@ describe("AgentsSurface roster and landing", () => {
     expect(plain(rendered(surface))).toContain("Agent activity · Explore");
   });
 
-  it("stops a selected running agent only after confirmation", async () => {
+  it("stops a selected running agent directly without closing the surface", () => {
     const runtime = new FakeRuntime("runtime", [snapshot()]);
-    const confirm = vi.fn(async () => true);
-    const { surface } = fixture([runtime], confirm);
+    const { surface, done } = fixture([runtime]);
 
     surface.handleInput(enter);
     surface.handleInput(down);
     surface.handleInput(enter);
-    await Promise.resolve();
 
-    expect(confirm).toHaveBeenCalledWith(
-      "Stop agent",
-      "Stop this running agent?",
-    );
     expect(runtime.stop).toHaveBeenCalledWith("agent-1");
+    expect(done).not.toHaveBeenCalled();
   });
 
   it("uses only approved landing facts and actions", () => {

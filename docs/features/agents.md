@@ -42,11 +42,11 @@ Progress is untrusted child-generated content, may be incomplete, and is not a f
 
 Once `Agent` accepts a job and returns its ID, the session runtime owns that work rather than the initiating turn. Escape during startup can prevent an unaccepted job from starting. Escape during `get_subagent_result` with `wait: true` cancels only that wait and its current turn; the accepted agent continues. A later join can retrieve its complete result.
 
-Use `/agents` to stop a selected agent explicitly, with confirmation. Session replacement and shutdown stop and settle session-owned agents. Implement retains authority over its scheduler-managed workers.
+Use `/agents` to stop a selected agent explicitly. Session replacement and shutdown stop and settle session-owned agents. Implement retains authority over its scheduler-managed workers.
 
 ## `/agents`
 
-The dashboard presents one scannable roster with status glyphs, hierarchy, current description, and elapsed time. Live agent groups appear before retained history without separate section headings. Selecting an agent opens a landing page with status, elapsed time, available context and cost, and a bounded failure reason when relevant. From there you can view Activity, view a completed Result, stop running work with confirmation, or return to the roster.
+The dashboard presents one scannable roster with status glyphs, hierarchy, current description, and elapsed time. Live agent groups appear before retained history without separate section headings. Selecting an agent opens a landing page with status, elapsed time, available context and cost, and a bounded failure reason when relevant. From there you can view Activity, view a completed Result, stop running work directly, or return to the roster.
 
 Activity is a full-width chronological timeline: assistant prose is rendered as Markdown; tool calls are compact summaries with bounded arguments and status; steering is quoted; and retry and compaction events remain visible. It never replays complete tool output. Steerable agents have an inline bordered guidance editor beneath the timeline: type normally, use Enter to send and Shift+Enter for a new line; arrows scroll the timeline. Escape returns to the landing page.
 
