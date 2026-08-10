@@ -11,8 +11,7 @@ import type { ActivityState } from "./activity.js";
 import { ActivityStore, type StoredActivityRecord } from "./activity-store.js";
 
 const WIDGET_KEY = "pipkin.ui.activity";
-const ACTIVITY_BODY_LINE_LIMIT = 8;
-const FULLSCREEN_ACTIVITY_BODY_LINE_LIMIT = 3;
+const ACTIVITY_BODY_LINE_LIMIT = 5;
 
 class ActivityWidget implements Component {
   #disposed = false;
@@ -55,7 +54,7 @@ class ActivityWidget implements Component {
         Math.max(1, width),
         this.theme,
         Date.now(),
-        this.lineLimit,
+        ACTIVITY_BODY_LINE_LIMIT,
       ).map((line) =>
         activityBackground(
           truncateToWidth(line, Math.max(1, width), "", true),
@@ -71,18 +70,13 @@ class ActivityWidget implements Component {
           Math.max(1, contentWidth),
           this.theme,
           Date.now(),
-          this.lineLimit,
+          ACTIVITY_BODY_LINE_LIMIT,
         ),
       invalidate() {},
     });
     return box.render(width);
   }
 
-  get lineLimit(): number {
-    return this.tui.mode === "fullscreen"
-      ? FULLSCREEN_ACTIVITY_BODY_LINE_LIMIT
-      : ACTIVITY_BODY_LINE_LIMIT;
-  }
 }
 
 export function installActivityWidget(
