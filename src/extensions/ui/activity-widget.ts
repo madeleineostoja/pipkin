@@ -76,7 +76,6 @@ class ActivityWidget implements Component {
     });
     return box.render(width);
   }
-
 }
 
 export function installActivityWidget(
