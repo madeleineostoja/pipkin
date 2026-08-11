@@ -26,21 +26,25 @@ function fixture() {
   directories.push(root);
   const workspace = join(root, "workspace");
   const outside = join(root, "workspace-copy");
+  const temporaryRoot = join(root, "temporary");
   mkdirSync(workspace);
   mkdirSync(outside);
+  mkdirSync(temporaryRoot);
+  const canonicalTemporaryRoot = realpathSync(temporaryRoot);
   const canonicalWorkspace = realpathSync(workspace);
   const policy: SandboxPolicy = {
     sessionCwd: canonicalWorkspace,
     workspaceRoot: canonicalWorkspace,
-    temporaryRoots: [],
+    temporaryRoots: [canonicalTemporaryRoot],
     runtimeRoots: [],
     dependencyRoots: [],
-    writableRoots: [canonicalWorkspace],
+    writableRoots: [canonicalWorkspace, canonicalTemporaryRoot],
     creationRoots: [],
   };
   return {
     outside: realpathSync(outside),
     policy,
+    temporaryRoot: canonicalTemporaryRoot,
     workspace: canonicalWorkspace,
   };
 }
@@ -58,8 +62,19 @@ describe("Sandbox direct writes", () => {
     expect(decideDirectWrite(workspace, policy).kind).toBe("allow");
   });
 
+  it("allows files and missing descendants under canonical temporary roots", () => {
+    const { policy, temporaryRoot } = fixture();
+    expect(decideDirectWrite(join(temporaryRoot, "file.txt"), policy)).toEqual({
+      kind: "allow",
+      target: join(temporaryRoot, "file.txt"),
+    });
+    expect(
+      decideDirectWrite(join(temporaryRoot, "new", "file.txt"), policy).kind,
+    ).toBe("allow");
+  });
+
   it("rejects traversal, prefix lookalikes, and symlink escapes", () => {
-    const { outside, policy, workspace } = fixture();
+    const { outside, policy, temporaryRoot, workspace } = fixture();
     writeFileSync(join(outside, "file.txt"), "outside");
     symlinkSync(join(outside, "file.txt"), join(workspace, "file-link"));
     symlinkSync(outside, join(workspace, "directory-link"));
@@ -70,10 +85,15 @@ describe("Sandbox direct writes", () => {
       ["file-link", join(outside, "file.txt")],
       ["directory-link/new.txt", join(outside, "new.txt")],
       ["dangling-link", join(outside, "missing.txt")],
+      [
+        join(temporaryRoot, "..", "workspace-copy", "outside.txt"),
+        join(outside, "outside.txt"),
+      ],
     ]) {
       expect(decideDirectWrite(path, policy)).toMatchObject({
         kind: "deny",
-        reason: "Sandbox: direct writes must stay in the workspace.",
+        reason:
+          "Sandbox: direct writes must stay in the workspace or a temporary root.",
         ...(target ? { target } : {}),
       });
     }
@@ -109,6 +129,25 @@ describe("Sandbox direct writes", () => {
     expect(decideDirectWrite("loop", policy)).toEqual({
       kind: "deny",
       reason: "Sandbox: filesystem path is invalid.",
+    });
+  });
+
+  it("allows temporary roots while keeping repository roots protected in repository-read-only mode", () => {
+    const { policy, temporaryRoot, workspace } = fixture();
+    expect(
+      decideDirectWrite(
+        join(temporaryRoot, "review.txt"),
+        policy,
+        "repository-read-only",
+      ),
+    ).toMatchObject({ kind: "allow" });
+    expect(
+      decideDirectWrite("source.ts", policy, "repository-read-only"),
+    ).toMatchObject({
+      kind: "deny",
+      reason:
+        "Sandbox: repository-read-only children cannot modify the repository.",
+      target: join(workspace, "source.ts"),
     });
   });
 

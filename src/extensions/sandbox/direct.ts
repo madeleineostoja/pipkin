@@ -108,11 +108,13 @@ export function decideDirectWrite(
         };
       }
     }
-    return pathIsWithin(target, policy.workspaceRoot)
+    const directRoots = [policy.workspaceRoot, ...policy.temporaryRoots];
+    return directRoots.some((root) => pathIsWithin(target, root))
       ? { kind: "allow", target }
       : {
           kind: "deny",
-          reason: "Sandbox: direct writes must stay in the workspace.",
+          reason:
+            "Sandbox: direct writes must stay in the workspace or a temporary root.",
           target,
         };
   } catch {

@@ -54,7 +54,9 @@ function effectivePolicyFields(
   return [
     [
       "Direct write/edit scope",
-      repositoryReadOnly ? "repository mutation denied" : policy.workspaceRoot,
+      repositoryReadOnly
+        ? `${policy.temporaryRoots.join(", ") || "none"} (repository mutation denied)`
+        : [policy.workspaceRoot, ...policy.temporaryRoots].join(", "),
     ],
     [
       "Bash writable roots",

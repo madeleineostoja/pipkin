@@ -19,29 +19,32 @@ function fixture() {
   directories.push(root);
   const workspace = join(root, "workspace");
   const outside = join(root, "outside");
+  const temporaryRoot = join(root, "temporary");
   mkdirSync(workspace);
   mkdirSync(outside);
+  mkdirSync(temporaryRoot);
   const state = createSandboxSessionState();
   const denials = createSandboxDenialRecorder();
   state.reset({
     sessionCwd: realpathSync(workspace),
     workspaceRoot: realpathSync(workspace),
-    temporaryRoots: [],
+    temporaryRoots: [realpathSync(temporaryRoot)],
     runtimeRoots: [],
     dependencyRoots: [],
-    writableRoots: [realpathSync(workspace)],
+    writableRoots: [realpathSync(workspace), realpathSync(temporaryRoot)],
     creationRoots: [],
   });
   return {
     denials,
     outside: realpathSync(outside),
     state,
+    temporaryRoot: realpathSync(temporaryRoot),
     workspace: realpathSync(workspace),
   };
 }
 
 describe("Sandbox direct-tool gate", () => {
-  it("blocks enabled macOS direct writes outside the effective workspace target", () => {
+  it("blocks enabled macOS direct writes outside the effective workspace and temporary targets", () => {
     const { denials, outside, state, workspace } = fixture();
     const gate = createSandboxToolGate({ state, denials, supportedMac: true });
     expect(
@@ -54,7 +57,7 @@ describe("Sandbox direct-tool gate", () => {
       ),
     ).toEqual({
       block: true,
-      reason: `Sandbox: direct writes must stay in the workspace. Effective target: ${join(outside, "outside.txt")}`,
+      reason: `Sandbox: direct writes must stay in the workspace or a temporary root. Effective target: ${join(outside, "outside.txt")}`,
     });
     expect(workspace).toBe(state.policy()?.workspaceRoot);
     expect(denials.snapshot()).toMatchObject({
@@ -68,6 +71,18 @@ describe("Sandbox direct-tool gate", () => {
         },
       ],
     });
+  });
+
+  it("allows enabled macOS direct writes under canonical temporary roots", () => {
+    const { denials, state, temporaryRoot } = fixture();
+    const gate = createSandboxToolGate({ state, denials, supportedMac: true });
+    expect(
+      gate(
+        { toolName: "write", input: { path: join(temporaryRoot, "reply.md") } },
+        {} as never,
+      ),
+    ).toBeUndefined();
+    expect(denials.snapshot().count).toBe(0);
   });
 
   it("does not gate Linux or explicitly disabled macOS sessions", () => {

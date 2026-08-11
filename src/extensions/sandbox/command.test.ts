@@ -196,7 +196,7 @@ describe("Sandbox command", () => {
     const policyDetail = fixture.panel.render(120).join("\n");
     expect(policyDetail).toContain("Mode: on (repository-read-only child)");
     expect(policyDetail).toContain(
-      "Direct write/edit scope: repository mutation denied",
+      "Direct write/edit scope: /temporary (repository mutation denied)",
     );
     expect(policyDetail).toContain(
       "Bash writable roots: /temporary, /cache, /workspace/node_modules, /package-workspace/node_modules",
