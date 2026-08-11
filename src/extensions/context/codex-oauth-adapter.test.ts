@@ -232,6 +232,43 @@ describe("Codex OAuth adapter", () => {
     ).rejects.toThrow("serializer failed");
   });
 
+  it("persists user continuation emitted by the Codex serializer", async () => {
+    const fetch = vi.fn(async () => successfulSse());
+    vi.stubGlobal("fetch", fetch);
+    const adapter = createCodexOAuthAdapter({ fetch });
+    const payload = await adapter.capture({
+      model,
+      context: {
+        systemPrompt: "",
+        messages: [
+          { role: "user", content: "continue", timestamp: 1 },
+          { role: "user", content: "finish", timestamp: 2 },
+        ],
+        tools: [],
+      },
+      auth,
+      thinking: "high",
+      sessionId: "session",
+    });
+    const continuation = [
+      {
+        role: "user",
+        content: [{ type: "input_text", text: "continue" }],
+      },
+      {
+        role: "user",
+        content: [{ type: "input_text", text: "finish" }],
+      },
+    ];
+    expect(payload.input).toEqual(continuation);
+
+    const result = await compact(adapter, { payload });
+    expect(result.details.checkpoint.artifact).toEqual([
+      ...continuation,
+      { type: "compaction", encrypted_content: "opaque-fixture" },
+    ]);
+  });
+
   it("persists bounded user continuation in original order before the opaque item, normalizes usage, and sends Codex headers", async () => {
     let request: RequestInit | undefined;
     const fetch = vi.fn((...args: Parameters<typeof globalThis.fetch>) => {

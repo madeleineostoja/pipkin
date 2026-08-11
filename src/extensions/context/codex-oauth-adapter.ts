@@ -825,7 +825,11 @@ function isCompactionArtifact(value: Json): value is JsonObject & {
 }
 
 function isContinuationItem(value: Json): value is JsonObject {
-  return isObject(value) && value.type === "message" && value.role === "user";
+  return (
+    isObject(value) &&
+    (value.type === undefined || value.type === "message") &&
+    value.role === "user"
+  );
 }
 
 function isValidArtifact(artifact: Json[]): boolean {
