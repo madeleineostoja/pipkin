@@ -2,6 +2,16 @@
 
 Long sessions accumulate tool output that is no longer useful verbatim. Context replaces eligible output with stable, reasoned stubs while preserving the original result for `context_recall`.
 
+## Compaction
+
+Textual compaction always uses the snapshotted `models.low` preset, including manual `/compact`, `/compact <instructions>`, threshold compaction, and overflow recovery. Pi retains its normal summary format, split-turn handling, file-operation list, usage accounting, and retry behavior. If that preset or its provider route cannot complete, Context returns control to Pi's active-model compaction rather than saving a partial summary.
+
+An uninstructed compaction can instead use an opaque server checkpoint only for the exact OpenAI Codex OAuth surface: provider `openai-codex`, API `openai-codex-responses`, the `https://chatgpt.com/backend-api/codex/responses` endpoint, and the same Codex model and ChatGPT account that created it. The transcript shows a stable marker, not a readable summary. On the next ordinary request Context validates the persisted checkpoint and replaces only its marker-and-kept-tail provider segment immediately before dispatch.
+
+These checkpoints are not portable. A different provider, model, endpoint, API-key authentication, or ChatGPT account cannot continue one. Return to the original compatible Codex OAuth model/account to recover. Context warns and leaves an ordinary request unchanged when a persisted native checkpoint is malformed, tampered with, incompatible, or cannot be uniquely replayed. It also cancels instructed compaction after native authority exists instead of converting opaque context into a lossy text summary. Initial native creation may fall back to `models.low`; later native failures fail closed.
+
+Context stores checkpoint metadata append-only with Pi's normal compaction entry. Reload, resume, and a fork containing that entry reconstruct its authority; a fork before it has none. Pruning remains non-destructive and applies persisted decisions before replay, so it does not erase original messages or tool results. `context_recall` continues to retrieve original results across textual and native compaction.
+
 ## Pruning behavior
 
 A tool result appears in full when produced. On a later model request, Context may elide successful output that is:

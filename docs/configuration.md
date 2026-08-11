@@ -32,12 +32,12 @@ Each preset requires:
 - a non-empty `provider/model` reference; and
 - a Pi-supported thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`.
 
-| Preset    | Roles                                                                     |
-| --------- | ------------------------------------------------------------------------- |
-| `utility` | Session and Implement-run naming                                          |
-| `low`     | Explore agents, including nested exploration                              |
-| `medium`  | Implement implementation, revision, reconciliation, and whole-plan repair |
-| `high`    | Review agents and Implement planning and review                           |
+| Preset    | Roles                                                                        |
+| --------- | ---------------------------------------------------------------------------- |
+| `utility` | Session and Implement-run naming                                             |
+| `low`     | Explore agents, including nested exploration, and Context textual compaction |
+| `medium`  | Implement implementation, revision, reconciliation, and whole-plan repair    |
+| `high`    | Review agents and Implement planning and review                              |
 
 All four preset keys must be present; unknown preset keys are rejected. Pipkin does not silently substitute another provider for a missing or malformed preset. All presets may reference the same model if tiered routing is unnecessary.
 

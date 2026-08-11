@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { arch, platform, release } from "node:os";
 import { calculateCost } from "@earendil-works/pi-ai";
-import { streamSimple } from "@earendil-works/pi-ai/api/openai-codex-responses";
 import type {
+  AssistantMessageEventStream,
   Context,
   Model,
   SimpleStreamOptions,
@@ -87,9 +87,15 @@ export class CodexAdapterError extends Error {
 export type CodexAdapterDependencies = {
   fetch?: typeof globalThis.fetch;
   sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
-  serializer?: typeof streamSimple;
+  serializer?: CodexSerializer;
   timeoutMs?: number;
 };
+
+type CodexSerializer = (
+  model: Model<"openai-codex-responses">,
+  context: Context,
+  options: SimpleStreamOptions,
+) => AssistantMessageEventStream;
 
 export type CaptureInput = {
   model: Model<"openai-codex-responses">;
@@ -98,6 +104,7 @@ export type CaptureInput = {
   thinking?: SimpleStreamOptions["reasoning"];
   sessionId?: string;
   signal?: AbortSignal;
+  serializer?: CodexSerializer;
 };
 
 export type CompactionInput = {
@@ -306,32 +313,48 @@ export function createNativeCheckpoint(input: {
   }
 }
 
+export function matchesReplayAnchor(
+  details: unknown,
+  creationItems: Json[],
+): boolean {
+  const validated = validateNativeCompactionDetails(details);
+  if (
+    !validated ||
+    creationItems.length !== validated.replay.replacedItemHashes.length
+  ) {
+    return false;
+  }
+  try {
+    return creationItems.every(
+      (item, index) =>
+        digest("pipkin-codex-replay-item-v1", canonicalJson(item)) ===
+        validated.replay.replacedItemHashes[index],
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function replaceCanonicalInputSegment(
   payload: JsonObject,
   expectedItems: Json[],
   details: unknown,
   currentIdentity: CodexIdentity,
+  creationItems: Json[],
 ): JsonObject | undefined {
   const validated = validateNativeCompactionDetails(details);
   if (
     !validated ||
     !sameIdentity(validated.identity, currentIdentity) ||
+    !matchesReplayAnchor(validated, creationItems) ||
     !Array.isArray(payload.input) ||
-    expectedItems.length !== validated.replay.replacedItemHashes.length
+    expectedItems.length < 1 ||
+    expectedItems.length > MAX_REPLAY_HASHES
   ) {
     return undefined;
   }
   try {
     const expected = ensureJsonArray(expectedItems);
-    if (
-      expected.some(
-        (item, index) =>
-          digest("pipkin-codex-replay-item-v1", canonicalJson(item)) !==
-          validated.replay.replacedItemHashes[index],
-      )
-    ) {
-      return undefined;
-    }
     const input = ensureJsonArray(payload.input);
     const target = canonicalJson(expected);
     const indexes: number[] = [];
@@ -363,7 +386,7 @@ export function createCodexOAuthAdapter(
   dependencies: CodexAdapterDependencies = {},
 ) {
   const fetchFn = dependencies.fetch ?? globalThis.fetch;
-  const serializer = dependencies.serializer ?? streamSimple;
+  const serializer = dependencies.serializer;
   const sleep = dependencies.sleep ?? wait;
   const timeoutMs = dependencies.timeoutMs ?? REQUEST_TIMEOUT_MS;
 
@@ -379,7 +402,14 @@ export function createCodexOAuthAdapter(
     async capture(input: CaptureInput): Promise<JsonObject> {
       let captured: JsonObject | undefined;
       const stop = new CaptureStop();
-      const stream = serializer(input.model, input.context, {
+      const selectedSerializer = input.serializer ?? serializer;
+      if (!selectedSerializer) {
+        throw new CodexAdapterError(
+          "protocol",
+          "Codex serializer is unavailable",
+        );
+      }
+      const stream = selectedSerializer(input.model, input.context, {
         apiKey: input.auth.apiKey,
         headers: input.auth.headers,
         sessionId: input.sessionId,
@@ -438,6 +468,10 @@ export function createCodexOAuthAdapter(
     },
 
     validate: validateNativeCompactionDetails,
+    isCompatible(details: unknown, identity: CodexIdentity): boolean {
+      const validated = validateNativeCompactionDetails(details);
+      return !!validated && sameIdentity(validated.identity, identity);
+    },
     replay: replaceCanonicalInputSegment,
   };
 }

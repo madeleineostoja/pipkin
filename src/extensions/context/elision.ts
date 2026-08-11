@@ -12,6 +12,7 @@ import {
   type EpochDecision,
   type EpochKind,
   type PruningState,
+  createPruningState,
   isEpochData,
 } from "./policy.ts";
 
@@ -166,6 +167,17 @@ function isContextEpochEntry(
     value.customType === EPOCH_TYPE &&
     typeof value.id === "string"
   );
+}
+
+export function projectPersistedPruning(
+  entries: readonly unknown[],
+  messages: AgentMessage[],
+): AgentMessage[] {
+  const state = createPruningState();
+  restoreEpochs(state, entries);
+  const projected = messages.slice();
+  applyPersistedDecisions(projected, state.decisions);
+  return projected;
 }
 
 function applyPersistedDecisions(

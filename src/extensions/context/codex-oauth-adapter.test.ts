@@ -1,3 +1,4 @@
+import { streamSimple } from "@earendil-works/pi-ai/api/openai-codex-responses";
 import type { Context, Model, Usage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -193,6 +194,7 @@ describe("Codex OAuth adapter", () => {
       auth,
       thinking: "high",
       sessionId: "session",
+      serializer: streamSimple,
     });
     expect(fetch).not.toHaveBeenCalled();
     expect(payload).toEqual(
@@ -449,7 +451,9 @@ describe("Codex OAuth adapter", () => {
       untouched: { key: "value" },
     };
     expect(
-      replaceCanonicalInputSegment(payload, [old], persisted, identity()),
+      replaceCanonicalInputSegment(payload, [old], persisted, identity(), [
+        old,
+      ]),
     ).toEqual({
       ...payload,
       input: [...persisted.checkpoint.artifact, payload.input[1]],
@@ -460,6 +464,7 @@ describe("Codex OAuth adapter", () => {
         [old],
         persisted,
         identity(),
+        [old],
       ),
     ).toBeUndefined();
     expect(
@@ -468,8 +473,25 @@ describe("Codex OAuth adapter", () => {
         [{ ...old, content: "missing" }],
         persisted,
         identity(),
+        [old],
       ),
     ).toBeUndefined();
+    for (const mutate of [
+      (details: typeof persisted) => {
+        details.replay.replacedItemHashes[0] = "0".repeat(64);
+      },
+      (details: typeof persisted) => {
+        details.replay.replacedItemHashes.push("0".repeat(64));
+      },
+    ]) {
+      const changed = JSON.parse(JSON.stringify(persisted));
+      mutate(changed);
+      expect(
+        replaceCanonicalInputSegment(payload, [old], changed, identity(), [
+          old,
+        ]),
+      ).toBeUndefined();
+    }
 
     for (const mutate of [
       (details: typeof persisted) => {
@@ -526,7 +548,9 @@ describe("Codex OAuth adapter", () => {
       const changed = JSON.parse(JSON.stringify(persisted));
       mutate(changed);
       expect(
-        replaceCanonicalInputSegment(payload, [old], changed, identity()),
+        replaceCanonicalInputSegment(payload, [old], changed, identity(), [
+          old,
+        ]),
       ).toBeUndefined();
     }
   });
