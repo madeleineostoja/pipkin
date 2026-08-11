@@ -155,12 +155,17 @@ export class CompactionCoordinator {
       return;
     }
     try {
-      const auth = await ctx.modelRegistry.getApiKeyAndHeaders(event.model);
-      const identity = this.adapter.supports(
+      const auth = await resolveCodexAuth(
+        ctx,
         event.model as Model<"openai-codex-responses">,
-        auth as CaptureInput["auth"],
-        ctx.modelRegistry.isUsingOAuth(event.model),
       );
+      const identity =
+        auth &&
+        this.adapter.supports(
+          event.model as Model<"openai-codex-responses">,
+          auth,
+          ctx.modelRegistry.isUsingOAuth(event.model),
+        );
       if (
         identity &&
         this.adapter.isCompatible(active.entry.details, identity)
@@ -245,11 +250,10 @@ export class CompactionCoordinator {
       return undefined;
     }
     const model = ctx.model as Model<"openai-codex-responses">;
-    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-    if (!auth.ok || !auth.apiKey) {
+    const resolvedAuth = await resolveCodexAuth(ctx, model);
+    if (!resolvedAuth) {
       return undefined;
     }
-    const resolvedAuth = auth as CaptureInput["auth"];
     const identity = this.adapter.supports(
       model,
       resolvedAuth,
@@ -338,11 +342,10 @@ export class CompactionCoordinator {
       return undefined;
     }
     const model = ctx.model as Model<"openai-codex-responses">;
-    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-    if (!auth.ok || !auth.apiKey) {
+    const resolvedAuth = await resolveCodexAuth(ctx, model);
+    if (!resolvedAuth) {
       return undefined;
     }
-    const resolvedAuth = auth as CaptureInput["auth"];
     const identity = this.adapter.supports(
       model,
       resolvedAuth,
@@ -448,7 +451,6 @@ export class CompactionCoordinator {
         entries.slice(0, index + 1),
         ctx,
         this.options.tools?.(),
-        true,
       ),
       ctx,
       signal,
@@ -483,13 +485,6 @@ export class CompactionCoordinator {
       thinking: ctx.thinkingLevel as CaptureInput["thinking"],
       sessionId: ctx.sessionManager.getSessionId(),
       signal,
-      serializer: (requestModel, context, options) => {
-        const provider = ctx.modelRegistry.getProvider(requestModel.provider);
-        if (!provider) {
-          throw new Error("Codex provider is unavailable");
-        }
-        return provider.streamSimple(requestModel, context, options);
-      },
     });
   }
 
@@ -507,6 +502,37 @@ export class CompactionCoordinator {
 
 export function createCompactionCoordinator(options: CoordinatorOptions) {
   return new CompactionCoordinator(options);
+}
+
+async function resolveCodexAuth(
+  ctx: ExtensionContext,
+  model: Model<"openai-codex-responses">,
+): Promise<CaptureInput["auth"] | undefined> {
+  const requestAuth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+  if (!requestAuth.ok || !requestAuth.apiKey) {
+    return undefined;
+  }
+  // The compatibility facade deliberately omits baseUrl. Its provider-auth
+  // result preserves the resolved override used to construct Pi requests.
+  const getProviderAuth = (
+    ctx.modelRegistry as typeof ctx.modelRegistry & {
+      getProviderAuth?: (provider: string) => Promise<
+        | {
+            auth: { baseUrl?: string };
+          }
+        | undefined
+      >;
+    }
+  ).getProviderAuth;
+  const providerAuth = getProviderAuth
+    ? await getProviderAuth.call(ctx.modelRegistry, model.provider)
+    : undefined;
+  return {
+    ok: true,
+    apiKey: requestAuth.apiKey,
+    headers: requestAuth.headers,
+    baseUrl: providerAuth?.auth.baseUrl,
+  };
 }
 
 function registryStream(ctx: ExtensionContext) {
@@ -556,12 +582,10 @@ function checkpointSegment(
   pruningEntries: SessionEntry[],
   ctx: ExtensionContext,
   tools: Context["tools"],
-  atCreation = false,
 ): Context {
-  const contextEntries = buildContextEntries(
-    entries,
-    atCreation ? entry.id : undefined,
-  );
+  // Project the branch at the checkpoint itself. Persisted pruning decisions
+  // from later entries still apply, but later turns are never replay targets.
+  const contextEntries = buildContextEntries(entries, entry.id);
   const start = contextEntries.findIndex((item) => item.id === entry.id);
   if (start < 0) {
     throw new Error("native checkpoint is not in the projected branch");

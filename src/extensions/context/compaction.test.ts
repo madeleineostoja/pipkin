@@ -298,6 +298,99 @@ describe("CompactionCoordinator textual route", () => {
     );
   });
 
+  it("replays only the checkpoint boundary and preserves every later turn", async () => {
+    const nativeModel = {
+      ...model,
+      id: "gpt-5-codex",
+      provider: "openai-codex",
+      api: "openai-codex-responses",
+      baseUrl: "https://chatgpt.com/backend-api",
+    } as Model<"openai-codex-responses">;
+    const checkpoint = createNativeCheckpoint({
+      identity: {
+        provider: "openai-codex",
+        api: "openai-codex-responses",
+        model: nativeModel.id,
+        endpoint: "https://chatgpt.com/backend-api/codex/responses",
+        authMode: "oauth",
+        accountFingerprint: "a".repeat(64),
+        protocol: "pipkin-codex-compaction-trigger-v1",
+      },
+      artifact: [{ type: "compaction", encrypted_content: "opaque" }],
+      replacedItems: [{ type: "message", role: "user", content: "kept" }],
+      lineage: { firstKeptEntryId: "kept", leafId: "kept" },
+      usage,
+    });
+    if (!checkpoint) {
+      throw new Error("expected native checkpoint fixture");
+    }
+    const entries = [
+      {
+        type: "message" as const,
+        id: "kept",
+        parentId: null,
+        timestamp: new Date(1).toISOString(),
+        message: { role: "user" as const, content: "kept", timestamp: 1 },
+      },
+      {
+        type: "compaction" as const,
+        id: "native",
+        parentId: "kept",
+        timestamp: new Date(2).toISOString(),
+        summary: checkpoint.summary,
+        details: checkpoint.details,
+        firstKeptEntryId: "kept",
+        tokensBefore: 1,
+      },
+      {
+        type: "message" as const,
+        id: "later",
+        parentId: "native",
+        timestamp: new Date(3).toISOString(),
+        message: { role: "user" as const, content: "later", timestamp: 3 },
+      },
+    ];
+    const capture = vi.fn(
+      async ({ context }: { context: { messages: unknown[] } }) => ({
+        input: context.messages,
+      }),
+    );
+    const replay = vi.fn((payload: unknown, _expected: unknown[]) => payload);
+    const coordinator = createCompactionCoordinator({
+      low: { model: "test/low-model", thinking: "low" },
+      configPath: "config.json",
+      adapter: {
+        supports: () => checkpoint.details.identity,
+        capture,
+        replay,
+      } as never,
+    });
+    const ctx = {
+      model: nativeModel,
+      modelRegistry: {
+        getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "token" })),
+        isUsingOAuth: vi.fn(() => true),
+      },
+      ui: { notify: vi.fn() },
+      sessionManager: {
+        getBranch: () => entries,
+        getSessionId: () => "session",
+      },
+      getSystemPrompt: () => "system",
+    } as unknown as ExtensionContext;
+    const payload = {
+      input: [{ type: "marker" }, { type: "kept" }, { type: "later" }],
+    };
+
+    await expect(coordinator.beforeProviderRequest(payload, ctx)).resolves.toBe(
+      payload,
+    );
+    const expectedItems = replay.mock.calls[0]?.[1] ?? [];
+    expect(JSON.stringify(expectedItems)).toContain(checkpoint.summary);
+    expect(JSON.stringify(expectedItems)).toContain("kept");
+    expect(JSON.stringify(expectedItems)).not.toContain("later");
+  });
+
   it("does not replay a checkpoint whose persisted lineage differs from its entry", async () => {
     const nativeModel = {
       ...model,

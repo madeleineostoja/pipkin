@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { arch, platform, release } from "node:os";
 import { calculateCost } from "@earendil-works/pi-ai";
+import { openAICodexResponsesApi } from "@earendil-works/pi-ai/compat";
 import type {
   AssistantMessageEventStream,
   Context,
@@ -104,7 +105,6 @@ export type CaptureInput = {
   thinking?: SimpleStreamOptions["reasoning"];
   sessionId?: string;
   signal?: AbortSignal;
-  serializer?: CodexSerializer;
 };
 
 export type CompactionInput = {
@@ -402,25 +402,22 @@ export function createCodexOAuthAdapter(
     async capture(input: CaptureInput): Promise<JsonObject> {
       let captured: JsonObject | undefined;
       const stop = new CaptureStop();
-      const selectedSerializer = input.serializer ?? serializer;
-      if (!selectedSerializer) {
-        throw new CodexAdapterError(
-          "protocol",
-          "Codex serializer is unavailable",
-        );
-      }
-      const stream = selectedSerializer(input.model, input.context, {
-        apiKey: input.auth.apiKey,
-        headers: input.auth.headers,
-        sessionId: input.sessionId,
-        signal: input.signal,
-        transport: "sse",
-        reasoning: input.thinking,
-        onPayload: (payload) => {
-          captured = cloneJsonObject(payload);
-          throw stop;
+      const stream = (serializer ?? openAICodexResponsesApi().streamSimple)(
+        input.model,
+        input.context,
+        {
+          apiKey: input.auth.apiKey,
+          headers: input.auth.headers,
+          sessionId: input.sessionId,
+          signal: input.signal,
+          transport: "sse",
+          reasoning: input.thinking,
+          onPayload: (payload) => {
+            captured = cloneJsonObject(payload);
+            throw stop;
+          },
         },
-      });
+      );
       // The serializer turns the deliberate stop into its terminal stream event.
       // Consume it so no rejected/final stream promise remains unobserved.
       for await (const _event of stream) {
@@ -675,11 +672,22 @@ async function parseCompactionSse(
   if (!completed || completed.status !== "completed") {
     throw new CodexAdapterError("protocol", "Codex operation did not complete");
   }
-  const compactions = outputItems.filter(isCompactionArtifact);
+  const compactions: Array<
+    JsonObject & { type: "compaction"; encrypted_content: string }
+  > = [];
+  for (const item of outputItems) {
+    if (!isObject(item) || item.type !== "compaction") {
+      continue;
+    }
+    if (!isCompactionArtifact(item)) {
+      throw new CodexAdapterError("validation", "invalid compaction artifact");
+    }
+    compactions.push(item);
+  }
   if (compactions.length !== 1) {
     throw new CodexAdapterError("validation", "invalid compaction artifact");
   }
-  const artifact = [compactions[0], ...continuationItems(canonicalInput)];
+  const artifact = [...continuationItems(canonicalInput), compactions[0]];
   if (
     !isValidArtifact(artifact) ||
     Buffer.byteLength(canonicalJson(artifact)) > MAX_ARTIFACT_BYTES
@@ -729,12 +737,9 @@ function abortError(
 }
 
 function continuationItems(input: Json[]): Json[] {
-  for (let index = input.length - 1; index >= 0; index--) {
-    if (isContinuationItem(input[index])) {
-      return [input[index]];
-    }
-  }
-  return [];
+  // The opaque state needs recent real user turns in their original order, not
+  // a synthetic request suffix or any provider output.
+  return input.filter(isContinuationItem).slice(-(MAX_ARTIFACT_ITEMS - 1));
 }
 
 function normalizeUsage(
@@ -827,10 +832,9 @@ function isValidArtifact(artifact: Json[]): boolean {
   return (
     artifact.length >= 1 &&
     artifact.length <= MAX_ARTIFACT_ITEMS &&
-    artifact.filter(isCompactionArtifact).length === 1 &&
-    artifact.every(
-      (item) => isCompactionArtifact(item) || isContinuationItem(item),
-    )
+    artifact.at(-1) !== undefined &&
+    isCompactionArtifact(artifact.at(-1)!) &&
+    artifact.slice(0, -1).every(isContinuationItem)
   );
 }
 

@@ -1,4 +1,3 @@
-import { streamSimple } from "@earendil-works/pi-ai/api/openai-codex-responses";
 import type { Context, Model, Usage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -153,6 +152,24 @@ describe("Codex OAuth adapter", () => {
       createCodexIdentity({ ...model, provider: "openai" }, auth, true),
     ).toBeUndefined();
     expect(createCodexIdentity(model, auth, false)).toBeUndefined();
+    expect(
+      createCodexIdentity(
+        { ...model, baseUrl: "https://invalid.example" },
+        { ...auth, baseUrl: "https://chatgpt.com/backend-api" },
+        true,
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        endpoint: "https://chatgpt.com/backend-api/codex/responses",
+      }),
+    );
+    expect(
+      createCodexIdentity(
+        { ...model, baseUrl: "https://chatgpt.com/backend-api" },
+        { ...auth, baseUrl: "https://invalid.example" },
+        true,
+      ),
+    ).toBeUndefined();
   });
 
   it("captures a reasoning and tool-signature payload without dispatching and rejects serializer failure", async () => {
@@ -194,7 +211,6 @@ describe("Codex OAuth adapter", () => {
       auth,
       thinking: "high",
       sessionId: "session",
-      serializer: streamSimple,
     });
     expect(fetch).not.toHaveBeenCalled();
     expect(payload).toEqual(
@@ -216,7 +232,7 @@ describe("Codex OAuth adapter", () => {
     ).rejects.toThrow("serializer failed");
   });
 
-  it("parses output-item SSE, retains only the latest user continuation, normalizes usage, and sends Codex headers", async () => {
+  it("persists bounded user continuation in original order before the opaque item, normalizes usage, and sends Codex headers", async () => {
     let request: RequestInit | undefined;
     const fetch = vi.fn((...args: Parameters<typeof globalThis.fetch>) => {
       request = args[1];
@@ -236,13 +252,16 @@ describe("Codex OAuth adapter", () => {
           { type: "reasoning", encrypted_content: "do-not-persist" },
           { type: "function_call", name: "inspect", arguments: "{}" },
           { type: "message", role: "user", content: "continue" },
+          { type: "message", role: "user", content: "finish" },
         ],
       },
       replacedItems: [old],
     });
     expect(result.details.checkpoint.artifact).toEqual([
-      { type: "compaction", encrypted_content: "opaque-fixture" },
+      old,
       { type: "message", role: "user", content: "continue" },
+      { type: "message", role: "user", content: "finish" },
+      { type: "compaction", encrypted_content: "opaque-fixture" },
     ]);
     expect(JSON.stringify(result.details)).not.toContain("do-not-persist");
     expect(JSON.stringify(result.details)).not.toContain(providerSecret);
@@ -286,6 +305,17 @@ describe("Codex OAuth adapter", () => {
         {
           type: "response.output_item.done",
           item: { type: "compaction", encrypted_content: "two" },
+        },
+        { type: "response.completed", response: { status: "completed" } },
+      ),
+      sse(
+        {
+          type: "response.output_item.done",
+          item: { type: "compaction", encrypted_content: "one" },
+        },
+        {
+          type: "response.output_item.done",
+          item: { type: "compaction", encrypted_content: "" },
         },
         { type: "response.completed", response: { status: "completed" } },
       ),
@@ -437,11 +467,35 @@ describe("Codex OAuth adapter", () => {
 
   it("fails closed after JSON persistence, identity changes, bounds tampering, and ambiguous replay", () => {
     const result = checkpoint([
-      { type: "compaction", encrypted_content: "opaque-fixture" },
       { type: "message", role: "user", content: "continue" },
+      { type: "compaction", encrypted_content: "opaque-fixture" },
     ]);
     const persisted = JSON.parse(JSON.stringify(result.details));
     expect(validateNativeCompactionDetails(persisted)).toEqual(persisted);
+    const invalidArtifacts: Parameters<
+      typeof createNativeCheckpoint
+    >[0]["artifact"][] = [
+      [
+        { type: "compaction", encrypted_content: "opaque-fixture" },
+        { type: "message", role: "user", content: "continue" },
+      ],
+      [
+        { type: "message", role: "user", content: "continue" },
+        { type: "compaction", encrypted_content: "opaque-fixture" },
+        { type: "message", role: "user", content: "later" },
+      ],
+    ];
+    for (const artifact of invalidArtifacts) {
+      expect(
+        createNativeCheckpoint({
+          identity: identity(),
+          artifact,
+          replacedItems: [old],
+          lineage: { firstKeptEntryId: "first", leafId: "leaf" },
+          usage,
+        }),
+      ).toBeUndefined();
+    }
     expect(JSON.stringify(persisted)).not.toContain(token);
     expect(JSON.stringify(persisted)).not.toContain(account);
 
