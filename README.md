@@ -89,7 +89,7 @@ Implement coordinates trusted workers in disposable Git worktrees, publishes thr
 | `/processes`          | Inspect and stop current-session managed processes                        |
 | `/agents`             | Inspect activity/results, guide, or stop public agents                    |
 | `/implement …`        | Start, inspect, stop, restart, or clean Implement runs                    |
-| `/papercuts`          | Browse and close recorded Papercut findings                               |
+| `/papercuts`          | Browse, close, and clean up recorded Papercut findings                    |
 | `/btw <question>`     | Ask an ephemeral side question; press `s` to promote a completed exchange |
 
 ### Keyboard shortcut

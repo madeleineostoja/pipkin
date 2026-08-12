@@ -99,12 +99,37 @@ async function browseStatus(
       await (await controller.storeFor(ctx)).load(),
       status,
     );
+    const deleteClosed = "Delete all closed findings";
     const selected = await ctx.ui.select(
       `${status === "open" ? "Open" : "Closed"} papercuts`,
-      [...records.map((record) => `${record.key} — ${record.title}`), "Back"],
+      [
+        ...records.map((record) => `${record.key} — ${record.title}`),
+        ...(status === "closed" && records.length ? [deleteClosed] : []),
+        "Back",
+      ],
     );
     if (!selected || selected === "Back") {
       return;
+    }
+    if (selected === deleteClosed) {
+      const confirmed = await ctx.ui.confirm(
+        "Delete all closed findings?",
+        `Permanently delete ${records.length} closed finding${records.length === 1 ? "" : "s"} and their occurrence history?`,
+      );
+      if (!confirmed) {
+        continue;
+      }
+      try {
+        const deleted = await (await controller.storeFor(ctx)).deleteClosed();
+        ctx.ui.notify(
+          `Deleted ${deleted} closed finding${deleted === 1 ? "" : "s"}.`,
+          "info",
+        );
+        return;
+      } catch {
+        ctx.ui.notify("Papercut cleanup failed.", "error");
+        continue;
+      }
     }
     const record = records.find((candidate) =>
       selected.startsWith(`${candidate.key} — `),

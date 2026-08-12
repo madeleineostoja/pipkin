@@ -479,6 +479,17 @@ export function createPapercutStore(root: string) {
         };
       });
     },
+    async deleteClosed(): Promise<number> {
+      return mutate((file) => {
+        const records = file.records.filter(
+          (record) => record.status !== "closed",
+        );
+        return {
+          file: { version: VERSION, records },
+          result: file.records.length - records.length,
+        };
+      });
+    },
   };
 }
 

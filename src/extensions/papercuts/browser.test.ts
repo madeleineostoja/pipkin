@@ -76,6 +76,7 @@ function browserHarness(selections: string[]) {
   });
   const ui = {
     select: vi.fn(async () => selections.shift()),
+    confirm: vi.fn(async () => true),
     custom,
     notify: vi.fn(),
     setStatus: vi.fn(),
@@ -190,6 +191,69 @@ describe("papercuts browser", () => {
       "pipkin:status:0300:papercuts",
       undefined,
     );
+  });
+
+  it("deletes all closed findings after confirmation", async () => {
+    const root = repo();
+    const status = createPapercutStatusController();
+    const ctx = {
+      cwd: root,
+      mode: "tui",
+      hasUI: true,
+      ui: undefined as never,
+    };
+    const store = await status.storeFor(ctx as never);
+    await store.record(observation);
+    await store.close("finding");
+    await store.record({ ...observation, key: "open-finding" });
+    const harness = browserHarness([
+      "Closed (1)",
+      "Delete all closed findings",
+      "Back",
+    ]);
+    ctx.ui = harness.ui as never;
+    registerPapercutsBrowser(harness.pi as never, status);
+    await harness.command().handler("", ctx as never);
+
+    expect(harness.ui.confirm).toHaveBeenCalledWith(
+      "Delete all closed findings?",
+      "Permanently delete 1 closed finding and their occurrence history?",
+    );
+    expect(harness.ui.notify).toHaveBeenCalledWith(
+      "Deleted 1 closed finding.",
+      "info",
+    );
+    expect((await store.load()).records).toMatchObject([
+      { key: "open-finding", status: "open" },
+    ]);
+  });
+
+  it("keeps closed findings when bulk deletion is cancelled", async () => {
+    const root = repo();
+    const status = createPapercutStatusController();
+    const ctx = {
+      cwd: root,
+      mode: "tui",
+      hasUI: true,
+      ui: undefined as never,
+    };
+    const store = await status.storeFor(ctx as never);
+    await store.record(observation);
+    await store.close("finding");
+    const harness = browserHarness([
+      "Closed (1)",
+      "Delete all closed findings",
+      "Back",
+      "Back",
+    ]);
+    harness.ui.confirm.mockResolvedValueOnce(false);
+    ctx.ui = harness.ui as never;
+    registerPapercutsBrowser(harness.pi as never, status);
+    await harness.command().handler("", ctx as never);
+
+    expect((await store.load()).records).toMatchObject([
+      { key: "finding", status: "closed" },
+    ]);
   });
 
   it("shows closed detail with Back as its only action", async () => {

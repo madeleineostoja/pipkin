@@ -209,6 +209,19 @@ describe("papercut incident store", () => {
     expect((await store.load()).records[0]).not.toHaveProperty("sources");
   });
 
+  it("deletes closed findings while retaining open findings", async () => {
+    const store = createPapercutStore(repo());
+    await store.record(observation());
+    await store.record(observation({ key: "still-open", title: "Still open" }));
+    await store.close("validation-convention");
+
+    await expect(store.deleteClosed()).resolves.toBe(1);
+    await expect(store.deleteClosed()).resolves.toBe(0);
+    expect((await store.load()).records).toMatchObject([
+      { key: "still-open", status: "open" },
+    ]);
+  });
+
   it("replaces the latest open observation and clears omitted optionals", async () => {
     const store = createPapercutStore(repo());
     const first = await store.record(

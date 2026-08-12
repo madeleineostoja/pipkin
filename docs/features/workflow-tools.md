@@ -64,7 +64,7 @@ Qualifying friction may include a flaky documented test handled with a narrower 
 
 Do not record the task or review subject itself, unmet criteria, unresolved correctness or safety problems, inferred architecture, unused suggestions, expected guided steps, adequately documented procedures, one-off agent mistakes, or transient provider failures.
 
-Records merge by stable key and retain occurrence count. A collapsed confirmation names the recorded key and outcome; expanding it preserves the complete model-facing confirmation. `/papercuts` shows open and closed findings; closing is reversible when a later recurrence reopens the key. Findings are candidates for repository guidance or small fixes, never automatic work.
+Records merge by stable key and retain occurrence count. A collapsed confirmation names the recorded key and outcome; expanding it preserves the complete model-facing confirmation. `/papercuts` shows open and closed findings; closing is reversible when a later recurrence reopens the key. Its closed-findings view can permanently delete all closed records and their occurrence history after confirmation; open findings are preserved. Findings are candidates for repository guidance or small fixes, never automatic work.
 
 A repository and linked worktrees share one leased registry in the canonical primary worktree:
 
