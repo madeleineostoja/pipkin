@@ -24,7 +24,7 @@ export type SandboxPolicy = Readonly<{
   workspaceRoot: string;
   git?: SandboxGit;
   temporaryRoots: readonly string[];
-  /** Reviewed tool cache, state, and store paths treated as disposable runtime state. */
+  /** Standard disposable cache roots available to managed Bash and processes. */
   runtimeRoots: readonly string[];
   /** Package dependency trees treated as disposable Bash runtime state. */
   dependencyRoots: readonly string[];
@@ -219,18 +219,6 @@ type RootCandidate = Readonly<{
   creationRoots: readonly string[];
 }>;
 
-type ReviewedRoot = Readonly<{
-  value: string;
-  expandsTilde?: boolean;
-  allowedProtectedRoot?: string;
-}>;
-
-function firstNonEmpty(
-  ...values: readonly (string | undefined)[]
-): string | undefined {
-  return values.find((value) => value !== undefined && value !== "");
-}
-
 function npmEnvironmentValue(
   env: NodeJS.ProcessEnv,
   name: string,
@@ -252,158 +240,39 @@ function effectivePath(value: string, cwd: string, home?: string): string {
       : resolve(cwd, value);
 }
 
-function rootCandidate(value: string): RootCandidate | undefined {
+function xdgBaseDirectory(value: string | undefined, fallback: string): string {
+  return value && isAbsolute(value) ? value : fallback;
+}
+
+function cacheRootCandidate(value: string): RootCandidate | undefined {
   if (!isAbsolute(value)) {
     return undefined;
   }
-  try {
+  const normalized = resolve(value);
+  const root = parse(normalized).root;
+  let cursor = root;
+  for (const component of normalized
+    .slice(root.length)
+    .split(sep)
+    .filter(Boolean)) {
+    cursor = join(cursor, component);
     try {
-      if (!statSync(value).isDirectory()) {
+      const stat = lstatSync(cursor);
+      if (stat.isSymbolicLink() || !stat.isDirectory()) {
         return undefined;
       }
-    } catch {}
-    return canonicalRoot(value);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        return undefined;
+      }
+      break;
+    }
+  }
+  try {
+    return canonicalRoot(normalized);
   } catch {
     return undefined;
   }
-}
-
-function toolRuntimeRootCandidates(
-  options: Readonly<{
-    env: NodeJS.ProcessEnv;
-    home: string;
-    sessionCwd: string;
-  }>,
-): readonly RootCandidate[] {
-  const { env, home, sessionCwd } = options;
-  const xdgCache = firstNonEmpty(env.XDG_CACHE_HOME);
-  const xdgConfig = firstNonEmpty(env.XDG_CONFIG_HOME);
-  const xdgData = firstNonEmpty(env.XDG_DATA_HOME);
-  const xdgState = firstNonEmpty(env.XDG_STATE_HOME);
-  const pnpmHome =
-    firstNonEmpty(env.PNPM_HOME) ??
-    (xdgData ? join(xdgData, "pnpm") : join(home, "Library", "pnpm"));
-  const protectedToolRoots = [
-    "/nix",
-    "/opt/homebrew",
-    "/usr/local/Homebrew",
-    firstNonEmpty(env.GH_CONFIG_DIR) ??
-      (xdgConfig ? join(xdgConfig, "gh") : join(home, ".config", "gh")),
-    xdgData ? join(xdgData, "gh") : join(home, ".local", "share", "gh"),
-    env.NIX_CONFIG_HOME !== undefined
-      ? env.NIX_CONFIG_HOME
-      : xdgConfig
-        ? join(xdgConfig, "nix")
-        : join(home, ".config", "nix"),
-    env.NIX_STATE_HOME !== undefined
-      ? env.NIX_STATE_HOME
-      : xdgState
-        ? join(xdgState, "nix")
-        : join(home, ".local", "state", "nix"),
-    xdgConfig
-      ? join(xdgConfig, "pnpm")
-      : join(home, "Library", "Preferences", "pnpm"),
-  ]
-    .filter((value) => value !== "")
-    .map((value) => rootCandidate(effectivePath(value, sessionCwd)))
-    .filter((root): root is RootCandidate => root !== undefined);
-  const miseData =
-    firstNonEmpty(env.MISE_DATA_DIR) ??
-    (xdgData ? join(xdgData, "mise") : join(home, ".local", "share", "mise"));
-  const expandedProtectedToolRoots = [
-    pnpmHome,
-    miseData,
-    firstNonEmpty(env.MISE_INSTALLS_DIR) ?? join(miseData, "installs"),
-    firstNonEmpty(env.MISE_PLUGINS_DIR) ?? join(miseData, "plugins"),
-    firstNonEmpty(env.MISE_CONFIG_DIR) ??
-      (xdgConfig ? join(xdgConfig, "mise") : join(home, ".config", "mise")),
-  ]
-    .map((value) => rootCandidate(effectivePath(value, sessionCwd, home)))
-    .filter((root): root is RootCandidate => root !== undefined);
-  protectedToolRoots.push(...expandedProtectedToolRoots);
-  const doesNotOverlapProtectedToolRoot = (
-    candidate: RootCandidate,
-    allowedProtectedRoot: string | undefined,
-  ): boolean => {
-    const allowed = allowedProtectedRoot
-      ? rootCandidate(effectivePath(allowedProtectedRoot, sessionCwd, home))
-          ?.path
-      : undefined;
-    return !protectedToolRoots.some((protectedRoot) => {
-      const reviewedChild =
-        protectedRoot.path === allowed &&
-        candidate.path !== protectedRoot.path &&
-        isUnder(candidate.path, protectedRoot.path);
-      return (
-        !reviewedChild &&
-        (isUnder(candidate.path, protectedRoot.path) ||
-          isUnder(protectedRoot.path, candidate.path))
-      );
-    });
-  };
-  const nixCache =
-    env.NIX_CACHE_HOME !== undefined
-      ? env.NIX_CACHE_HOME
-      : xdgCache
-        ? join(xdgCache, "nix")
-        : join(home, ".cache", "nix");
-  const pnpmStore =
-    npmEnvironmentValue(env, "store_dir") ?? join(pnpmHome, "store");
-  const reviewedRoots: readonly ReviewedRoot[] = [
-    {
-      value: npmEnvironmentValue(env, "cache") ?? join(home, ".npm"),
-      expandsTilde: true,
-    },
-    {
-      value: pnpmStore,
-      expandsTilde: true,
-      allowedProtectedRoot: pnpmHome,
-    },
-    {
-      value:
-        npmEnvironmentValue(env, "cache_dir") ??
-        (xdgCache
-          ? join(xdgCache, "pnpm")
-          : join(home, "Library", "Caches", "pnpm")),
-      expandsTilde: true,
-    },
-    {
-      value:
-        npmEnvironmentValue(env, "state_dir") ??
-        (xdgState
-          ? join(xdgState, "pnpm")
-          : join(home, ".local", "state", "pnpm")),
-      expandsTilde: true,
-    },
-    {
-      value: xdgCache ? join(xdgCache, "gh") : join(home, ".cache", "gh"),
-    },
-    {
-      value: xdgState
-        ? join(xdgState, "gh")
-        : join(home, ".local", "state", "gh"),
-    },
-    ...(nixCache === "" ? [] : [{ value: nixCache }]),
-    {
-      value:
-        firstNonEmpty(env.MISE_CACHE_DIR) ??
-        join(home, "Library", "Caches", "mise"),
-      expandsTilde: true,
-    },
-  ];
-  return reviewedRoots.flatMap((reviewed) => {
-    const candidate = rootCandidate(
-      effectivePath(
-        reviewed.value,
-        sessionCwd,
-        reviewed.expandsTilde ? home : undefined,
-      ),
-    );
-    return candidate &&
-      doesNotOverlapProtectedToolRoot(candidate, reviewed.allowedProtectedRoot)
-      ? [candidate]
-      : [];
-  });
 }
 
 function ancestorPackageWorkspace(workspaceRoot: string): string | undefined {
@@ -752,7 +621,10 @@ function globalCandidateIsSafe(
     .map(protectedDirectory)
     .filter((value): value is string => value !== undefined);
   const xdgConfig = protectedDirectory(
-    options.env.XDG_CONFIG_HOME || join(options.home, ".config"),
+    xdgBaseDirectory(
+      options.env.XDG_CONFIG_HOME,
+      join(options.home, ".config"),
+    ),
   );
   const directional = [
     ...options.temporaryRoots,
@@ -781,6 +653,35 @@ function globalCandidateIsSafe(
   return !directional.some(
     (root) => candidate === root || isUnder(root, candidate),
   );
+}
+
+function standardRuntimeRootCandidates(
+  options: Readonly<{
+    env: NodeJS.ProcessEnv;
+    home: string;
+    sessionCwd: string;
+    workspaceRoot: string;
+    git?: SandboxGit;
+    temporaryRoots: readonly string[];
+    configurationRoots: readonly string[];
+  }>,
+): readonly RootCandidate[] {
+  const { env, home, sessionCwd } = options;
+  const values = [
+    effectivePath(
+      npmEnvironmentValue(env, "cache") ?? join(home, ".npm"),
+      sessionCwd,
+      home,
+    ),
+    xdgBaseDirectory(env.XDG_CACHE_HOME, join(home, ".cache")),
+    ...(process.platform === "darwin" ? [join(home, "Library", "Caches")] : []),
+  ];
+  return values.flatMap((value) => {
+    const candidate = cacheRootCandidate(value);
+    return candidate && globalCandidateIsSafe(candidate.path, options)
+      ? [candidate]
+      : [];
+  });
 }
 
 async function configuredRoots(
@@ -942,10 +843,14 @@ export async function resolveSandboxPolicy(
       .map((path) => path && protectedDirectory(dirname(dirname(path))))
       .filter((path): path is string => path !== undefined),
   );
-  const runtimeCandidates = toolRuntimeRootCandidates({
+  const runtimeCandidates = standardRuntimeRootCandidates({
     env,
     home,
     sessionCwd,
+    workspaceRoot,
+    ...(git ? { git } : {}),
+    temporaryRoots,
+    configurationRoots,
   });
   const runtimeRoots = normalizeRoots(
     runtimeCandidates.map((root) => root.path),

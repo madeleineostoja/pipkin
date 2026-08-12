@@ -27,7 +27,14 @@ Configuration is snapshotted when each consuming extension is constructed. Run P
 
 ## Sandbox writable roots
 
-Sandbox also reads `sandbox.writable` from the global file and from `<canonical-workspace>/<CONFIG_DIR_NAME>/pipkin/config.json` (currently `<checkout>/.pi/pipkin/config.json`). Project configuration accepts only this Sandbox setting; global-only and unknown keys are reported and ignored.
+Sandbox reads `sandbox.writable` from both configuration scopes:
+
+| Scope   | Path                                                                                                         | Allowed fields                                   |
+| ------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------ |
+| Global  | `<getAgentDir()>/pipkin/config.json` (normally `~/.pi/agent/pipkin/config.json`)                             | `nickname`, `models`, `implement`, and `sandbox` |
+| Project | `<canonical-workspace>/<CONFIG_DIR_NAME>/pipkin/config.json` (currently `<checkout>/.pi/pipkin/config.json`) | `sandbox` only                                   |
+
+Project configuration is anchored to the resolved workspace; Pipkin does not search ancestors. Put personal persistent roots in the global file, not in a project file or `.pi/settings.json`.
 
 ```json
 {
@@ -41,9 +48,13 @@ Sandbox also reads `sandbox.writable` from the global file and from `<canonical-
 }
 ```
 
-Entries are exact paths or may contain one complete `*` segment before a literal final directory, such as `apps/*/.svelte-kit`. Project entries are relative to the canonical workspace; global entries are absolute or begin with `~/`. The final directory may not exist, but every parent must be a real existing directory. Traversal, symlinks, broad/partial glob syntax, and unsafe or Git-tracked project targets are rejected. The configuration files are bounded to 64 KiB, each scope to 64 entries of 1,024 characters, and the combined resolved policy to 256 roots. Invalid entries do not discard valid sibling entries or the other scope.
+These are external user-configuration migration examples: Pipkin neither creates nor changes those paths. They authorize only the selected children, not `~/.local/state`, its siblings, executables, credentials, Git, or Pipkin configuration.
 
-Configured project roots must be ignored and untracked, and remain narrow exceptions to repository-read-only mode. Git and Pi/Pipkin configuration always remain read-only. Global roots cannot overlap the workspace, configuration, Git administration, home/root, temporary roots, or executable/configuration authorities; a deliberately selected narrow child such as `~/Library/pnpm/store` is allowed when safe. `/sandbox` reports the configured-root count and bounded configuration problems without listing every path.
+An entry is an exact path or has one complete `*` segment before a non-empty literal final directory (`apps/*/.svelte-kit`). Global entries are absolute after an optional leading `~/`; project entries are workspace-relative. `**`, partial wildcards, `?`, classes, braces, extglobs, negation, empty, `.` or `..` segments, controls, and absolute project paths are invalid. Every parent must already be a real directory without symlinks; the final literal directory may be absent. Wildcards expand only existing immediate children and never create authority by themselves.
+
+Files are limited to 64 KiB; each scope permits 64 entries of at most 1,024 characters, and both scopes resolve at most 256 concrete roots. Present malformed files, wrong-scope fields, invalid entries, and failed validation produce bounded, scope-labeled `/sandbox` diagnostics while valid sibling fields and entries still apply. Missing project files are silent. Configuration is snapshotted at session construction: run Pi's `/reload` after a change; Pipkin does not watch files mid-session.
+
+Configured project roots must be ignored and untracked, and remain narrow repository-read-only exceptions. Git and Pi/Pipkin configuration always remain read-only. Global roots cannot overlap the workspace, configuration, Git administration, home/root, temporary roots, direct `PATH` directories, effective XDG configuration, or macOS preferences; a deliberately selected narrow child such as `~/Library/pnpm/store` is allowed when safe. `/sandbox` reports the configured-root count and bounded configuration problems without listing every path.
 
 ## Model presets
 
