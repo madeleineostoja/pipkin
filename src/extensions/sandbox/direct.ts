@@ -92,14 +92,31 @@ export function decideDirectWrite(
   }
   try {
     const target = effectiveTarget(rawPath, policy.sessionCwd);
-    if (writeMode === "repository-read-only") {
-      const protectedRoots = [
-        policy.workspaceRoot,
-        ...(policy.git
-          ? [policy.git.worktreeGitDir, policy.git.commonGitDir]
-          : []),
-      ];
-      if (protectedRoots.some((root) => pathIsWithin(target, root))) {
+    const configurationRoots = policy.configurationRoots ?? [];
+    const gitRoots = policy.git
+      ? [policy.git.worktreeGitDir, policy.git.commonGitDir]
+      : [];
+    if (
+      [
+        ...configurationRoots,
+        ...(writeMode === "repository-read-only" ? gitRoots : []),
+      ].some((root) => pathIsWithin(target, root))
+    ) {
+      return {
+        kind: "deny",
+        reason:
+          writeMode === "repository-read-only"
+            ? "Sandbox: Git and Pipkin configuration cannot be modified."
+            : "Sandbox: Pipkin configuration cannot be modified.",
+        target,
+      };
+    }
+    const configuredRoots = policy.configuredWritableRoots ?? [];
+    if (
+      writeMode === "repository-read-only" &&
+      pathIsWithin(target, policy.workspaceRoot)
+    ) {
+      if (!configuredRoots.some((root) => pathIsWithin(target, root))) {
         return {
           kind: "deny",
           reason:
@@ -108,7 +125,11 @@ export function decideDirectWrite(
         };
       }
     }
-    const directRoots = [policy.workspaceRoot, ...policy.temporaryRoots];
+    const directRoots = [
+      policy.workspaceRoot,
+      ...policy.temporaryRoots,
+      ...configuredRoots,
+    ];
     return directRoots.some((root) => pathIsWithin(target, root))
       ? { kind: "allow", target }
       : {

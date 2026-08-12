@@ -51,12 +51,28 @@ function effectivePolicyFields(
   if (!policy) {
     return [];
   }
+  const configurationIssues = (policy.configuredIssues ?? []).map(
+    (issue, index): [string, string] => [
+      `Configuration issue ${index + 1}`,
+      `${issue.scope ?? "global"} ${issue.path}: ${issue.message}`,
+    ],
+  );
   return [
+    [
+      "Configured writable roots",
+      String(policy.configuredWritableRoots?.length ?? 0),
+    ],
+    ["Configuration issues", String(configurationIssues.length)],
+    ...configurationIssues,
     [
       "Direct write/edit scope",
       repositoryReadOnly
-        ? `${policy.temporaryRoots.join(", ") || "none"} (repository mutation denied)`
-        : [policy.workspaceRoot, ...policy.temporaryRoots].join(", "),
+        ? `${[...policy.temporaryRoots, ...(policy.configuredWritableRoots ?? [])].join(", ") || "none"} (${(policy.configuredWritableRoots?.length ?? 0) > 0 ? "repository mutation denied except configured roots" : "repository mutation denied"})`
+        : [
+            policy.workspaceRoot,
+            ...policy.temporaryRoots,
+            ...(policy.configuredWritableRoots ?? []),
+          ].join(", "),
     ],
     [
       "Bash writable roots",

@@ -176,6 +176,7 @@ function protectedRoots(policy: SandboxPolicy): readonly string[] {
       ...(policy.git
         ? [policy.git.worktreeGitDir, policy.git.commonGitDir]
         : []),
+      ...(policy.configurationRoots ?? []),
     ].filter(
       (root, index, roots) =>
         roots.findIndex((candidate) => candidate === root) === index,
@@ -194,13 +195,15 @@ export function writableProjection(
     ...policy.temporaryRoots,
     ...policy.runtimeRoots,
     ...policy.dependencyRoots,
+    ...(policy.configuredWritableRoots ?? []),
   ].filter(
     (root, index, roots) =>
       roots.findIndex((candidate) => candidate === root) === index &&
       (!protectedRoots(policy).some((protectedRoot) =>
         pathIsWithin(root, protectedRoot),
       ) ||
-        policy.dependencyRoots.includes(root)),
+        policy.dependencyRoots.includes(root) ||
+        (policy.configuredWritableRoots ?? []).includes(root)),
   );
 }
 
@@ -225,6 +228,22 @@ function protectedParameters(roots: readonly string[]): string[] {
   return roots.map((root, index) => `protected${index}=${root}`);
 }
 
+function lockedRoots(
+  policy: SandboxPolicy,
+  writeMode: SandboxWriteMode,
+): readonly string[] {
+  return [
+    ...(writeMode === "repository-read-only" && policy.git
+      ? [policy.git.worktreeGitDir, policy.git.commonGitDir]
+      : []),
+    ...(policy.configurationRoots ?? []),
+  ].filter((root, index, roots) => roots.indexOf(root) === index);
+}
+
+function lockedParameters(roots: readonly string[]): string[] {
+  return roots.map((root, index) => `locked${index}=${root}`);
+}
+
 function exceptionParameters(roots: readonly string[]): string[] {
   return roots.map((root, index) => `exception${index}=${root}`);
 }
@@ -233,12 +252,21 @@ function repositoryExceptions(
   policy: SandboxPolicy,
   repositoryRoots: readonly string[],
 ): readonly string[] {
-  return policy.dependencyRoots.filter((dependencyRoot) =>
-    repositoryRoots.some(
-      (repositoryRoot) =>
-        dependencyRoot !== repositoryRoot &&
-        pathIsWithin(dependencyRoot, repositoryRoot),
-    ),
+  const locked = [
+    ...(policy.git ? [policy.git.worktreeGitDir, policy.git.commonGitDir] : []),
+    ...(policy.configurationRoots ?? []),
+  ];
+  return [
+    ...policy.dependencyRoots,
+    ...(policy.configuredWritableRoots ?? []),
+  ].filter(
+    (root, index, roots) =>
+      roots.indexOf(root) === index &&
+      !locked.some((lockedRoot) => pathIsWithin(root, lockedRoot)) &&
+      repositoryRoots.some(
+        (repositoryRoot) =>
+          root !== repositoryRoot && pathIsWithin(root, repositoryRoot),
+      ),
   );
 }
 
@@ -280,6 +308,7 @@ export function sandboxProfile(
   const writableRoots = writableProjection(policy, writeMode);
   const creationRoots = creationProjection(policy, writeMode, writableRoots);
   const repositoryRoots = protectedRoots(policy);
+  const locked = lockedRoots(policy, writeMode);
   const exceptions = repositoryExceptions(policy, repositoryRoots);
   assertPaths(writableRoots, true);
   assertPaths(repositoryRoots, true);
@@ -295,7 +324,13 @@ export function sandboxProfile(
     recursiveRules.length || creationRules.length
       ? `\n(allow file-write*\n${[...recursiveRules, ...creationRules].join("\n")})`
       : "";
-  const denies =
+  const lockedDenies = locked
+    .flatMap((_, index) => [
+      `(deny file-write* (with message "${marker ?? "PIPKIN_PROTECTED"}") (literal (param "locked${index}")))`,
+      `(deny file-write* (with message "${marker ?? "PIPKIN_PROTECTED"}") (subpath (param "locked${index}")))`,
+    ])
+    .join("\n");
+  const denies = `${lockedDenies}${
     writeMode === "repository-read-only"
       ? `\n${repositoryRoots
           .flatMap((repositoryRoot, index) => {
@@ -306,8 +341,9 @@ export function sandboxProfile(
             ];
           })
           .join("\n")}`
-      : "";
-  return `${SANDBOX_PROFILE.replace("(deny default)", markedDenyDefault(marker))}${allow}${denies}`;
+      : ""
+  }`;
+  return `${SANDBOX_PROFILE.replace("(deny default)", markedDenyDefault(marker))}${allow}${denies ? `\n${denies}` : ""}`;
 }
 
 export function sandboxArguments(
@@ -321,6 +357,7 @@ export function sandboxArguments(
   const writeMode = options.writeMode ?? "workspace-write";
   const writableRoots = writableProjection(options.policy, writeMode);
   const repositoryRoots = protectedRoots(options.policy);
+  const locked = lockedRoots(options.policy, writeMode);
   const exceptions = repositoryExceptions(options.policy, repositoryRoots);
   assertPaths(repositoryRoots, true);
   const creationRoots = creationProjection(
@@ -331,6 +368,7 @@ export function sandboxArguments(
   const definitions = [
     ...writableRoots.map((root, index) => `root${index}=${root}`),
     ...creationParameters(creationRoots),
+    ...lockedParameters(locked),
     ...(writeMode === "repository-read-only"
       ? [
           ...protectedParameters(repositoryRoots),

@@ -242,6 +242,32 @@ describe("Sandbox command", () => {
     fixture.panel.dispose();
   });
 
+  it("renders bounded scoped configuration issues without echoing patterns", () => {
+    const state = createSandboxSessionState();
+    state.reset({
+      ...policy,
+      configuredIssues: [
+        {
+          scope: "global",
+          path: "sandbox.writable.0",
+          message: "invalid path",
+        },
+        { scope: "project", path: "sandbox", message: "must be an object" },
+      ],
+    });
+    const detail = sandboxPanelDetail(
+      state,
+      true,
+      createSandboxDenialRecorder(),
+    );
+    expect(detail).toContain(
+      "Configuration issue 1: global sandbox.writable.0: invalid path",
+    );
+    expect(detail).toContain(
+      "Configuration issue 2: project sandbox: must be an object",
+    );
+  });
+
   it("keeps direct commands and bounded non-TUI diagnostics truthful", async () => {
     const fixture = commandFixture(true);
     await fixture.handler("", fixture.ctx);

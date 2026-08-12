@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { getConfigPath, parsePipkinConfig, presetIssue } from "./config.ts";
+import {
+  getConfigPath,
+  getProjectConfigPath,
+  MAX_CONFIG_BYTES,
+  SandboxConfigSchema,
+  parsePipkinConfig,
+  parseProjectPipkinConfig,
+  presetIssue,
+} from "./config.ts";
 
 const models = {
   utility: { model: "test/utility", thinking: "minimal" },
@@ -101,7 +109,48 @@ describe("Pipkin config", () => {
   it("reports malformed JSON and returns an immutable snapshot", () => {
     const snapshot = parsePipkinConfig("{ nope");
     expect(snapshot.issues[0]?.message).toContain("malformed JSON");
+    expect(snapshot.issues[0]?.scope).toBe("global");
     expect(Object.isFrozen(snapshot)).toBe(true);
     expect(Object.isFrozen(snapshot.config.models)).toBe(true);
+  });
+
+  it("models the strict optional Sandbox shape", () => {
+    expect(SandboxConfigSchema.safeParse({}).success).toBe(true);
+    expect(SandboxConfigSchema.safeParse({ writable: ["build"] }).success).toBe(
+      true,
+    );
+    expect(SandboxConfigSchema.safeParse({ extra: true }).success).toBe(false);
+  });
+
+  it("recovers valid writable entries while preserving sibling global settings", () => {
+    const snapshot = parsePipkinConfig(
+      JSON.stringify({
+        models,
+        implement: { workerConcurrency: 2 },
+        sandbox: { writable: ["~/safe", 1, "x".repeat(1025)] },
+      }),
+    );
+    expect(snapshot.config.sandbox?.writable).toEqual(["~/safe"]);
+    expect(snapshot.config.implement.workerConcurrency).toBe(2);
+    expect(snapshot.issues.map((issue) => issue.path)).toEqual(
+      expect.arrayContaining(["sandbox.writable.1", "sandbox.writable.2"]),
+    );
+  });
+
+  it("limits configuration input and rejects global-only project fields", () => {
+    expect(getProjectConfigPath("/checkout")).toBe(
+      "/checkout/.pi/pipkin/config.json",
+    );
+    const project = parseProjectPipkinConfig(
+      JSON.stringify({ nickname: "no", sandbox: { writable: ["build"] } }),
+    );
+    expect(project.config.sandbox.writable).toEqual(["build"]);
+    expect(project.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: "nickname", scope: "project" }),
+      ]),
+    );
+    const oversized = parsePipkinConfig(" ".repeat(MAX_CONFIG_BYTES + 1));
+    expect(oversized.issues[0]?.message).toContain("byte limit");
   });
 });

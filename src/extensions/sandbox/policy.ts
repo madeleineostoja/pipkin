@@ -1,11 +1,13 @@
 import { spawn } from "node:child_process";
-import { lstatSync, realpathSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
+import type { ConfigIssue } from "#lib/config";
 import {
   basename,
   dirname,
   isAbsolute,
   join,
+  parse,
   relative,
   resolve,
   sep,
@@ -26,6 +28,15 @@ export type SandboxPolicy = Readonly<{
   runtimeRoots: readonly string[];
   /** Package dependency trees treated as disposable Bash runtime state. */
   dependencyRoots: readonly string[];
+  /** Explicit user-configured roots, retained independently from runtime roots. */
+  configuredWritableRoots?: readonly string[];
+  configuredRootProvenance?: readonly Readonly<{
+    path: string;
+    scope: "global" | "project";
+  }>[];
+  configuredIssues?: readonly ConfigIssue[];
+  /** Pi/Pipkin configuration remains read-only even when repository writes are narrowed. */
+  configurationRoots?: readonly string[];
   writableRoots: readonly string[];
   creationRoots: readonly string[];
 }>;
@@ -520,6 +531,383 @@ async function dependencyInstallationRoots(
   ]);
 }
 
+const MAX_CONFIGURED_ROOTS = 256;
+
+type ConfiguredInput = Readonly<{
+  global?: readonly string[];
+  project?: readonly string[];
+  issues?: readonly ConfigIssue[];
+  globalConfigPath?: string;
+  projectConfigPath?: string;
+}>;
+
+type ConfiguredRoot = Readonly<{ path: string; scope: "global" | "project" }>;
+
+function pathOverlaps(left: string, right: string): boolean {
+  return isUnder(left, right) || isUnder(right, left);
+}
+
+function existingDirectoryWithoutLinks(path: string): string | undefined {
+  if (!isAbsolute(path)) {
+    return undefined;
+  }
+  const root = parse(path).root;
+  let cursor = root;
+  for (const component of path.slice(root.length).split(sep).filter(Boolean)) {
+    cursor = join(cursor, component);
+    try {
+      const stat = lstatSync(cursor);
+      if (stat.isSymbolicLink() || !stat.isDirectory()) {
+        return undefined;
+      }
+    } catch {
+      return undefined;
+    }
+  }
+  try {
+    return realpathSync(cursor);
+  } catch {
+    return undefined;
+  }
+}
+
+function configuredPattern(
+  pattern: string,
+  scope: "global" | "project",
+  home: string,
+):
+  | Readonly<{
+      base: string;
+      before: readonly string[];
+      wildcard: boolean;
+      leaf: string;
+    }>
+  | string {
+  if (
+    !pattern ||
+    pattern.includes("\0") ||
+    /\p{C}/u.test(pattern) ||
+    /[?[\]{}!()]/.test(pattern)
+  ) {
+    return "contains unsupported path syntax";
+  }
+  let base: string;
+  let parts: string[];
+  if (scope === "global") {
+    if (
+      pattern === "~" ||
+      (!pattern.startsWith("/") && !pattern.startsWith("~/"))
+    ) {
+      return "must be an absolute path or begin with ~/";
+    }
+    if (pattern.startsWith("~/")) {
+      base = home;
+      parts = pattern.slice(2).split("/");
+    } else {
+      base = parse(pattern).root;
+      parts = pattern.slice(base.length).split("/");
+    }
+  } else {
+    if (isAbsolute(pattern)) {
+      return "must be relative to the workspace";
+    }
+    base = "";
+    parts = pattern.split("/");
+  }
+  if (parts.some((part) => !part || part === "." || part === "..")) {
+    return "contains an empty or traversal segment";
+  }
+  const leaf = parts.at(-1)!;
+  if (leaf === "*" || leaf.includes("*")) {
+    return "final segment must be a non-empty literal";
+  }
+  const wildcardIndices = parts.flatMap((part, index) =>
+    part === "*" ? [index] : [],
+  );
+  if (
+    wildcardIndices.length > 1 ||
+    parts.some((part) => part.includes("*") && part !== "*")
+  ) {
+    return "supports at most one complete * segment";
+  }
+  if (wildcardIndices[0] === parts.length - 1) {
+    return "final segment must be a non-empty literal";
+  }
+  return {
+    base,
+    before: parts.slice(0, -1),
+    wildcard: wildcardIndices.length === 1,
+    leaf,
+  };
+}
+
+function expandedConfiguredCandidates(
+  pattern: string,
+  scope: "global" | "project",
+  workspaceRoot: string,
+  home: string,
+): Readonly<{
+  candidates: readonly string[];
+  reason?: string;
+  issues?: readonly string[];
+}> {
+  const parsed = configuredPattern(pattern, scope, home);
+  if (typeof parsed === "string") {
+    return { candidates: [], reason: parsed };
+  }
+  const base = scope === "global" ? parsed.base : workspaceRoot;
+  const wildcard = parsed.before.indexOf("*");
+  const fixed = wildcard < 0 ? parsed.before : parsed.before.slice(0, wildcard);
+  const parent =
+    fixed.length === 0
+      ? existingDirectoryWithoutLinks(base)
+      : existingDirectoryWithoutLinks(join(base, ...fixed));
+  if (!parent) {
+    return {
+      candidates: [],
+      reason: "parent directory does not exist or contains a symlink",
+    };
+  }
+  if (wildcard < 0) {
+    return { candidates: [join(parent, parsed.leaf)] };
+  }
+  let entries: string[];
+  try {
+    entries = readdirSync(parent);
+  } catch {
+    return { candidates: [], reason: "could not read wildcard parent" };
+  }
+  const suffix = parsed.before.slice(wildcard + 1);
+  const boundedEntries = entries.slice(0, MAX_CONFIGURED_ROOTS + 1);
+  const candidates: string[] = [];
+  const issues: string[] = [];
+  let suffixFailure = false;
+  for (const entry of boundedEntries) {
+    const child = existingDirectoryWithoutLinks(join(parent, entry));
+    if (!child) {
+      continue;
+    }
+    const suffixParent =
+      suffix.length === 0
+        ? child
+        : existingDirectoryWithoutLinks(join(child, ...suffix));
+    if (!suffixParent) {
+      suffixFailure = true;
+      continue;
+    }
+    candidates.push(join(suffixParent, parsed.leaf));
+  }
+  if (suffixFailure) {
+    issues.push("literal parent after * does not exist or contains a symlink");
+  }
+  if (entries.length > MAX_CONFIGURED_ROOTS) {
+    issues.push("wildcard discovery exceeds bounded entry limit");
+  }
+  return { candidates, ...(issues.length ? { issues } : {}) };
+}
+
+function canonicalConfiguredCandidate(candidate: string): string | undefined {
+  const parent = existingDirectoryWithoutLinks(dirname(candidate));
+  if (!parent) {
+    return undefined;
+  }
+  const leaf = basename(candidate);
+  try {
+    const stat = lstatSync(candidate);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      return undefined;
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      return undefined;
+    }
+  }
+  return join(parent, leaf);
+}
+
+function protectedDirectory(path: string | undefined): string | undefined {
+  if (!path || !isAbsolute(path)) {
+    return undefined;
+  }
+  try {
+    return canonicalRoot(path).path;
+  } catch {
+    return undefined;
+  }
+}
+
+function globalCandidateIsSafe(
+  candidate: string,
+  options: Readonly<{
+    home: string;
+    workspaceRoot: string;
+    git?: SandboxGit;
+    temporaryRoots: readonly string[];
+    configurationRoots: readonly string[];
+    env: NodeJS.ProcessEnv;
+  }>,
+): boolean {
+  const pathDirectories = (options.env.PATH ?? "")
+    .split(":")
+    .map(protectedDirectory)
+    .filter((value): value is string => value !== undefined);
+  const xdgConfig = protectedDirectory(
+    options.env.XDG_CONFIG_HOME || join(options.home, ".config"),
+  );
+  const directional = [
+    ...options.temporaryRoots,
+    ...pathDirectories,
+    ...(xdgConfig ? [xdgConfig] : []),
+    ...(process.platform === "darwin"
+      ? [join(options.home, "Library", "Preferences")]
+      : []),
+  ];
+  if (candidate === parse(candidate).root || isUnder(options.home, candidate)) {
+    return false;
+  }
+  if (pathOverlaps(candidate, options.workspaceRoot)) {
+    return false;
+  }
+  if (
+    [
+      ...(options.git
+        ? [options.git.worktreeGitDir, options.git.commonGitDir]
+        : []),
+      ...options.configurationRoots,
+    ].some((root) => pathOverlaps(candidate, root))
+  ) {
+    return false;
+  }
+  return !directional.some(
+    (root) => candidate === root || isUnder(root, candidate),
+  );
+}
+
+async function configuredRoots(
+  configured: ConfiguredInput | undefined,
+  context: Readonly<{
+    workspaceRoot: string;
+    git?: SandboxGit;
+    home: string;
+    temporaryRoots: readonly string[];
+    env: NodeJS.ProcessEnv;
+    gitRunner: GitRunner;
+    configurationRoots: readonly string[];
+  }>,
+): Promise<
+  Readonly<{ roots: readonly ConfiguredRoot[]; issues: readonly ConfigIssue[] }>
+> {
+  const roots: ConfiguredRoot[] = [];
+  let expansions = 0;
+  const issues: ConfigIssue[] = [...(configured?.issues ?? [])].slice(0, 32);
+  const issue = (
+    scope: "global" | "project",
+    index: number,
+    message: string,
+  ) => {
+    if (issues.length < 32) {
+      issues.push({ scope, path: `sandbox.writable.${index}`, message });
+    }
+  };
+  for (const scope of ["global", "project"] as const) {
+    for (const [index, pattern] of (configured?.[scope] ?? []).entries()) {
+      const expansion = expandedConfiguredCandidates(
+        pattern,
+        scope,
+        context.workspaceRoot,
+        context.home,
+      );
+      if (expansion.reason) {
+        issue(scope, index, expansion.reason);
+        continue;
+      }
+      for (const message of expansion.issues ?? []) {
+        issue(scope, index, message);
+      }
+      for (const rawCandidate of expansion.candidates) {
+        if (expansions >= MAX_CONFIGURED_ROOTS) {
+          issue(
+            scope,
+            index,
+            `exceeds ${MAX_CONFIGURED_ROOTS} concrete root limit`,
+          );
+          break;
+        }
+        expansions += 1;
+        const candidate = canonicalConfiguredCandidate(rawCandidate);
+        if (!candidate) {
+          issue(
+            scope,
+            index,
+            "target contains a symlink or is not a directory",
+          );
+          continue;
+        }
+        let safe = false;
+        if (scope === "global") {
+          safe = globalCandidateIsSafe(candidate, context);
+          if (!safe) {
+            issue(scope, index, "overlaps protected filesystem authority");
+          }
+        } else if (
+          !context.git ||
+          candidate === context.workspaceRoot ||
+          !isUnder(candidate, context.workspaceRoot) ||
+          context.configurationRoots.some((root) =>
+            pathOverlaps(candidate, root),
+          ) ||
+          [context.git.worktreeGitDir, context.git.commonGitDir].some((root) =>
+            pathOverlaps(candidate, root),
+          )
+        ) {
+          issue(
+            scope,
+            index,
+            "must be an ignored untracked directory strictly inside this Git workspace",
+          );
+        } else {
+          const relativeCandidate = relative(context.workspaceRoot, candidate);
+          try {
+            const ignored = await context.gitRunner(context.workspaceRoot, [
+              "check-ignore",
+              "-q",
+              "--no-index",
+              "--",
+              relativeCandidate,
+            ]);
+            const tracked = await context.gitRunner(context.workspaceRoot, [
+              "ls-files",
+              "-z",
+              "--",
+              relativeCandidate,
+            ]);
+            safe =
+              ignored.exitCode === 0 &&
+              tracked.exitCode === 0 &&
+              tracked.stdout.length === 0;
+          } catch {
+            safe = false;
+          }
+          if (!safe) {
+            issue(
+              scope,
+              index,
+              "must be ignored by Git and contain no tracked files",
+            );
+          }
+        }
+        if (safe && !roots.some((root) => root.path === candidate)) {
+          roots.push({ path: candidate, scope });
+        }
+      }
+    }
+  }
+  return Object.freeze({
+    roots: Object.freeze(roots.map((root) => Object.freeze({ ...root }))),
+    issues: Object.freeze(issues.map((issue) => Object.freeze({ ...issue }))),
+  });
+}
+
 export async function resolveSandboxPolicy(
   options: Readonly<{
     sessionCwd: string;
@@ -528,6 +916,8 @@ export async function resolveSandboxPolicy(
     temporaryDir?: string;
     standardTemporaryRoots?: readonly string[];
     gitRunner?: GitRunner;
+    configured?: ConfiguredInput;
+    configurationForWorkspace?: (workspaceRoot: string) => ConfiguredInput;
   }>,
 ): Promise<SandboxPolicy> {
   const sessionCwd = canonicalExisting(options.sessionCwd);
@@ -535,7 +925,7 @@ export async function resolveSandboxPolicy(
   const git = await resolveGit(sessionCwd, gitRunner);
   const workspaceRoot = git?.worktreeRoot ?? sessionCwd;
   const env = options.env ?? process.env;
-  const home = options.homeDir ?? homedir();
+  const home = canonicalExisting(options.homeDir ?? homedir());
   const temporaryRoots = normalizeRoots(
     [
       absoluteDirectory(env.TMPDIR),
@@ -544,6 +934,13 @@ export async function resolveSandboxPolicy(
         absoluteDirectory,
       ),
     ].filter((root): root is string => root !== undefined),
+  );
+  const configuredInput =
+    options.configured ?? options.configurationForWorkspace?.(workspaceRoot);
+  const configurationRoots = Object.freeze(
+    [configuredInput?.globalConfigPath, configuredInput?.projectConfigPath]
+      .map((path) => path && protectedDirectory(dirname(dirname(path))))
+      .filter((path): path is string => path !== undefined),
   );
   const runtimeCandidates = toolRuntimeRootCandidates({
     env,
@@ -556,12 +953,30 @@ export async function resolveSandboxPolicy(
   const dependencyRoots = git
     ? await dependencyInstallationRoots(workspaceRoot, gitRunner)
     : [];
-  const writableRoots = normalizeRoots([
+  const configured = await configuredRoots(configuredInput, {
+    workspaceRoot,
+    git,
+    home,
+    temporaryRoots,
+    env,
+    gitRunner,
+    configurationRoots,
+  });
+  const configuredWritableRoots = Object.freeze(
+    configured.roots.map((root) => root.path),
+  );
+  const coreWritableRoots = normalizeRoots([
     workspaceRoot,
     ...(git ? [git.worktreeGitDir, git.commonGitDir] : []),
     ...temporaryRoots,
     ...runtimeRoots,
     ...dependencyRoots,
+  ]);
+  const writableRoots = Object.freeze([
+    ...coreWritableRoots,
+    ...configuredWritableRoots.filter(
+      (root) => !coreWritableRoots.includes(root),
+    ),
   ]);
   const recursiveRoots = new Set(writableRoots);
   const creationRoots = Object.freeze([
@@ -578,6 +993,10 @@ export async function resolveSandboxPolicy(
     temporaryRoots,
     runtimeRoots,
     dependencyRoots,
+    configuredWritableRoots,
+    configuredRootProvenance: configured.roots,
+    configuredIssues: configured.issues,
+    configurationRoots,
     writableRoots,
     creationRoots,
   });

@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { z } from "zod";
 import { isModelRef } from "./model-ref.js";
+import { pipkinProjectDirectory } from "./project-path.js";
 
 export const THINKING_LEVELS = [
   "off",
@@ -11,29 +13,45 @@ export const THINKING_LEVELS = [
   "xhigh",
   "max",
 ] as const;
+export const MAX_CONFIG_BYTES = 64 * 1024;
+export const MAX_SANDBOX_WRITABLE_ENTRIES = 64;
+export const MAX_SANDBOX_WRITABLE_LENGTH = 1024;
 
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 export type ModelPresetName = "utility" | "low" | "medium" | "high";
-export type ModelPreset = Readonly<{
-  model: string;
-  thinking: ThinkingLevel;
-}>;
+export type ModelPreset = Readonly<{ model: string; thinking: ThinkingLevel }>;
+export type ConfigScope = "global" | "project";
 export type ConfigIssue = Readonly<{
   path: string;
   message: string;
+  scope?: ConfigScope;
 }>;
+export type SandboxConfig = Readonly<{ writable: readonly string[] }>;
 export type PipkinConfig = Readonly<{
   models: Readonly<Partial<Record<ModelPresetName, ModelPreset>>>;
   implement: Readonly<{ workerConcurrency: number }>;
+  sandbox?: SandboxConfig;
   nickname?: string;
 }>;
+export type ProjectPipkinConfig = Readonly<{ sandbox: SandboxConfig }>;
 export type ConfigSnapshot = Readonly<{
   path: string;
   config: PipkinConfig;
   issues: readonly ConfigIssue[];
 }>;
+export type ProjectConfigSnapshot = Readonly<{
+  path: string;
+  config: ProjectPipkinConfig;
+  issues: readonly ConfigIssue[];
+}>;
+
+/** Shared strict shape; scoped parsers retain valid list entries independently. */
+export const SandboxConfigSchema = z
+  .object({ writable: z.array(z.string()).optional() })
+  .strict();
 
 type FileReader = (path: string, encoding: "utf8") => string;
+type Issue = (field: string, message: string) => void;
 
 const MODEL_PRESETS = ["utility", "low", "medium", "high"] as const;
 const thinkingLevels = new Set<string>(THINKING_LEVELS);
@@ -43,33 +61,44 @@ export function getConfigPath(agentDir: string): string {
   return join(agentDir, "pipkin", "config.json");
 }
 
+export function getProjectConfigPath(workspaceRoot: string): string {
+  return join(pipkinProjectDirectory(workspaceRoot), "config.json");
+}
+
 export function loadPipkinConfig(
   agentDir: string,
   readFile: FileReader = readFileSync as FileReader,
 ): ConfigSnapshot {
   const path = getConfigPath(agentDir);
-  try {
-    return parsePipkinConfig(readFile(path, "utf8"), path);
-  } catch (error) {
-    const missing = (error as NodeJS.ErrnoException).code === "ENOENT";
-    const message = missing
-      ? "file does not exist"
-      : `could not be read: ${messageFor(error)}`;
-    return parseValue(missing ? {} : undefined, path, [{ path, message }]);
-  }
+  return loadFile(path, "global", readFile, parsePipkinValue);
+}
+
+export function loadProjectPipkinConfig(
+  workspaceRoot: string,
+  readFile: FileReader = readFileSync as FileReader,
+): ProjectConfigSnapshot {
+  const path = getProjectConfigPath(workspaceRoot);
+  return loadFile(path, "project", readFile, parseProjectValue);
 }
 
 export function parsePipkinConfig(
   raw: string,
   path = "config.json",
 ): ConfigSnapshot {
-  try {
-    return parseValue(JSON.parse(raw), path, []);
-  } catch (error) {
-    return parseValue(undefined, path, [
-      { path, message: `contains malformed JSON: ${messageFor(error)}` },
-    ]);
-  }
+  return scopeSnapshot(
+    parseJson(raw, path, "global", parsePipkinValue),
+    "global",
+  );
+}
+
+export function parseProjectPipkinConfig(
+  raw: string,
+  path = "config.json",
+): ProjectConfigSnapshot {
+  return scopeSnapshot(
+    parseJson(raw, path, "project", parseProjectValue),
+    "project",
+  );
 }
 
 export function presetIssue(
@@ -83,22 +112,94 @@ export function presetIssue(
   );
 }
 
-function parseValue(
+function loadFile<
+  T extends { path: string; config: unknown; issues: readonly ConfigIssue[] },
+>(
+  path: string,
+  scope: ConfigScope,
+  readFile: FileReader,
+  parse: (value: unknown, path: string, initial: ConfigIssue[]) => T,
+): T {
+  try {
+    const raw = readFile(path, "utf8");
+    if (Buffer.byteLength(raw, "utf8") > MAX_CONFIG_BYTES) {
+      return scopeSnapshot(
+        parse(undefined, path, [
+          {
+            path: "config",
+            message: `exceeds ${MAX_CONFIG_BYTES} byte limit`,
+            scope,
+          },
+        ]),
+        scope,
+      );
+    }
+    return scopeSnapshot(parseJson(raw, path, scope, parse), scope);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return scopeSnapshot(parse({}, path, []), scope);
+    }
+    return scopeSnapshot(
+      parse(undefined, path, [
+        {
+          path: "config",
+          message: `could not be read: ${messageFor(error)}`,
+          scope,
+        },
+      ]),
+      scope,
+    );
+  }
+}
+
+function scopeSnapshot<
+  T extends { path: string; config: unknown; issues: readonly ConfigIssue[] },
+>(snapshot: T, scope: ConfigScope): T {
+  return freeze({
+    ...snapshot,
+    issues: snapshot.issues.map((issue) => ({
+      ...issue,
+      scope: issue.scope ?? scope,
+    })),
+  }) as T;
+}
+
+function parseJson<
+  T extends { path: string; config: unknown; issues: readonly ConfigIssue[] },
+>(
+  raw: string,
+  path: string,
+  scope: ConfigScope,
+  parse: (value: unknown, path: string, initial: ConfigIssue[]) => T,
+): T {
+  if (Buffer.byteLength(raw, "utf8") > MAX_CONFIG_BYTES) {
+    return parse(undefined, path, [
+      {
+        path: "config",
+        message: `exceeds ${MAX_CONFIG_BYTES} byte limit`,
+        scope,
+      },
+    ]);
+  }
+  try {
+    return parse(JSON.parse(raw), path, []);
+  } catch (error) {
+    return parse(undefined, path, [
+      {
+        path: "config",
+        message: `contains malformed JSON: ${messageFor(error)}`,
+        scope,
+      },
+    ]);
+  }
+}
+
+function parsePipkinValue(
   value: unknown,
   path: string,
   initialIssues: ConfigIssue[],
 ): ConfigSnapshot {
-  const issues = [...initialIssues];
-  const issue = (field: string, message: string) => {
-    if (issues.length < MAX_ISSUES) {
-      issues.push({ path: field, message });
-    }
-  };
-  const root = isRecord(value) ? value : undefined;
-  if (!root) {
-    issue("config", "must be a JSON object");
-  }
-
+  const { issue, root, issues } = parser(value, initialIssues);
   const modelsValue = root?.models;
   const modelsInput = isRecord(modelsValue) ? modelsValue : undefined;
   if (!modelsInput) {
@@ -126,56 +227,135 @@ function parseValue(
   if (root?.nickname !== undefined) {
     nickname = parseNickname(root.nickname, issue);
   }
-
-  const implementInput = root?.implement;
   let workerConcurrency = 3;
-  if (implementInput !== undefined) {
-    if (!isRecord(implementInput)) {
+  if (root?.implement !== undefined) {
+    if (!isRecord(root.implement)) {
       issue("implement", "must be an object");
     } else {
-      for (const key of Object.keys(implementInput)) {
+      for (const key of Object.keys(root.implement)) {
         if (key !== "workerConcurrency") {
           issue(`implement.${key}`, "is not supported");
         }
       }
-      if (implementInput.workerConcurrency !== undefined) {
-        const value = implementInput.workerConcurrency;
+      if (root.implement.workerConcurrency !== undefined) {
+        const concurrency = root.implement.workerConcurrency;
         if (
-          typeof value !== "number" ||
-          !Number.isInteger(value) ||
-          value <= 0
+          typeof concurrency !== "number" ||
+          !Number.isInteger(concurrency) ||
+          concurrency <= 0
         ) {
           issue("implement.workerConcurrency", "must be a positive integer");
         } else {
-          workerConcurrency = Math.min(value, 8);
+          workerConcurrency = Math.min(concurrency, 8);
         }
       }
     }
   }
-
+  const sandbox = parseSandbox(root?.sandbox, issue);
   if (root) {
     for (const key of Object.keys(root)) {
-      if (!["models", "implement", "nickname"].includes(key)) {
+      if (
+        !(["models", "implement", "nickname", "sandbox"] as string[]).includes(
+          key,
+        )
+      ) {
         issue(key, "is not supported");
       }
     }
   }
-
   return freeze({
     path,
     config: {
       models,
       implement: { workerConcurrency },
+      sandbox,
       ...(nickname ? { nickname } : {}),
     },
     issues,
   });
 }
 
-function parseNickname(
+function parseProjectValue(
   value: unknown,
-  issue: (field: string, message: string) => void,
-): string | undefined {
+  path: string,
+  initialIssues: ConfigIssue[],
+): ProjectConfigSnapshot {
+  const { issue, root, issues } = parser(value, initialIssues);
+  const sandbox = parseSandbox(root?.sandbox, issue);
+  if (root) {
+    for (const key of Object.keys(root)) {
+      if (key !== "sandbox") {
+        issue(key, "is not supported in project configuration");
+      }
+    }
+  }
+  return freeze({ path, config: { sandbox }, issues });
+}
+
+function parser(value: unknown, initialIssues: ConfigIssue[]) {
+  const issues = [...initialIssues];
+  const scope = initialIssues[0]?.scope;
+  const issue: Issue = (field, message) => {
+    if (issues.length < MAX_ISSUES) {
+      issues.push({ path: field, message, ...(scope ? { scope } : {}) });
+    }
+  };
+  const root = isRecord(value) ? value : undefined;
+  if (!root) {
+    issue("config", "must be a JSON object");
+  }
+  return { issue, root, issues };
+}
+
+function parseSandbox(value: unknown, issue: Issue): SandboxConfig {
+  if (value === undefined) {
+    return freeze({ writable: [] });
+  }
+  const complete = SandboxConfigSchema.safeParse(value);
+  if (complete.success) {
+    return freeze({ writable: complete.data.writable ?? [] });
+  }
+  if (!isRecord(value)) {
+    issue("sandbox", "must be an object");
+    return freeze({ writable: [] });
+  }
+  const supported = new Set<string>(SandboxConfigSchema.keyof().options);
+  for (const key of Object.keys(value)) {
+    if (!supported.has(key)) {
+      issue(`sandbox.${key}`, "is not supported");
+    }
+  }
+  if (value.writable === undefined) {
+    return freeze({ writable: [] });
+  }
+  if (!Array.isArray(value.writable)) {
+    issue("sandbox.writable", "must be an array of paths");
+    return freeze({ writable: [] });
+  }
+  const writable: string[] = [];
+  const entrySchema = SandboxConfigSchema.shape.writable.unwrap().element;
+  for (const [index, entry] of value.writable.entries()) {
+    const field = `sandbox.writable.${index}`;
+    if (index >= MAX_SANDBOX_WRITABLE_ENTRIES) {
+      issue(field, `exceeds ${MAX_SANDBOX_WRITABLE_ENTRIES} entry limit`);
+    } else {
+      const parsed = entrySchema.safeParse(entry);
+      if (!parsed.success) {
+        issue(field, "must be a text path");
+      } else if (
+        parsed.data.length === 0 ||
+        parsed.data.length > MAX_SANDBOX_WRITABLE_LENGTH
+      ) {
+        issue(field, `must be 1 to ${MAX_SANDBOX_WRITABLE_LENGTH} characters`);
+      } else {
+        writable.push(parsed.data);
+      }
+    }
+  }
+  return freeze({ writable });
+}
+
+function parseNickname(value: unknown, issue: Issue): string | undefined {
   if (typeof value !== "string") {
     issue("nickname", "must be a non-empty text value");
     return undefined;
@@ -199,7 +379,7 @@ function parseNickname(
 function parseModelPreset(
   value: unknown,
   name: ModelPresetName,
-  issue: (field: string, message: string) => void,
+  issue: Issue,
 ): ModelPreset | undefined {
   if (!isRecord(value)) {
     issue(`models.${name}`, "must be an object with model and thinking");
@@ -212,8 +392,7 @@ function parseModelPreset(
       valid = false;
     }
   }
-  const model = value.model;
-  const thinking = value.thinking;
+  const { model, thinking } = value;
   if (typeof model !== "string" || !isModelRef(model)) {
     issue(
       `models.${name}`,
@@ -233,11 +412,9 @@ function parseModelPreset(
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-
 function messageFor(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
-
 function freeze<T>(value: T): T {
   if (value && typeof value === "object" && !Object.isFrozen(value)) {
     Object.freeze(value);

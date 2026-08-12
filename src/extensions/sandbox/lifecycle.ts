@@ -2,6 +2,13 @@ import type {
   ExtensionContext,
   SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import {
+  loadPipkinConfig,
+  loadProjectPipkinConfig,
+  type ConfigSnapshot,
+  type ProjectConfigSnapshot,
+} from "#lib/config";
 import {
   createSandboxBashDefinition,
   createSandboxBashRuntime,
@@ -34,6 +41,9 @@ export function createSandboxSessionController(options: {
   supportedMac: boolean;
   host: SandboxBashHost;
   resolvePolicy?: typeof resolveSandboxPolicy;
+  loadGlobalConfig?: (agentDir: string) => ConfigSnapshot;
+  loadProjectConfig?: (workspaceRoot: string) => ProjectConfigSnapshot;
+  agentDir?: () => string;
   createDenialObserver?: (options: {
     denials: SandboxDenialRecorder;
   }) => SandboxDenialObserver;
@@ -66,8 +76,31 @@ export function createSandboxSessionController(options: {
       let failure: string | undefined;
       if (options.supportedMac) {
         try {
+          const global = (options.loadGlobalConfig ?? loadPipkinConfig)(
+            (options.agentDir ?? getAgentDir)(),
+          );
           policy = await (options.resolvePolicy ?? resolveSandboxPolicy)({
             sessionCwd: ctx.cwd,
+            configurationForWorkspace: (workspaceRoot) => {
+              const project = (
+                options.loadProjectConfig ?? loadProjectPipkinConfig
+              )(workspaceRoot);
+              return {
+                global: global.config.sandbox?.writable ?? [],
+                project: project.config.sandbox.writable,
+                issues: [
+                  ...global.issues.filter(
+                    (issue) =>
+                      issue.path === "config" ||
+                      issue.path === "sandbox" ||
+                      issue.path.startsWith("sandbox."),
+                  ),
+                  ...project.issues,
+                ],
+                globalConfigPath: global.path,
+                projectConfigPath: project.path,
+              };
+            },
           });
         } catch (error) {
           failure = initializationError(error);

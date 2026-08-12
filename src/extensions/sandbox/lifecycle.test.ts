@@ -3,6 +3,7 @@ import type { SandboxDenialObserver } from "./denial-observer.js";
 import { createSandboxDenialRecorder } from "./denials.js";
 import { executeSandboxBash } from "./bash-capability.js";
 import { createSandboxSessionController } from "./lifecycle.js";
+import type { ConfigSnapshot, ProjectConfigSnapshot } from "#lib/config";
 import type { SandboxPolicy } from "./policy.js";
 import { createSandboxSessionState } from "./state.js";
 
@@ -44,10 +45,34 @@ function observer() {
   };
 }
 
+function emptyGlobalConfig(): ConfigSnapshot {
+  return {
+    path: "/agent/pipkin/config.json",
+    config: {
+      models: {},
+      implement: { workerConcurrency: 3 },
+      sandbox: { writable: [] },
+    },
+    issues: [],
+  };
+}
+
+function emptyProjectConfig(workspaceRoot: string): ProjectConfigSnapshot {
+  return {
+    path: `${workspaceRoot}/.pi/pipkin/config.json`,
+    config: { sandbox: { writable: [] } },
+    issues: [],
+  };
+}
+
 function controller(options: {
   state?: ReturnType<typeof createSandboxSessionState>;
   supportedMac: boolean;
-  resolvePolicy?: () => Promise<SandboxPolicy>;
+  resolvePolicy?: (
+    options: Parameters<typeof import("./policy.js").resolveSandboxPolicy>[0],
+  ) => Promise<SandboxPolicy>;
+  loadGlobalConfig?: (agentDir: string) => ConfigSnapshot;
+  loadProjectConfig?: (workspaceRoot: string) => ProjectConfigSnapshot;
   createDenialObserver?: () => SandboxDenialObserver;
 }) {
   const state = options.state ?? createSandboxSessionState();
@@ -60,6 +85,9 @@ function controller(options: {
       supportedMac: options.supportedMac,
       host: host as never,
       resolvePolicy: options.resolvePolicy,
+      loadGlobalConfig: options.loadGlobalConfig ?? emptyGlobalConfig,
+      loadProjectConfig: options.loadProjectConfig ?? emptyProjectConfig,
+      agentDir: () => "/agent",
       createDenialObserver: options.createDenialObserver
         ? () => options.createDenialObserver!()
         : undefined,
@@ -126,6 +154,84 @@ describe("Sandbox lifecycle", () => {
 
     expect(state.enabled()).toBe(false);
     expect(state.policy()).toBe(childPolicy);
+    await session.sessionShutdown(ctx as never);
+  });
+
+  it("snapshots scoped configuration once per session after workspace resolution", async () => {
+    let globalSnapshot: ConfigSnapshot = {
+      ...emptyGlobalConfig(),
+      config: {
+        ...emptyGlobalConfig().config,
+        sandbox: { writable: ["/first-global"] },
+      },
+      issues: [{ scope: "global", path: "sandbox", message: "recoverable" }],
+    };
+    let projectSnapshot: ProjectConfigSnapshot = {
+      ...emptyProjectConfig("/canonical-workspace"),
+      config: { sandbox: { writable: ["first-project"] } },
+    };
+    const global = vi.fn(() => globalSnapshot);
+    const project = vi.fn(() => projectSnapshot);
+    const resolvePolicy = vi.fn(
+      async (
+        options: Parameters<
+          typeof import("./policy.js").resolveSandboxPolicy
+        >[0],
+      ) => {
+        const configured = options.configurationForWorkspace?.(
+          "/canonical-workspace",
+        );
+        expect(configured?.globalConfigPath).toBe("/agent/pipkin/config.json");
+        expect(configured?.projectConfigPath).toBe(
+          "/canonical-workspace/.pi/pipkin/config.json",
+        );
+        return {
+          ...policy,
+          configuredWritableRoots: Object.freeze([
+            ...(configured?.global ?? []),
+            ...(configured?.project ?? []),
+          ]),
+          configuredIssues: Object.freeze(configured?.issues ?? []),
+        };
+      },
+    );
+    const { controller: session, state } = controller({
+      supportedMac: true,
+      resolvePolicy,
+      loadGlobalConfig: global,
+      loadProjectConfig: project,
+      createDenialObserver: () => observer().value,
+    });
+    const ctx = context();
+    await session.sessionStart({} as never, ctx as never);
+    expect(global).toHaveBeenCalledTimes(1);
+    expect(project).toHaveBeenCalledWith("/canonical-workspace");
+    expect(state.policy()?.configuredWritableRoots).toEqual([
+      "/first-global",
+      "first-project",
+    ]);
+
+    globalSnapshot = {
+      ...globalSnapshot,
+      config: {
+        ...globalSnapshot.config,
+        sandbox: { writable: ["/second-global"] },
+      },
+    };
+    projectSnapshot = {
+      ...projectSnapshot,
+      config: { sandbox: { writable: ["second-project"] } },
+    };
+    expect(state.policy()?.configuredWritableRoots).toEqual([
+      "/first-global",
+      "first-project",
+    ]);
+    await session.sessionShutdown(ctx as never);
+    await session.sessionStart({} as never, ctx as never);
+    expect(state.policy()?.configuredWritableRoots).toEqual([
+      "/second-global",
+      "second-project",
+    ]);
     await session.sessionShutdown(ctx as never);
   });
 

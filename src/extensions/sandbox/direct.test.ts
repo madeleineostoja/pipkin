@@ -151,6 +151,60 @@ describe("Sandbox direct writes", () => {
     });
   });
 
+  it("allows configured roots but gives Git and Pipkin configuration deny precedence", () => {
+    const { policy, workspace } = fixture();
+    const configured = join(workspace, "generated");
+    mkdirSync(configured);
+    const pipkin = join(workspace, ".pi", "pipkin");
+    mkdirSync(pipkin, { recursive: true });
+    const configuredPolicy = {
+      ...policy,
+      git: {
+        worktreeRoot: workspace,
+        worktreeGitDir: join(workspace, ".git"),
+        commonGitDir: join(workspace, ".git"),
+      },
+      configuredWritableRoots: [realpathSync(configured)],
+      configurationRoots: [realpathSync(join(workspace, ".pi"))],
+    };
+    expect(
+      decideDirectWrite(
+        "generated/result.txt",
+        configuredPolicy,
+        "repository-read-only",
+      ),
+    ).toMatchObject({ kind: "allow" });
+    expect(
+      decideDirectWrite(
+        ".pi/pipkin/config.json",
+        configuredPolicy,
+        "repository-read-only",
+      ),
+    ).toMatchObject({
+      kind: "deny",
+      reason: expect.stringContaining("cannot be modified"),
+    });
+    expect(
+      decideDirectWrite(".git/index", configuredPolicy, "workspace-write"),
+    ).toMatchObject({ kind: "allow" });
+    expect(
+      decideDirectWrite(".git/index", configuredPolicy, "repository-read-only"),
+    ).toMatchObject({
+      kind: "deny",
+      reason: expect.stringContaining("Git and Pipkin"),
+    });
+    expect(
+      decideDirectWrite(
+        ".pi/pipkin/config.json",
+        configuredPolicy,
+        "workspace-write",
+      ),
+    ).toMatchObject({
+      kind: "deny",
+      reason: expect.stringContaining("Pipkin configuration"),
+    });
+  });
+
   it("keeps direct mutation repository-read-only even for dependency runtime state", () => {
     const { policy, workspace } = fixture();
     const dependencyRoot = join(workspace, "node_modules");

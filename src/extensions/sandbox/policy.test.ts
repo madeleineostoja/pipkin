@@ -618,6 +618,187 @@ describe("Sandbox policy", () => {
     expect(existsSync(join(home, ".npm"))).toBe(false);
   });
 
+  it("resolves ignored project exact and wildcard roots, including absent leaves", async () => {
+    const root = directory("configured-project");
+    const apps = join(root, "apps");
+    mkdirSync(join(apps, "one"), { recursive: true });
+    mkdirSync(join(apps, "two"), { recursive: true });
+    mkdirSync(join(root, "cache"));
+    git(root, ["init"]);
+    writeFileSync(join(root, ".gitignore"), "cache/\napps/*/.svelte-kit\n");
+    git(root, ["add", ".gitignore"]);
+    const policy = await resolveSandboxPolicy({
+      sessionCwd: root,
+      homeDir: directory("configured-project-home"),
+      temporaryDir: directory("configured-project-tmp"),
+      standardTemporaryRoots: [],
+      env: {},
+      configured: { project: ["cache", "apps/*/.svelte-kit"] },
+    });
+    expect(policy.configuredWritableRoots).toEqual([
+      join(realpathSync(root), "cache"),
+      join(realpathSync(join(apps, "one")), ".svelte-kit"),
+      join(realpathSync(join(apps, "two")), ".svelte-kit"),
+    ]);
+  });
+
+  it("resolves literal wildcard suffixes and rejects missing or linked parents", async () => {
+    const root = directory("configured-wildcard-suffix");
+    const apps = join(root, "apps");
+    const linked = join(root, "linked");
+    mkdirSync(join(apps, "ready", "build"), { recursive: true });
+    mkdirSync(join(apps, "missing"), { recursive: true });
+    mkdirSync(linked);
+    symlinkSync(linked, join(apps, "linked"));
+    git(root, ["init"]);
+    writeFileSync(join(root, ".gitignore"), "apps/*/build/dist\n");
+    git(root, ["add", ".gitignore"]);
+
+    const policy = await resolveSandboxPolicy({
+      sessionCwd: root,
+      homeDir: directory("configured-wildcard-suffix-home"),
+      temporaryDir: directory("configured-wildcard-suffix-tmp"),
+      standardTemporaryRoots: [],
+      env: {},
+      configured: { project: ["apps/*/build/dist"] },
+    });
+
+    expect(policy.configuredWritableRoots).toEqual([
+      join(realpathSync(join(apps, "ready", "build")), "dist"),
+    ]);
+    expect(policy.configuredIssues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: "sandbox.writable.0",
+          message: expect.stringContaining("literal parent after *"),
+        }),
+      ]),
+    );
+  });
+
+  it("bounds wildcard discovery without silently extending authority", async () => {
+    const root = directory("configured-wildcard-limit");
+    const apps = join(root, "apps");
+    mkdirSync(apps);
+    for (let index = 0; index < 257; index += 1) {
+      mkdirSync(join(apps, `app-${index}`));
+    }
+    git(root, ["init"]);
+    writeFileSync(join(root, ".gitignore"), "apps/*/.cache\n");
+    git(root, ["add", ".gitignore"]);
+    const policy = await resolveSandboxPolicy({
+      sessionCwd: root,
+      homeDir: directory("configured-wildcard-limit-home"),
+      temporaryDir: directory("configured-wildcard-limit-tmp"),
+      standardTemporaryRoots: [],
+      env: {},
+      configured: { project: ["apps/*/.cache"] },
+    });
+    expect(policy.configuredWritableRoots).toHaveLength(256);
+    expect(policy.configuredIssues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          message: expect.stringContaining("wildcard discovery exceeds"),
+        }),
+      ]),
+    );
+  });
+
+  it("rejects home ancestors and absent PATH entries while allowing a narrow child", async () => {
+    const root = directory("configured-global-overlap");
+    const homeParent = join(root, "homes");
+    const home = join(homeParent, "user");
+    const workspace = join(root, "workspace");
+    const tools = join(root, "tools");
+    const store = join(tools, "store");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(workspace);
+    mkdirSync(store, { recursive: true });
+    git(workspace, ["init"]);
+    const policy = await resolveSandboxPolicy({
+      sessionCwd: workspace,
+      homeDir: home,
+      temporaryDir: directory("configured-global-overlap-tmp"),
+      standardTemporaryRoots: [],
+      env: { PATH: join(realpathSync(tools), "bin") },
+      configured: {
+        global: [
+          realpathSync(homeParent),
+          realpathSync(tools),
+          realpathSync(store),
+        ],
+      },
+    });
+    expect(policy.configuredIssues).toHaveLength(2);
+    expect(policy.configuredWritableRoots).toEqual([realpathSync(store)]);
+  });
+
+  it("freezes configured provenance and parser and resolver issues", async () => {
+    const root = directory("configured-immutable");
+    const generated = join(root, "generated");
+    mkdirSync(generated);
+    git(root, ["init"]);
+    writeFileSync(join(root, ".gitignore"), "generated/\n");
+    git(root, ["add", ".gitignore"]);
+    const parserIssue = {
+      scope: "global" as const,
+      path: "sandbox",
+      message: "bad",
+    };
+    const policy = await resolveSandboxPolicy({
+      sessionCwd: root,
+      homeDir: directory("configured-immutable-home"),
+      temporaryDir: directory("configured-immutable-tmp"),
+      standardTemporaryRoots: [],
+      env: {},
+      configured: {
+        project: ["generated", "../escape"],
+        issues: [parserIssue],
+      },
+    });
+    expect(Object.isFrozen(policy)).toBe(true);
+    expect(Object.isFrozen(policy.configuredRootProvenance)).toBe(true);
+    expect(Object.isFrozen(policy.configuredRootProvenance?.[0])).toBe(true);
+    expect(Object.isFrozen(policy.configuredIssues)).toBe(true);
+    expect(Object.isFrozen(policy.configuredIssues?.[0])).toBe(true);
+    expect(Object.isFrozen(policy.configuredIssues?.[1])).toBe(true);
+  });
+
+  it("rejects unsafe configured candidates while retaining a narrow global child", async () => {
+    const root = directory("configured-safety");
+    const home = join(root, "home");
+    const workspace = join(root, "workspace");
+    const tools = join(root, "tools");
+    const store = join(tools, "store");
+    const linked = join(root, "linked");
+    mkdirSync(home);
+    mkdirSync(workspace);
+    mkdirSync(store, { recursive: true });
+    mkdirSync(linked);
+    symlinkSync(linked, join(home, "link"));
+    git(workspace, ["init"]);
+    const policy = await resolveSandboxPolicy({
+      sessionCwd: workspace,
+      homeDir: home,
+      temporaryDir: directory("configured-safety-tmp"),
+      standardTemporaryRoots: [],
+      env: { PATH: tools },
+      configured: {
+        global: [
+          "/",
+          "~",
+          realpathSync(tools),
+          realpathSync(store),
+          "~/link/child",
+          "relative",
+        ],
+        project: ["../escape"],
+      },
+    });
+    expect(policy.configuredWritableRoots).toEqual([realpathSync(store)]);
+    expect(policy.configuredIssues?.length).toBeGreaterThanOrEqual(5);
+  });
+
   it("does not turn a genuine Git error into a non-Git policy", async () => {
     const root = directory("git-error");
     await expect(

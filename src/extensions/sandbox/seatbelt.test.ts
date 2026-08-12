@@ -115,6 +115,57 @@ describe("Sandbox Seatbelt profile", () => {
     );
   });
 
+  it("keeps Git writable in workspace-write mode while locking Pipkin configuration", () => {
+    const workspaceWrite: SandboxPolicy = {
+      ...policy,
+      git: {
+        worktreeRoot: "/workspace",
+        worktreeGitDir: "/workspace/.git",
+        commonGitDir: "/workspace/.git",
+      },
+      configurationRoots: ["/workspace/.pi"],
+    };
+    const arguments_ = sandboxArguments({
+      policy: workspaceWrite,
+      shell: { shell: "/bin/bash", args: ["-s"] },
+      writeMode: "workspace-write",
+    });
+    expect(arguments_).toEqual(
+      expect.arrayContaining(["-D", "locked0=/workspace/.pi"]),
+    );
+    expect(arguments_).not.toContain("locked0=/workspace/.git");
+    expect(
+      sandboxProfile(workspaceWrite, undefined, "workspace-write"),
+    ).not.toContain('(param "locked1")');
+  });
+
+  it("permits a configured repository descendant but locks Pipkin configuration", () => {
+    const configured: SandboxPolicy = {
+      ...policy,
+      configuredWritableRoots: ["/workspace/generated"],
+      configurationRoots: ["/workspace/.pi"],
+      writableRoots: ["/workspace", "/workspace/generated", "/temporary"],
+    };
+    const arguments_ = sandboxArguments({
+      policy: configured,
+      shell: { shell: "/bin/bash", args: ["-s"] },
+      writeMode: "repository-read-only",
+    });
+    expect(arguments_).toEqual(
+      expect.arrayContaining([
+        "-D",
+        "root2=/workspace/generated",
+        "-D",
+        "exception0=/workspace/generated",
+        "-D",
+        "locked0=/workspace/.pi",
+      ]),
+    );
+    expect(
+      sandboxProfile(configured, undefined, "repository-read-only"),
+    ).toContain('(subpath (param "locked0"))');
+  });
+
   it("keeps safe runtime-root creation and disposable dependency authority", () => {
     const readOnly: SandboxPolicy = {
       ...policy,
