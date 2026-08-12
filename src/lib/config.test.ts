@@ -3,6 +3,8 @@ import {
   getConfigPath,
   getProjectConfigPath,
   MAX_CONFIG_BYTES,
+  MAX_SANDBOX_WRITABLE_ENTRIES,
+  MAX_SANDBOX_WRITABLE_LENGTH,
   SandboxConfigSchema,
   parsePipkinConfig,
   parseProjectPipkinConfig,
@@ -15,6 +17,33 @@ const models = {
   medium: { model: "test/medium", thinking: "medium" },
   high: { model: "test/high", thinking: "high" },
 };
+
+const sandboxParsers = [
+  {
+    scope: "global",
+    parse: (writable: string[]) => {
+      const snapshot = parsePipkinConfig(
+        JSON.stringify({ sandbox: { writable } }),
+      );
+      return {
+        writable: snapshot.config.sandbox?.writable,
+        issues: snapshot.issues,
+      };
+    },
+  },
+  {
+    scope: "project",
+    parse: (writable: string[]) => {
+      const snapshot = parseProjectPipkinConfig(
+        JSON.stringify({ sandbox: { writable } }),
+      );
+      return {
+        writable: snapshot.config.sandbox.writable,
+        issues: snapshot.issues,
+      };
+    },
+  },
+];
 
 describe("Pipkin config", () => {
   it("uses the sole agent-level config path", () => {
@@ -135,6 +164,47 @@ describe("Pipkin config", () => {
     expect(snapshot.issues.map((issue) => issue.path)).toEqual(
       expect.arrayContaining(["sandbox.writable.1", "sandbox.writable.2"]),
     );
+  });
+
+  it("enforces writable entry counts on well-typed lists in both scopes", () => {
+    const writable = Array.from(
+      { length: MAX_SANDBOX_WRITABLE_ENTRIES + 1 },
+      (_, index) => `generated-${index}`,
+    );
+
+    for (const { scope, parse } of sandboxParsers) {
+      const snapshot = parse(writable);
+      expect(snapshot.writable).toEqual(
+        writable.slice(0, MAX_SANDBOX_WRITABLE_ENTRIES),
+      );
+      expect(snapshot.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: `sandbox.writable.${MAX_SANDBOX_WRITABLE_ENTRIES}`,
+            scope,
+            message: expect.stringContaining("entry limit"),
+          }),
+        ]),
+      );
+    }
+  });
+
+  it("omits overlong strings from well-typed writable lists in both scopes", () => {
+    const writable = ["generated", "x".repeat(MAX_SANDBOX_WRITABLE_LENGTH + 1)];
+
+    for (const { scope, parse } of sandboxParsers) {
+      const snapshot = parse(writable);
+      expect(snapshot.writable).toEqual(["generated"]);
+      expect(snapshot.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: "sandbox.writable.1",
+            scope,
+            message: expect.stringContaining("characters"),
+          }),
+        ]),
+      );
+    }
   });
 
   it("limits configuration input and rejects global-only project fields", () => {

@@ -311,10 +311,6 @@ function parseSandbox(value: unknown, issue: Issue): SandboxConfig {
   if (value === undefined) {
     return freeze({ writable: [] });
   }
-  const complete = SandboxConfigSchema.safeParse(value);
-  if (complete.success) {
-    return freeze({ writable: complete.data.writable ?? [] });
-  }
   if (!isRecord(value)) {
     issue("sandbox", "must be an object");
     return freeze({ writable: [] });
