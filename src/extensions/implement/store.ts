@@ -12,6 +12,7 @@ import { hostname } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { acquireFileLease, type FileLease } from "#lib/file-lease";
 import { ensureGitInfoExclude } from "#lib/git";
+import { pipkinProjectDirectory } from "#lib/project-path";
 import { z } from "zod";
 import { writeAtomicJson, type AtomicJsonWriteHooks } from "./atomic-json.js";
 import {
@@ -746,7 +747,7 @@ export class StaleRevisionError extends StateError {
 const updates = new Map<string, Promise<void>>();
 
 export function checkoutPaths(checkoutRoot: string): CheckoutPaths {
-  const root = join(resolve(checkoutRoot), ".pi", "pipkin", "implement");
+  const root = join(pipkinProjectDirectory(checkoutRoot), "implement");
   return {
     root,
     lock: join(root, "checkout.lock"),
@@ -767,8 +768,11 @@ export async function acquireCheckoutLease(args: {
 }): Promise<CheckoutLeaseCapability> {
   assertSafeRunId(args.runId);
   const checkout = resolveGitCheckout(args.checkoutRoot);
-  await ensureGitInfoExclude(checkout.root, "/.pi/pipkin/implement/");
   const paths = checkoutPaths(checkout.root);
+  await ensureGitInfoExclude(
+    checkout.root,
+    `/${relative(checkout.root, paths.root)}/`,
+  );
   mkdirSync(paths.root, { recursive: true });
   assertPathComponentsAreNotSymlinks(checkout.root, paths.root);
   assertContainedRealpath(
@@ -2181,9 +2185,7 @@ function invariantIssues(
       preparation.stagingBranch !== staging.branchName ||
       preparation.stagingWorktree !==
         join(
-          state.run.checkout.root,
-          ".pi",
-          "pipkin",
+          pipkinProjectDirectory(state.run.checkout.root),
           "implement",
           "worktrees",
           state.run.id,

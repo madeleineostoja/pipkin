@@ -1,3 +1,4 @@
+import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import {
   execFile,
   execFileSync,
@@ -386,12 +387,20 @@ describe("papercut incident store", () => {
     await store.record(observation());
     await store.initialize();
     expect(store.registryPath).toBe(
-      join(realpathSync(root), ".pi", "pipkin", "papercuts.json"),
+      join(realpathSync(root), CONFIG_DIR_NAME, "pipkin", "papercuts.json"),
     );
-    expect(existsSync(join(linked, ".pi"))).toBe(false);
+    expect(existsSync(join(linked, CONFIG_DIR_NAME))).toBe(false);
     const exclude = readFileSync(join(root, ".git", "info", "exclude"), "utf8");
-    expect(exclude.match(/\/.pi\/pipkin\/papercuts\.json/g)).toHaveLength(1);
-    expect(exclude.match(/\/.pi\/pipkin\/papercuts\.lock/g)).toHaveLength(1);
+    expect(
+      exclude.match(
+        new RegExp(`/${CONFIG_DIR_NAME}/pipkin/papercuts\\.json`, "g"),
+      ),
+    ).toHaveLength(1);
+    expect(
+      exclude.match(
+        new RegExp(`/${CONFIG_DIR_NAME}/pipkin/papercuts\\.lock`, "g"),
+      ),
+    ).toHaveLength(1);
     expect(git(root, "status", "--porcelain")).toBe("");
     expect(git(linked, "status", "--porcelain")).toBe("");
     git(root, "worktree", "remove", "--force", linked);

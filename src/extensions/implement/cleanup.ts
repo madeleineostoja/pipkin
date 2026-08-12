@@ -5,6 +5,7 @@ import {
   renameSync,
   rmSync,
 } from "node:fs";
+import { pipkinProjectDirectory } from "#lib/project-path";
 import { basename, join, relative, resolve } from "node:path";
 import { stagingIdentity } from "./candidate-replay.js";
 import type { GitClient } from "./git.js";
@@ -140,9 +141,7 @@ export function runWorktreesRoot(
 function ownedResources(state: RunState): Map<string, OwnedResource> {
   const resources = new Map<string, OwnedResource>();
   const root = join(
-    state.run.checkout.root,
-    ".pi",
-    "pipkin",
+    pipkinProjectDirectory(state.run.checkout.root),
     "implement",
     "worktrees",
     state.run.id,

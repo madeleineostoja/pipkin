@@ -7,11 +7,24 @@ const [mode, root, key] = process.argv.slice(2);
 const originalResolveFilename = Module._resolveFilename;
 
 Module._resolveFilename = function (request, parent, ...rest) {
+  if (request === "@earendil-works/pi-coding-agent") {
+    return join(
+      process.cwd(),
+      "node_modules",
+      "@earendil-works",
+      "pi-coding-agent",
+      "dist",
+      "config.js",
+    );
+  }
   if (request === "#lib/file-lease") {
     return join(__dirname, "..", "..", "lib", "file-lease.ts");
   }
   if (request === "#lib/git") {
     return join(__dirname, "..", "..", "lib", "git.ts");
+  }
+  if (request === "#lib/project-path") {
+    return join(__dirname, "..", "..", "lib", "project-path.ts");
   }
   if (request.startsWith(".") && request.endsWith(".js") && parent?.filename) {
     const sourcePath = resolve(

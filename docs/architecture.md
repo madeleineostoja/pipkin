@@ -83,7 +83,7 @@ State belongs to the narrowest durable owner:
 - UI and agent activity belongs to the session;
 - Implement state belongs to a checkout;
 - Papercuts belongs to the canonical primary worktree;
-- repository policy belongs under `.pi/pipkin/`;
+- repository policy belongs under Pi's project configuration directory in `pipkin/` (currently `.pi/pipkin/`);
 - personal model routing, Reference credentials, and logs belong under Pi's agent directory.
 
 See [Configuration and state](configuration.md) for concrete paths.

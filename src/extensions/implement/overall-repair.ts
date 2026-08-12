@@ -1,4 +1,5 @@
 import { mkdirSync } from "node:fs";
+import { pipkinProjectDirectory } from "#lib/project-path";
 import { join, relative, resolve } from "node:path";
 import { writeAtomicJson } from "./atomic-json.js";
 import {
@@ -48,9 +49,7 @@ export function overallRepairWorkspace(
     throw new Error(`Unknown overall repair: ${repairId}`);
   }
   const root = join(
-    resolve(state.run.checkout.root),
-    ".pi",
-    "pipkin",
+    pipkinProjectDirectory(state.run.checkout.root),
     "implement",
     "worktrees",
     state.run.id,

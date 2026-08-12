@@ -1,4 +1,5 @@
 import { mkdirSync } from "node:fs";
+import { pipkinProjectDirectory } from "#lib/project-path";
 import {
   admitCandidateWorkspace,
   observeCandidateWorkspace,
@@ -420,9 +421,7 @@ export function workstreamWorkspace(
 
 function worktreesRunRoot(state: RunState): string {
   return join(
-    resolve(state.run.checkout.root),
-    ".pi",
-    "pipkin",
+    pipkinProjectDirectory(state.run.checkout.root),
     "implement",
     "worktrees",
     state.run.id,

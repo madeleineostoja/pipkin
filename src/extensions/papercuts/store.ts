@@ -10,9 +10,10 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { acquireFileLease } from "#lib/file-lease";
 import { ensureGitInfoExclude, gitPrimaryWorktreeRoot } from "#lib/git";
+import { pipkinProjectDirectory } from "#lib/project-path";
 
 const VERSION = 2 as const;
 const MAX_BYTES = 1_048_576;
@@ -343,8 +344,9 @@ function validateObservation(value: unknown): PapercutObservation | undefined {
 
 export function createPapercutStore(root: string) {
   const canonicalRoot = realpathSync(root);
-  const registryPath = join(canonicalRoot, ".pi", "pipkin", "papercuts.json");
-  const lockPath = join(canonicalRoot, ".pi", "pipkin", "papercuts.lock");
+  const projectDirectory = pipkinProjectDirectory(canonicalRoot);
+  const registryPath = join(projectDirectory, "papercuts.json");
+  const lockPath = join(projectDirectory, "papercuts.lock");
 
   async function initialize(): Promise<void> {
     return queue(registryPath, async () => {
@@ -354,8 +356,8 @@ export function createPapercutStore(root: string) {
       });
       try {
         await ensureGitInfoExclude(canonicalRoot, [
-          "/.pi/pipkin/papercuts.json",
-          "/.pi/pipkin/papercuts.lock",
+          `/${relative(canonicalRoot, registryPath)}`,
+          `/${relative(canonicalRoot, lockPath)}`,
         ]);
         if (!existsSync(registryPath)) {
           atomicWrite(registryPath, { version: VERSION, records: [] });

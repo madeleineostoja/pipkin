@@ -1,7 +1,8 @@
+import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { acquireCheckoutLease, checkoutPaths } from "./store.js";
 
@@ -24,6 +25,9 @@ describe("checkout-local store lease", () => {
   it("keeps leases and state roots checkout-local", async () => {
     const first = root();
     const second = root();
+    expect(checkoutPaths(first).root).toBe(
+      join(resolve(first), CONFIG_DIR_NAME, "pipkin", "implement"),
+    );
     expect(checkoutPaths(first).root).not.toBe(checkoutPaths(second).root);
 
     execFileSync("git", ["init", "-q"], { cwd: first });
@@ -35,6 +39,9 @@ describe("checkout-local store lease", () => {
       timeoutMs: 1_000,
     });
     try {
+      expect(
+        readFileSync(join(first, ".git", "info", "exclude"), "utf8"),
+      ).toContain(`/${CONFIG_DIR_NAME}/pipkin/implement/`);
       await expect(
         acquireCheckoutLease({
           checkoutRoot: first,

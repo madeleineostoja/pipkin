@@ -1,3 +1,4 @@
+import { pipkinProjectDirectory } from "#lib/project-path";
 import { join } from "node:path";
 import {
   publicationIntentId,
@@ -2130,9 +2131,7 @@ export function reduceRunEvent(
           }).branchName ||
         event.preparation.stagingWorktree !==
           join(
-            state.run.checkout.root,
-            ".pi",
-            "pipkin",
+            pipkinProjectDirectory(state.run.checkout.root),
             "implement",
             "worktrees",
             state.run.id,

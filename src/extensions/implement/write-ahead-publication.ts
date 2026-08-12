@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import { pipkinProjectDirectory } from "#lib/project-path";
 import { writeAtomicFile } from "./atomic-file.js";
 import type { GitClient } from "./git.js";
 
@@ -166,7 +167,7 @@ export class WriteAheadPublisher {
         this.options.git.activeOperation(),
         this.options.git.isCleanExcept([
           ...this.options.protectedPaths,
-          join(this.options.checkoutRoot, ".pi", "pipkin", "implement"),
+          join(pipkinProjectDirectory(this.options.checkoutRoot), "implement"),
         ]),
         this.options.git.hasStagedChangesInPaths(this.options.protectedPaths),
         this.options.git.isAncestor(intent.targetBaseSha, actual),
@@ -298,7 +299,7 @@ export class WriteAheadPublisher {
         this.options.git.activeOperation(),
         this.options.git.isCleanExcept([
           ...protectedPaths,
-          join(this.options.checkoutRoot, ".pi", "pipkin", "implement"),
+          join(pipkinProjectDirectory(this.options.checkoutRoot), "implement"),
         ]),
         this.options.git.hasStagedChangesInPaths(protectedPaths),
         this.options.git.parent(intent.preparedCommitSha),
@@ -337,7 +338,7 @@ export class WriteAheadPublisher {
     const [clean, protectedIndexDirty] = await Promise.all([
       this.options.git.isCleanExcept([
         ...this.options.protectedPaths,
-        join(this.options.checkoutRoot, ".pi", "pipkin", "implement"),
+        join(pipkinProjectDirectory(this.options.checkoutRoot), "implement"),
       ]),
       this.options.git.hasStagedChangesInPaths(this.options.protectedPaths),
     ]);

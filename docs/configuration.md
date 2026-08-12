@@ -79,7 +79,7 @@ Reference does not read GitHub CLI, npm, repository, or environment credentials.
 
 ## Durable state
 
-Checkout-owned state lives under `.pi/pipkin/`:
+Checkout-owned state lives under Pi's project configuration directory in `pipkin/` (currently `.pi/pipkin/`):
 
 ```text
 <checkout>/.pi/pipkin/
