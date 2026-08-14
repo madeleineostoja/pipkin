@@ -11,7 +11,7 @@ import type { ActivityState } from "./activity.js";
 import { ActivityStore, type StoredActivityRecord } from "./activity-store.js";
 
 const WIDGET_KEY = "pipkin.ui.activity";
-const ACTIVITY_BODY_LINE_LIMIT = 5;
+const ACTIVITY_BODY_LINE_LIMIT = 8;
 
 class ActivityWidget implements Component {
   #disposed = false;

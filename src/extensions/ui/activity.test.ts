@@ -377,9 +377,9 @@ describe("Activity", () => {
       bg: (_tone: string, text: string) => text,
     });
 
-    expect(widget.render(80)).toHaveLength(8);
+    expect(widget.render(80)).toHaveLength(10);
     tui.mode = "fullscreen";
-    expect(widget.render(80)).toHaveLength(8);
+    expect(widget.render(80)).toHaveLength(10);
     dispose();
   });
 
@@ -414,7 +414,7 @@ describe("Activity", () => {
     });
     const lines = renderActivity(store.records, 24, theme, Date.now());
     expect(lines.join("\n")).toContain("reading");
-    expect(lines.join("\n")).toContain("… 5 more");
+    expect(lines.join("\n")).toContain("… 2 more");
     expect(lines.every((line) => visibleWidth(line) <= 24)).toBe(true);
   });
 });
