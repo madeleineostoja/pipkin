@@ -294,6 +294,12 @@ export function createRuntime(args: {
   return new SchedulerActor({
     store: args.store,
     onTransition: args.onTransition,
+    onBackgroundError: (error) => {
+      args.ctx.ui.notify(
+        `Implement background failure could not be persisted: ${error instanceof Error ? error.message : String(error)}`,
+        "error",
+      );
+    },
     targetHead: () => args.git.head(),
     captureTargetBoundary: () =>
       captureTargetBoundary(args.store.read(), args.git),

@@ -199,6 +199,137 @@ describe("concurrent integration scheduling", () => {
     await actor.stop();
   });
 
+  it("waits for projection settlement before integrating an approved candidate", async () => {
+    const store = await createSchedulerStore(2, true);
+    const selected = reduceRunEvent(store.read(), {
+      kind: "workstreams_selected",
+      now: "2026-01-01T00:00:00.000Z",
+      baseShas: {
+        "first-stream": "base-sha",
+        "second-stream": "base-sha",
+      },
+    });
+    const firstImplementation = selected.effects.find(
+      (effect) =>
+        effect.kind === "run_implementation" &&
+        effect.workstream.kind === "source" &&
+        effect.workstream.id === "first-stream",
+    );
+    const secondImplementation = selected.effects.find(
+      (effect) =>
+        effect.kind === "run_implementation" &&
+        effect.workstream.kind === "source" &&
+        effect.workstream.id === "second-stream",
+    );
+    if (
+      firstImplementation?.kind !== "run_implementation" ||
+      secondImplementation?.kind !== "run_implementation"
+    ) {
+      throw new Error("expected source implementations");
+    }
+    const admitted = reduceRunEvent(selected.state, {
+      kind: "implementation_completed",
+      workstream: firstImplementation.workstream,
+      leaseId: firstImplementation.leaseId,
+      outcome: {
+        kind: "candidate_ready",
+        candidate: candidate(),
+        checkpoints: { first: "candidate-sha" },
+        satisfied: {},
+      },
+    });
+    const retryReady = reduceRunEvent(admitted.state, {
+      kind: "implementation_failed",
+      workstream: secondImplementation.workstream,
+      leaseId: secondImplementation.leaseId,
+      category: "provider_failure",
+      evidence: "provider unavailable",
+    });
+    const reviewRequested = reduceRunEvent(retryReady.state, {
+      kind: "review_requested",
+      workstream: firstImplementation.workstream,
+      now: "2026-01-01T00:01:00.000Z",
+    });
+    const review = reviewRequested.effects[0];
+    if (review?.kind !== "run_review") {
+      throw new Error("expected review");
+    }
+    const approved = reduceRunEvent(reviewRequested.state, {
+      kind: "review_completed",
+      workstream: review.workstream,
+      leaseId: review.leaseId,
+      outcome: {
+        kind: "initial",
+        candidateId: "candidate:first",
+        evidence: "review artifact",
+        completion: {
+          findings: [],
+          publicationCommitSubject: "feat: publish candidate",
+        },
+      },
+    });
+    const debtRecorded = reduceRunEvent(approved.state, {
+      kind: "projection_debt_recorded",
+      debt: {
+        id: "projection:first-stream",
+        reason: "Project completed tasks.",
+        artifactPath: "/plan.md",
+        canonicalPath: "/plan.md",
+        expectedOldContent: "- [ ] First task\n",
+        expectedOldHash:
+          "9a85bb8ad565690e89a0e087fe45584a31e1ff7ce0f7dc92e9e8dbfa72a35a97",
+        expectedNewContent: "- [x] First task\n",
+        expectedNewHash:
+          "9e01b7ea8c50fd6383e991b833f634928440d1105c22686f635838c92778945c",
+        taskIds: ["first"],
+      },
+    });
+    expect(debtRecorded.accepted).toBe(true);
+    await store.update(store.read().revision, () => debtRecorded.state);
+
+    const reconciliationStarted = deferred();
+    let implementationStarts = 0;
+    const actor = new SchedulerActor({
+      store,
+      executeEffect: async ({ effect, dispatch, signal }) => {
+        if (effect.kind === "run_projection") {
+          await dispatch({
+            kind: "projection_debt_settled",
+            debtId: effect.debtId,
+          });
+          return;
+        }
+        if (effect.kind === "run_implementation") {
+          implementationStarts += 1;
+          return;
+        }
+        if (effect.kind === "run_reconciliation") {
+          reconciliationStarted.resolve();
+          await new Promise<void>((resolve) =>
+            signal.addEventListener("abort", () => resolve(), { once: true }),
+          );
+        }
+      },
+    });
+
+    await actor.start();
+    await reconciliationStarted.promise;
+
+    expect(implementationStarts).toBe(0);
+    expect(store.read().failure).toBeUndefined();
+    expect(store.read()).toMatchObject({
+      phase: "running",
+      projectionDebt: [],
+      workstreams: {
+        source: {
+          "first-stream": { phase: "reconciling" },
+          "second-stream": { phase: "queued" },
+        },
+      },
+    });
+    await actor.stop();
+  });
+
   it("integrates an approved quiescent candidate before assigning another ready batch", async () => {
     const store = await createSchedulerStore(1, true);
     const selected = reduceRunEvent(store.read(), {

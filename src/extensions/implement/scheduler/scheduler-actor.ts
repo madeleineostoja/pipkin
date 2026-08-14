@@ -24,6 +24,7 @@ import {
   allSourceWorkstreamsComplete,
   getWorkstream,
   hasIntegrationLease,
+  hasQuiescentApprovedCandidate,
   isStoppingSettlementEvent,
   reduceRunEvent,
   runCanSettleIncomplete,
@@ -55,6 +56,7 @@ export type SchedulerActorOptions = {
     state: RunState,
     event: SchedulerEvent | { kind: "planner_bound" },
   ) => void;
+  onBackgroundError?: (error: unknown) => void;
   awaitOwnedProcesses?: () => Promise<void>;
   targetHead?: () => Promise<string>;
   captureTargetBoundary?: () => Promise<string>;
@@ -477,6 +479,7 @@ export class SchedulerActor {
 
     if (
       !hasIntegrationLease(state) &&
+      !hasQuiescentApprovedCandidate(state) &&
       state.projectionDebt.length === 0 &&
       this.processWorkstreams.size < state.run.workerConcurrency &&
       activeWorkerLeaseCount(state) < state.run.workerConcurrency &&
@@ -577,13 +580,19 @@ export class SchedulerActor {
             kind: "planner_failed",
             reason: error instanceof Error ? error.message : String(error),
           });
+          return;
+        }
+        if (!controller.signal.aborted) {
+          throw error;
         }
       })
       .finally(async () => {
         this.processes.delete("planner");
         this.processControllers.delete("planner");
         await this.finalizeFailure();
-      });
+      })
+      .catch((error: unknown) => this.containBackgroundFailure(error))
+      .catch((error: unknown) => this.reportBackgroundError(error));
     this.processes.set("planner", process);
   }
 
@@ -844,8 +853,39 @@ export class SchedulerActor {
         }
         await this.finalizeFailure();
         await this.drive();
-      });
+      })
+      .catch((error: unknown) => this.containBackgroundFailure(error, effect))
+      .catch((error: unknown) => this.reportBackgroundError(error));
     this.processes.set(key, process);
+  }
+
+  private async containBackgroundFailure(
+    error: unknown,
+    effect?: SchedulerEffect,
+  ): Promise<void> {
+    await this.fail(
+      "persistence_runtime_failure",
+      error instanceof Error ? error.message : String(error),
+    );
+    const leaseId = effect && "leaseId" in effect ? effect.leaseId : undefined;
+    const lease = leaseId ? this.snapshot().processLeases[leaseId] : undefined;
+    if (effect && leaseId && lease?.kind === effectLeaseKind(effect)) {
+      await this.persist({ kind: "process_abandoned", leaseId });
+    }
+    await this.finalizeFailure();
+  }
+
+  private reportBackgroundError(error: unknown): void {
+    this.stopping = true;
+    this.controller.abort();
+    for (const controller of this.processControllers.values()) {
+      controller.abort();
+    }
+    try {
+      this.options.onBackgroundError?.(error);
+    } catch {
+      // Error reporting cannot recover a background persistence failure.
+    }
   }
 
   private async fail(

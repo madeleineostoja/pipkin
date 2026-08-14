@@ -3173,7 +3173,7 @@ function processIsAllowed(
     : state.phase === "whole_plan_review";
 }
 
-function hasQuiescentApprovedCandidate(state: RunState): boolean {
+export function hasQuiescentApprovedCandidate(state: RunState): boolean {
   return (
     activeWorkerLeaseCount(state) === 0 &&
     !hasIntegrationLease(state) &&
