@@ -213,101 +213,6 @@ describe("ProcessRuntime", () => {
     await expect(Promise.all(waits)).resolves.toHaveLength(16);
   });
 
-  it("waits eventfully for same-stream split readiness without consuming output", async () => {
-    const fixture = runtime({ output: [] });
-    bindings.push(fixture.binding);
-    const snapshot = await start(fixture.runtime);
-    const waiting = fixture.runtime.result(
-      snapshot.id,
-      true,
-      undefined,
-      undefined,
-      "ready ✓",
-    );
-    fixture.controls[0].write("stdout", Buffer.from("rea"));
-    fixture.controls[0].write("stderr", Buffer.from("dy ✓"));
-    await expect(
-      Promise.race([
-        waiting.then(() => "settled"),
-        new Promise((resolve) => setTimeout(() => resolve("pending"), 5)),
-      ]),
-    ).resolves.toBe("pending");
-    fixture.controls[0].write("stdout", Buffer.from("dy ✓"));
-    await expect(waiting).resolves.toMatchObject({ waitOutcome: "ready" });
-    expect(fixture.runtime.snapshot(snapshot.id).status).toBe("running");
-    await expect(
-      fixture.runtime.result(
-        snapshot.id,
-        true,
-        undefined,
-        undefined,
-        "ready ✓",
-      ),
-    ).resolves.toMatchObject({ waitOutcome: "ready" });
-  });
-
-  it("seeds readiness from retained same-stream output without joining streams", async () => {
-    const fixture = runtime({
-      output: [{ stream: "stdout", data: Buffer.from("rea") }],
-    });
-    bindings.push(fixture.binding);
-    const snapshot = await start(fixture.runtime);
-    const waiting = fixture.runtime.result(
-      snapshot.id,
-      true,
-      undefined,
-      undefined,
-      "ready",
-    );
-    fixture.controls[0].write("stderr", Buffer.from("dy"));
-    fixture.controls[0].write("stdout", Buffer.from("dy"));
-    await expect(waiting).resolves.toMatchObject({ waitOutcome: "ready" });
-
-    const terminalWait = fixture.runtime.result(
-      snapshot.id,
-      true,
-      undefined,
-      undefined,
-      "never",
-    );
-    fixture.controls[0].complete({
-      exitCode: 0,
-      signal: null,
-      termination: "natural",
-      outputComplete: true,
-    });
-    await expect(terminalWait).resolves.toMatchObject({
-      waitOutcome: "terminal",
-      snapshot: { status: "completed" },
-    });
-  });
-
-  it("reports retained readiness before an already-settled terminal outcome", async () => {
-    const fixture = runtime({
-      output: [{ stream: "stdout", data: Buffer.from("ready\n") }],
-      terminal: {
-        exitCode: 0,
-        signal: null,
-        termination: "natural",
-        outputComplete: true,
-      },
-    });
-    bindings.push(fixture.binding);
-    const snapshot = await start(fixture.runtime);
-    await expect(
-      fixture.runtime.result(snapshot.id, true, undefined, undefined, "ready"),
-    ).resolves.toMatchObject({ waitOutcome: "ready" });
-    await expect(
-      fixture.runtime.result(
-        snapshot.id,
-        true,
-        undefined,
-        undefined,
-        "missing",
-      ),
-    ).resolves.toMatchObject({ waitOutcome: "terminal" });
-  });
-
   it("keeps the full retained output available to the live inspector", async () => {
     const fixture = runtime({ output: [] });
     bindings.push(fixture.binding);
@@ -337,7 +242,6 @@ describe("ProcessRuntime", () => {
       false,
       undefined,
       undefined,
-      undefined,
       { tailLines: 20 },
     );
     expect(tail.output).toContain("[stdout] 19:");
@@ -349,7 +253,6 @@ describe("ProcessRuntime", () => {
     const found = await fixture.runtime.result(
       snapshot.id,
       false,
-      undefined,
       undefined,
       undefined,
       { find: "needle" },
@@ -371,7 +274,6 @@ describe("ProcessRuntime", () => {
     const result = await fixture.runtime.result(
       snapshot.id,
       false,
-      undefined,
       undefined,
       undefined,
       { find: " Needle " },

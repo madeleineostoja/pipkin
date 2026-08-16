@@ -70,7 +70,7 @@ describe("Guidance catalogue", () => {
     const managed = renderGuidance(["get_process_result", "context_recall"])!;
     expect(managed).toContain("Choose output");
     expect(managed).toContain("point-in-time outcome");
-    expect(managed).toContain("later output result");
+    expect(managed).toContain("newer output is needed");
 
     const routing = renderGuidance(["Agent", "lsp"])!;
     expect(routing).toContain("Use Review directly");

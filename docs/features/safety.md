@@ -50,7 +50,7 @@ Public subagents share the invoking working tree. Implement workers instead rece
 
 Managed commands must remain foreground and non-interactive. Do not use `&`, `nohup`, daemonization, terminal attachment, or input.
 
-Start a process only when useful independent work can continue. Wait once for completion or a case-sensitive readiness literal instead of polling; a wait timeout leaves the process running. Inspect bounded output when it affects the next decision, retain a point-in-time outcome when status is enough, and stop unneeded work explicitly. `/processes` provides current-session inspection and direct stop controls; it does not expose arbitrary PID management.
+Start a process only when useful independent work can continue. Use `wait: true` only for finite processes expected to terminate. Inspect servers, watchers, and other long-lived processes with `wait: false` whenever newer status or output is needed; a wait timeout leaves the process running. Retain a point-in-time outcome when status is enough, and stop unneeded work explicitly. `/processes` provides current-session inspection and direct stop controls; it does not expose arbitrary PID management.
 
 Each runtime permits at most eight active processes, retains at most 32 records and 1 MiB of output per record, and closes with the session.
 

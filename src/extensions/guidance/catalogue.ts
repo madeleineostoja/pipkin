@@ -37,7 +37,7 @@ export const PUBLIC_TOOL_CATALOGUE: readonly GuidanceTool[] = [
   },
   {
     name: "get_process_result",
-    summary: "Join or intentionally inspect a managed process.",
+    summary: "Wait for finite work or intentionally inspect a managed process.",
   },
   {
     name: "stop_process",
@@ -99,7 +99,7 @@ export const CROSS_TOOL_RULES: readonly GuidanceRule[] = [
   },
   {
     requiredTools: ["get_process_result", "context_recall"],
-    text: "Choose output when process output informs the next decision; choose point-in-time outcome for status, then recall retained successful outcome output rather than rerunning. Request a later output result to inspect newer output.",
+    text: "Choose output when process output informs the next decision; choose point-in-time outcome for status, then recall retained successful outcome output rather than rerunning. Request a later output result when newer output is needed.",
   },
   {
     requiredTools: ["stop_process", "context_recall"],
@@ -107,7 +107,7 @@ export const CROSS_TOOL_RULES: readonly GuidanceRule[] = [
   },
   {
     requiredTools: ["start_process", "get_process_result", "stop_process"],
-    text: "Start only while independent work continues, join once when it becomes a dependency rather than polling, and stop work no longer needed.",
+    text: "Start only while independent work continues. Use wait:true only for finite processes expected to terminate; inspect servers, watchers, and other long-lived processes with wait:false whenever newer status or output is needed. Stop work no longer needed.",
   },
   {
     requiredTools: ["Agent"],

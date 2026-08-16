@@ -21,7 +21,6 @@ type Stream = "stdout" | "stderr";
 export type ProcessStatus = "running" | "completed" | "failed" | "stopped";
 export type ProcessWaitOutcome =
   | "snapshot"
-  | "ready"
   | "terminal"
   | "timed_out"
   | "cancelled";
@@ -76,8 +75,6 @@ type RecordState = {
 };
 type Waiter = {
   finish: (outcome: ProcessWaitOutcome) => void;
-  literal?: string;
-  suffixes?: Record<Stream, string>;
 };
 type ProcessRecord = RecordState & {
   lease: SandboxExecutionLease;
@@ -348,7 +345,6 @@ export class ProcessRuntime {
     wait: boolean,
     timeoutSeconds: number | undefined,
     signal: AbortSignal | undefined,
-    untilContains?: string,
     selection: ProcessResultSelection = {},
   ): Promise<{
     snapshot: ProcessSnapshot;
@@ -356,18 +352,15 @@ export class ProcessRuntime {
     output: string;
     selector: ProcessProjection["selector"];
   }> {
-    this.validateResult(wait, timeoutSeconds, untilContains, selection);
+    this.validateResult(wait, timeoutSeconds, selection);
     const record = this.require(id);
     let waitOutcome: ProcessWaitOutcome = "snapshot";
     if (wait) {
       waitOutcome = signal?.aborted
         ? "cancelled"
-        : untilContains !== undefined &&
-            this.retainedContains(record, untilContains)
-          ? "ready"
-          : terminal(record.snapshot.status)
-            ? "terminal"
-            : await this.wait(record, timeoutSeconds, signal, untilContains);
+        : terminal(record.snapshot.status)
+          ? "terminal"
+          : await this.wait(record, timeoutSeconds, signal);
     }
     const projection = this.project(record, selection);
     return { snapshot: copy(record.snapshot), waitOutcome, ...projection };
@@ -438,14 +431,10 @@ export class ProcessRuntime {
   private validateResult(
     wait: boolean,
     timeoutSeconds: number | undefined,
-    untilContains: string | undefined,
     selection: ProcessResultSelection,
   ): void {
     if (!wait && timeoutSeconds !== undefined) {
       throw new Error("get_process_result: timeoutSeconds requires wait:true");
-    }
-    if (!wait && untilContains !== undefined) {
-      throw new Error("get_process_result: untilContains requires wait:true");
     }
     if (
       timeoutSeconds !== undefined &&
@@ -454,9 +443,6 @@ export class ProcessRuntime {
         timeoutSeconds > MAX_WAIT_TIMEOUT_SECONDS)
     ) {
       throw new Error("get_process_result: invalid timeoutSeconds");
-    }
-    if (untilContains !== undefined) {
-      literalBytes(untilContains, "get_process_result: untilContains", false);
     }
     if (
       selection.tailLines !== undefined &&
@@ -532,7 +518,6 @@ export class ProcessRuntime {
       droppedBytes: dropped,
     };
     if (this.#records.has(record.snapshot.id)) {
-      this.ready(record as ProcessRecord, stream, text);
       this.emit(record as ProcessRecord);
     }
   }
@@ -567,15 +552,11 @@ export class ProcessRuntime {
     record: ProcessRecord,
     timeoutSeconds: number | undefined,
     signal: AbortSignal | undefined,
-    untilContains: string | undefined,
   ): Promise<ProcessWaitOutcome> {
     if (record.waiters.size >= MAX_WAITERS) {
       return Promise.reject(
         new Error("get_process_result: maximum of 16 waiters reached"),
       );
-    }
-    if (untilContains && this.retainedContains(record, untilContains)) {
-      return Promise.resolve("ready");
     }
     if (terminal(record.snapshot.status)) {
       return Promise.resolve("terminal");
@@ -584,12 +565,6 @@ export class ProcessRuntime {
       let timer: NodeJS.Timeout | undefined;
       let done = false;
       const waiter: Waiter = {
-        ...(untilContains === undefined
-          ? {}
-          : {
-              literal: untilContains,
-              suffixes: this.readinessSuffixes(record, untilContains),
-            }),
         finish: (outcome) => {
           if (done) {
             return;
@@ -616,53 +591,6 @@ export class ProcessRuntime {
         waiter.finish("terminal");
       }
     });
-  }
-
-  private retainedContains(record: ProcessRecord, literal: string): boolean {
-    return (["stdout", "stderr"] as const).some((stream) =>
-      this.retainedStreamText(record, stream).includes(literal),
-    );
-  }
-
-  private readinessSuffixes(
-    record: ProcessRecord,
-    literal: string,
-  ): Record<Stream, string> {
-    const maxBytes = Buffer.byteLength(literal) - 1;
-    return {
-      stdout: suffixAtUtf8Boundary(
-        this.retainedStreamText(record, "stdout"),
-        maxBytes,
-      ),
-      stderr: suffixAtUtf8Boundary(
-        this.retainedStreamText(record, "stderr"),
-        maxBytes,
-      ),
-    };
-  }
-
-  private retainedStreamText(record: ProcessRecord, stream: Stream): string {
-    return record.output
-      .filter((part) => part.stream === stream)
-      .map((part) => part.text)
-      .join("");
-  }
-
-  private ready(record: ProcessRecord, stream: Stream, text: string): void {
-    for (const waiter of Array.from(record.waiters)) {
-      if (!waiter.literal || !waiter.suffixes) {
-        continue;
-      }
-      const source = waiter.suffixes[stream] + text;
-      if (source.includes(waiter.literal)) {
-        waiter.finish("ready");
-      } else {
-        waiter.suffixes[stream] = suffixAtUtf8Boundary(
-          source,
-          Buffer.byteLength(waiter.literal) - 1,
-        );
-      }
-    }
   }
 
   private emit(record: ProcessRecord | undefined, evictedId?: string): void {

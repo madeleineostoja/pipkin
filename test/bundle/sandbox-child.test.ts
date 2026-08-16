@@ -325,9 +325,7 @@ describe("Sandbox child binding", () => {
       fauxAssistantMessage(
         fauxToolCall(
           "get_process_result",
-          label === "readonly"
-            ? { id: "process-1", wait: true, untilContains: "readonly:" }
-            : { id: "process-1", wait: true },
+          { id: "process-1", wait: label !== "readonly" },
           { id: `${label}-result` },
         ),
       ),
@@ -472,18 +470,29 @@ describe("Sandbox child binding", () => {
         const result = session.messages.find(
           (message) =>
             message.role === "toolResult" &&
-            message.toolCallId ===
-              (label === "readonly" ? "readonly-stop" : `${label}-result`),
+            message.toolCallId === `${label}-result`,
         );
-        expect(result).toMatchObject({
-          isError: false,
-          content: [
-            expect.objectContaining({
-              type: "text",
-              text: expect.stringContaining(`${label}:${canonicalWorkspace}:`),
-            }),
-          ],
-        });
+        expect(result).toMatchObject(
+          label === "readonly"
+            ? {
+                isError: false,
+                details: {
+                  snapshot: { status: "running", cwd: workspace },
+                  waitOutcome: "snapshot",
+                },
+              }
+            : {
+                isError: false,
+                content: [
+                  expect.objectContaining({
+                    type: "text",
+                    text: expect.stringContaining(
+                      `${label}:${canonicalWorkspace}:`,
+                    ),
+                  }),
+                ],
+              },
+        );
       }
       expect(runtime.snapshot(mutable)).toMatchObject({ cwd: workspace });
       expect(runtime.snapshot(readonly)).toMatchObject({ cwd: workspace });

@@ -14,7 +14,7 @@ import {
 const ResultModeValues = [Type.Literal("output"), Type.Literal("outcome")];
 const ProcessResultMode = Type.Union(ResultModeValues, {
   description:
-    "Defaults to output when process output affects the next decision. Choose outcome only for status or readiness: it retains one point-in-time result for context_recall while failed process output stays directly visible. tailLines and find require output mode.",
+    "Defaults to output when process output affects the next decision. Choose outcome only for status: it retains one point-in-time result for context_recall while failed process output stays directly visible. tailLines and find require output mode.",
 });
 const StopResultMode = Type.Union(ResultModeValues, {
   description:
@@ -42,18 +42,12 @@ const ResultParams = Type.Object(
     }),
     wait: Type.Boolean({
       description:
-        "Wait once for terminal settlement or literal readiness; false is an intentional snapshot.",
+        "True waits for terminal settlement and is only for processes expected to terminate; false immediately snapshots status and retained output, including for servers and watchers.",
     }),
     timeoutSeconds: Type.Optional(
       Type.Number({
         description:
           "Positive maximum wait in seconds; timeout leaves the process running.",
-      }),
-    ),
-    untilContains: Type.Optional(
-      Type.String({
-        description:
-          "Case-sensitive 1–256 UTF-8-byte readiness literal; requires wait:true.",
       }),
     ),
     resultMode: Type.Optional(ProcessResultMode),
@@ -184,7 +178,6 @@ function waitStatus(
   return (
     {
       snapshot: "Captured a current process snapshot.",
-      ready: "The requested readiness literal was observed.",
       terminal: "The process reached terminal settlement.",
       timed_out:
         status === "running"
@@ -358,7 +351,7 @@ export function registerProcessTools(
     name: "get_process_result",
     label: "get_process_result",
     description:
-      "Join or inspect a managed process. Output includes retained process output; outcome retains a point-in-time status for context_recall.",
+      "Wait for a finite process to settle or immediately inspect any managed process. Use wait:false for servers, watchers, and other long-lived processes. Output includes retained process output; outcome retains a point-in-time status for context_recall.",
     parameters: ResultParams,
     renderCall: toolCallRenderer({
       name: "get_process_result",
@@ -374,7 +367,6 @@ export function registerProcessTools(
         params.wait,
         params.timeoutSeconds,
         signal,
-        params.untilContains,
         { tailLines: params.tailLines, find: params.find },
       );
       const ordinary = ordinaryResult({

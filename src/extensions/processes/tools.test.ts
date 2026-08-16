@@ -167,13 +167,6 @@ describe("process tools", () => {
     expect(
       summary({
         snapshot: { ...snapshot, status: "running" },
-        waitOutcome: "ready",
-        selector: { type: "tail", requestedLines: 20, sourceLines: 100 },
-      }),
-    ).toContain("The requested readiness literal was observed.");
-    expect(
-      summary({
-        snapshot: { ...snapshot, status: "running" },
         waitOutcome: "timed_out",
       }),
     ).toContain("The wait timed out; the process is still running.");
