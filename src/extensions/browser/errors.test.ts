@@ -63,6 +63,9 @@ describe("Browser error precedence", () => {
         stateLost: true,
       },
     });
+    expect(result.content[0].text).toContain(
+      "prior tabs, refs, and diagnostics were lost",
+    );
   });
 
   it("reports the installed Playwright version for missing executables", () => {

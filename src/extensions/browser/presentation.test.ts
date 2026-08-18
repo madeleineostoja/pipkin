@@ -61,5 +61,20 @@ describe("Browser action presentation", () => {
     });
     expect(relative).toBe("url:/ready");
     expect(relative).not.toContain("relative-secret");
+    expect(
+      actionSummary({
+        action: "wait",
+        condition: {
+          kind: "url",
+          value: "  //user:password@example.test/ready?token=secret",
+        },
+      }),
+    ).toBe("url://example.test/ready");
+    expect(
+      actionSummary({
+        action: "wait",
+        condition: { kind: "url", value: "https://user:password@" },
+      }),
+    ).toBe("url:[invalid URL]");
   });
 });

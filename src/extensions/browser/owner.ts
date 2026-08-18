@@ -4,7 +4,11 @@ import {
   type BrowserContext,
   type Page,
 } from "playwright-core";
-import { BrowserError, browserError } from "./errors.js";
+import {
+  BROWSER_STATE_LOSS_NOTICE,
+  BrowserError,
+  browserError,
+} from "./errors.js";
 import { LIMITS } from "./limits.js";
 
 export type DiagnosticCategory =
@@ -126,10 +130,12 @@ export class BrowserOwner {
   contextState(): { generation: number; stateLost: boolean } {
     return { generation: this.generation, stateLost: this.stateLost };
   }
-  stateLossNotice(): string | undefined {
-    return this.stateLost
-      ? "Browser context was recreated; prior tabs, refs, and diagnostics were lost."
-      : undefined;
+  consumeStateLossNotice(): string | undefined {
+    if (!this.stateLost) {
+      return undefined;
+    }
+    this.stateLost = false;
+    return BROWSER_STATE_LOSS_NOTICE;
   }
   canRetryObservation(generation: number): boolean {
     return this.disconnectGeneration > generation;

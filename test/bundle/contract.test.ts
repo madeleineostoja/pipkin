@@ -587,6 +587,54 @@ describe("Pipkin bundle", () => {
     ).rejects.toThrow("localhost");
   });
 
+  it("projects registered Browser failures through the tool-result boundary once", async () => {
+    const fixture = await loadBundle();
+    const browser = fixture.result.extensions.find(
+      (extension) =>
+        relativeExtensionPath(extension) === "src/extensions/browser/index.ts",
+    );
+    expect(browser).toBeDefined();
+    const { runner, errors } = await createBundleRunner(fixture, [browser!]);
+    const definition = runner
+      .getAllRegisteredTools()
+      .find(({ definition }) => definition.name === "browser_act")?.definition;
+    expect(definition).toBeDefined();
+    const input = { action: "navigate", url: "file:///tmp/not-allowed" };
+
+    await expect(
+      definition!.execute(
+        "browser-failure",
+        input,
+        undefined,
+        undefined,
+        {} as never,
+      ),
+    ).rejects.toMatchObject({ category: "target" });
+
+    const event = {
+      type: "tool_result" as const,
+      toolCallId: "browser-failure",
+      toolName: "browser_act",
+      input,
+      content: [{ type: "text" as const, text: "raw failure" }],
+      details: undefined,
+      isError: true,
+    };
+    await expect(runner.emitToolResult(event)).resolves.toMatchObject({
+      content: [
+        {
+          type: "text",
+          text: expect.stringContaining("Browser target"),
+        },
+      ],
+      details: { category: "target" },
+      isError: true,
+    });
+    await expect(runner.emitToolResult(event)).resolves.toBeUndefined();
+    expect(errors).toEqual([]);
+    await runner.emit({ type: "session_shutdown", reason: "quit" });
+  });
+
   it("keeps safety startup and reload handlers ordered and registers Sandbox", async () => {
     const fixture = await loadBundle();
     await assertSafetyOrder(fixture, "startup");

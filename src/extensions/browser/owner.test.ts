@@ -100,6 +100,38 @@ describe("BrowserOwner invocation lane", () => {
     } satisfies Partial<BrowserError>);
   });
 
+  it("reports recreated-context state loss once", async () => {
+    const page = {
+      isClosed: () => false,
+      on: () => {},
+    };
+    const context = {
+      setDefaultTimeout: () => {},
+      setDefaultNavigationTimeout: () => {},
+      on: () => {},
+      newPage: async () => page,
+      close: async () => {},
+    };
+    const browser = {
+      isConnected: () => true,
+      on: () => {},
+      newContext: async () => context,
+      close: async () => {},
+    };
+    const owner = new BrowserOwner({
+      launch: async () => browser,
+    } as never);
+
+    await owner.page();
+    await owner.shutdown();
+    expect(owner.contextState().stateLost).toBe(true);
+    expect(owner.consumeStateLossNotice()).toContain(
+      "prior tabs, refs, and diagnostics were lost",
+    );
+    expect(owner.consumeStateLossNotice()).toBeUndefined();
+    expect(owner.contextState().stateLost).toBe(false);
+  });
+
   it("redacts supplied form text from Browser-owned evidence", () => {
     const owner = new BrowserOwner();
     owner.rememberSensitiveText("correct horse battery staple");

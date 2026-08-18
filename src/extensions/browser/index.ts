@@ -33,7 +33,11 @@ export default function (pi: ExtensionAPI): void {
       return;
     }
     failures.delete(event.toolCallId);
-    return { ...failureResult(failure), isError: true };
+    const result = { ...failureResult(failure), isError: true };
+    if (failure.details.stateLost === true) {
+      owner.consumeStateLossNotice();
+    }
+    return result;
   });
   pi.registerTool({
     name: "browser_observe",

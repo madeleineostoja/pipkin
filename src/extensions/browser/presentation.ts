@@ -30,19 +30,35 @@ export function waitConditionSummary(condition: WaitCondition): string {
 }
 
 export function urlSummary(value: string): string {
+  const normalized = value.trimStart();
+  if (normalized.startsWith("//")) {
+    try {
+      return summarizeAbsolute(new URL(`http:${normalized}`)).slice(
+        "http:".length,
+      );
+    } catch {
+      return "//[invalid]";
+    }
+  }
   try {
-    const url = new URL(value);
-    url.username = "";
-    url.password = "";
-    url.search = "";
-    url.hash = "";
-    return bounded(url.toString());
+    return summarizeAbsolute(new URL(normalized));
   } catch {
+    if (/^[a-z][a-z\d+.-]*:/iu.test(normalized)) {
+      return "[invalid URL]";
+    }
     // Wait URL values may be relative. They still must not expose query or
     // fragment data in call rows or compact results.
-    const [path] = value.split(/[?#]/u, 1);
+    const [path] = normalized.split(/[?#]/u, 1);
     return bounded(path || "/");
   }
+}
+
+function summarizeAbsolute(url: URL): string {
+  url.username = "";
+  url.password = "";
+  url.search = "";
+  url.hash = "";
+  return bounded(url.toString());
 }
 
 function bounded(value: string): string {

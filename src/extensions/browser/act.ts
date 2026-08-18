@@ -207,11 +207,13 @@ export async function act(
     const target = actionSummary(input);
     if (snapshotActions.has(input.action) || recovered || change) {
       const fresh = await snapshot(page, { mode: "snapshot", depth: 4 }, owner);
+      const contextState = owner.contextState();
+      const notice = owner.consumeStateLossNotice();
       return {
         content: [
           {
             type: "text",
-            text: `${owner.stateLossNotice() ? `${owner.stateLossNotice()}\n\n` : ""}${outcome}.\n\n${(fresh.content[0] as { text: string }).text}`,
+            text: `${notice ? `${notice}\n\n` : ""}${outcome}.\n\n${(fresh.content[0] as { text: string }).text}`,
           },
         ],
         details: {
@@ -220,7 +222,7 @@ export async function act(
           target,
           outcome,
           activeTabId: owner.activeTab()?.id,
-          ...owner.contextState(),
+          ...contextState,
         },
       };
     }
@@ -316,11 +318,12 @@ async function compact(
     observe: "Observe again when rendered state matters.",
     ...owner.contextState(),
   };
+  const notice = owner.consumeStateLossNotice();
   return {
     content: [
       {
         type: "text",
-        text: `${owner.stateLossNotice() ? `${owner.stateLossNotice()}\n\n` : ""}${outcome}. Observe again when rendered state matters.`,
+        text: `${notice ? `${notice}\n\n` : ""}${outcome}. Observe again when rendered state matters.`,
       },
     ],
     details,

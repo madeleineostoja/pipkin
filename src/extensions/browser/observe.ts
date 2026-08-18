@@ -366,7 +366,7 @@ async function recovered(
   owner: BrowserOwner,
 ): Promise<BrowserResult> {
   const completed = await result;
-  const notice = owner.stateLossNotice();
+  const notice = owner.consumeStateLossNotice();
   const content = notice
     ? completed.content.map((entry, index) =>
         index === 0 && entry.type === "text"

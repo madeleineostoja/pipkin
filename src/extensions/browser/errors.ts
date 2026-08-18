@@ -1,5 +1,8 @@
 import { createRequire } from "node:module";
 
+export const BROWSER_STATE_LOSS_NOTICE =
+  "Browser context was recreated; prior tabs, refs, and diagnostics were lost.";
+
 export type BrowserErrorCategory =
   | "installation"
   | "launch"
@@ -45,11 +48,13 @@ export function failureResult(error: BrowserError): {
     typeof error.details.recovery === "string"
       ? ` ${error.details.recovery}`
       : "";
+  const stateLoss =
+    error.details.stateLost === true ? `${BROWSER_STATE_LOSS_NOTICE}\n\n` : "";
   return {
     content: [
       {
         type: "text",
-        text: `Browser ${error.category}: ${error.message}${recovery}`,
+        text: `${stateLoss}Browser ${error.category}: ${error.message}${recovery}`,
       },
     ],
     details: { category: error.category, ...error.details },
