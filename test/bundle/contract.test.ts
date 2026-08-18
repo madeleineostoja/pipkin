@@ -53,6 +53,7 @@ const expectedExtensions = [
   "./src/extensions/implement/index.ts",
   "./src/extensions/reference/index.ts",
   "./src/extensions/web/index.ts",
+  "./src/extensions/browser/index.ts",
   "./src/extensions/papercuts/index.ts",
   "./src/extensions/btw/index.ts",
 ];
@@ -80,6 +81,8 @@ const expectedTools = {
   code_search: "src/extensions/reference/index.ts",
   web_fetch: "src/extensions/web/index.ts",
   batch_web_fetch: "src/extensions/web/index.ts",
+  browser_observe: "src/extensions/browser/index.ts",
+  browser_act: "src/extensions/browser/index.ts",
   record_papercut: "src/extensions/papercuts/index.ts",
 };
 
@@ -502,6 +505,16 @@ describe("Pipkin bundle", () => {
       (extension) =>
         relativeExtensionPath(extension) === "src/extensions/web/index.ts",
     );
+    const browser = fixture.result.extensions.find(
+      (extension) =>
+        relativeExtensionPath(extension) === "src/extensions/browser/index.ts",
+    );
+    expect(
+      browser?.tools.get("browser_observe")?.definition.renderCall,
+    ).toBeTypeOf("function");
+    expect(
+      browser?.tools.get("browser_act")?.definition.renderResult,
+    ).toBeTypeOf("function");
     const webFetch = web?.tools.get("web_fetch")?.definition;
     const batchWebFetch = web?.tools.get("batch_web_fetch")?.definition;
     expect(webFetch?.description).toContain("one URL");

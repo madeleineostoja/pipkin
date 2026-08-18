@@ -1,0 +1,111 @@
+import { createRequire } from "node:module";
+
+export type BrowserErrorCategory =
+  | "installation"
+  | "launch"
+  | "cancelled"
+  | "target"
+  | "stale_ref"
+  | "timeout"
+  | "page_gone"
+  | "uncertain_outcome"
+  | "browser_disconnected"
+  | "content"
+  | "backend";
+
+type ErrorContext = {
+  dispatched?: boolean;
+  mutation?: boolean;
+};
+
+const require = createRequire(import.meta.url);
+const playwrightVersion =
+  (require("playwright-core/package.json") as { version?: string }).version ??
+  "installed";
+
+/** A bounded, stable tool error; Pi converts thrown errors to native failures. */
+export class BrowserError extends Error {
+  constructor(
+    readonly category: BrowserErrorCategory,
+    message: string,
+    readonly details: Record<string, unknown> = {},
+  ) {
+    super(message);
+    this.name = "BrowserError";
+  }
+}
+
+export function browserError(
+  error: unknown,
+  context: ErrorContext = {},
+): BrowserError {
+  if (error instanceof BrowserError) {
+    if (
+      context.dispatched &&
+      context.mutation &&
+      error.category !== "target" &&
+      error.category !== "stale_ref"
+    ) {
+      return uncertain(error);
+    }
+    return error;
+  }
+  const message =
+    error instanceof Error ? error.message : "Browser backend failed.";
+  if (context.dispatched && context.mutation) {
+    return uncertain(message);
+  }
+  if (/executable doesn't exist|executable.*not found/i.test(message)) {
+    return new BrowserError(
+      "installation",
+      `Chromium is unavailable for Playwright ${playwrightVersion}. Repair Pipkin's normal npm installation (npm install or npm rebuild) so @playwright/browser-chromium can populate its managed cache.`,
+    );
+  }
+  if (
+    /Target page, context or browser has been closed|browser has been closed|has been closed/i.test(
+      message,
+    )
+  ) {
+    return new BrowserError(
+      "page_gone",
+      "Browser page is no longer available; observe the current tabs.",
+      { cause: bounded(message) },
+    );
+  }
+  if (/browser.*disconnected|connection closed/i.test(message)) {
+    return new BrowserError(
+      "browser_disconnected",
+      "Browser disconnected; observe again to start a fresh isolated context.",
+      { cause: bounded(message) },
+    );
+  }
+  if (/browserType\.launch|failed to launch/i.test(message)) {
+    return new BrowserError(
+      "launch",
+      "Chromium could not start. Check platform dependencies or the host sandbox, then observe again after repair.",
+      { cause: bounded(message) },
+    );
+  }
+  if (/Timeout|timed out/i.test(message)) {
+    return new BrowserError(
+      "timeout",
+      "Browser operation timed out; observe the page before retrying.",
+      { cause: bounded(message) },
+    );
+  }
+  return new BrowserError("backend", bounded(message), {
+    cause: bounded(message),
+  });
+}
+
+function uncertain(error: BrowserError | string): BrowserError {
+  const cause = typeof error === "string" ? error : error.message;
+  return new BrowserError(
+    "uncertain_outcome",
+    "Browser action may have completed before it failed; observe the page before retrying.",
+    { cause: bounded(cause) },
+  );
+}
+function bounded(value: string): string {
+  return Array.from(value).slice(0, 1_000).join("");
+}

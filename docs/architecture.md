@@ -18,10 +18,11 @@ The root manifest loads one complete bundle:
 10. Implement
 11. Reference
 12. Web Fetch
-13. Papercuts
-14. BTW
+13. Browser
+14. Papercuts
+15. BTW
 
-Order is a runtime contract. Sandbox and Readonly form the safety prefix. Processes follows LSP and precedes Subagents; Subagents precedes Implement because Implement consumes its managed runtime. Web Fetch follows Reference while retaining separate ownership of direct public-URL retrieval.
+Order is a runtime contract. Sandbox and Readonly form the safety prefix. Processes follows LSP and precedes Subagents; Subagents precedes Implement because Implement consumes its managed runtime. Web Fetch follows Reference while retaining separate ownership of direct public-URL retrieval. Browser follows Web Fetch and owns lazy, isolated rendered-page state without sharing Web Fetch, Processes, or UI internals.
 
 The bundle integration suite loads the actual manifest through Pi's loader and verifies inventory, public registration ownership, source provenance, startup and reload behavior, internal imports, and safety ordering.
 

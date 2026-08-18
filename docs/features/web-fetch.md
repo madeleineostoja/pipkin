@@ -9,7 +9,7 @@ Web Fetch retrieves bounded content from direct public HTTP(S) URLs. Fetched pag
 | `web_fetch`       | Retrieve one public URL                                                                        |
 | `batch_web_fetch` | Retrieve one to eight requests with a fixed four-worker pool and 120-second aggregate deadline |
 
-Use Reference's `docs` for known-library documentation, `package_search` for package discovery, and `code_search` or the GitHub tool/skill for GitHub source and repository workflows. No tool automatically falls back to another.
+Use [Browser](browser.md) when JavaScript rendering, interaction, visual evidence, localhost, or isolated browser state matters. Web Fetch remains the direct public, credential-free path and does not share Browser state. Use Reference's `docs` for known-library documentation, `package_search` for package discovery, and `code_search` or the GitHub tool/skill for GitHub source and repository workflows. No tool automatically falls back to another.
 
 ## Request options
 

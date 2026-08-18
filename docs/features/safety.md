@@ -64,7 +64,7 @@ Workspace-write Sandbox mode still permits broad reads, unrestricted networking,
 - remote mutations or inherited credentials;
 - hostile repository code.
 
-Web Fetch separately validates public targets, but browser resolution after host validation leaves a DNS-rebinding window. Its requests and temporary artifacts are outside Sandbox and Readonly mediation.
+Web Fetch separately validates public targets, but browser resolution after host validation leaves a DNS-rebinding window. Its requests and temporary artifacts are outside Sandbox and Readonly mediation. Browser likewise owns its Chromium process and network activity outside those controls. Browser validates only model-requested top-level credential-free HTTP(S) URLs; redirects, subresources, and loaded pages can still reach private services.
 
 Use a devcontainer, VM, remote sandbox, or equivalent external boundary for hostile or unattended work.
 

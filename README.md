@@ -65,9 +65,10 @@ Implement coordinates trusted workers in disposable Git worktrees, publishes thr
 - **Explore** maps unfamiliar code; **Review** independently assesses a concrete artifact. Both run through `Agent` and remain visible through `/agents`.
 - **Reference** searches bounded library documentation, package ecosystems, and credential-visible GitHub source.
 - **Web Fetch** retrieves readable content from direct public URLs without authentication or page JavaScript.
+- **Browser** lazily opens an isolated rendered browser for local applications, page state, visual evidence, and navigation.
 - **LSP** provides read-only definitions, references, symbols, types, hover information, and diagnostics for supported languages.
 
-[Agents →](docs/features/agents.md) · [Reference →](docs/features/reference.md) · [Web Fetch →](docs/features/web-fetch.md) · [Workflow tools →](docs/features/workflow-tools.md)
+[Agents →](docs/features/agents.md) · [Reference →](docs/features/reference.md) · [Web Fetch →](docs/features/web-fetch.md) · [Browser →](docs/features/browser.md) · [Workflow tools →](docs/features/workflow-tools.md)
 
 ### Session utilities
 
@@ -119,6 +120,8 @@ These tools are called by the agent rather than typed as slash commands.
 | `code_search`           | Search bounded GitHub source visible to the configured credential                      |
 | `web_fetch`             | Retrieve bounded readable content from one public URL                                  |
 | `batch_web_fetch`       | Retrieve one to eight public URLs with fixed concurrency                               |
+| `browser_observe`       | Inspect isolated rendered pages, images, diagnostics, and tabs                         |
+| `browser_act`           | Navigate and manage isolated browser tabs                                              |
 | `record_papercut`       | Record qualifying incidental friction after an exercised workaround                    |
 
 ## Important safety boundaries
@@ -138,6 +141,7 @@ If `pi-smart-fetch` is separately installed, remove it before reloading Pipkin t
 - [Implementation](docs/features/implementation.md)
 - [Reference](docs/features/reference.md)
 - [Web Fetch](docs/features/web-fetch.md)
+- [Browser](docs/features/browser.md)
 - [Interface and Personality](docs/features/interface-and-personality.md)
 - [Workflow tools](docs/features/workflow-tools.md)
 - [Architecture](docs/architecture.md)

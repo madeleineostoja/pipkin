@@ -27,6 +27,8 @@ describe("Guidance catalogue", () => {
       "code_search",
       "web_fetch",
       "batch_web_fetch",
+      "browser_observe",
+      "browser_act",
       "record_papercut",
     ]);
     expect(PUBLIC_TOOL_EXCEPTIONS.bash).toContain("native Bash");
@@ -104,6 +106,9 @@ describe("Guidance catalogue", () => {
     for (const name of EXTERNAL_EVIDENCE_TOOLS) {
       expect(renderGuidance([name])!).toContain("External content");
     }
+    expect(renderGuidance(["browser_observe"])!).toContain(
+      "rendered page text",
+    );
   });
 
   it("stays bounded for the complete selected surface", () => {

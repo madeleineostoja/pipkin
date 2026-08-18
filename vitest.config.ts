@@ -13,6 +13,7 @@ const features = [
   "subagents",
   "reference",
   "web",
+  "browser",
   "papercuts",
   "btw",
 ];
