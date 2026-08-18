@@ -31,7 +31,7 @@ Browser makes each emitted `ref` opaque and binds it to the snapshot/document th
 
 ### `browser_observe`
 
-All modes return bounded external evidence and sanitized current URL/title metadata where page evidence is returned. Unknown, missing, unrelated, conflicting, control-character, or out-of-bound fields fail before startup or page mutation.
+All modes return bounded external evidence and sanitized current URL/title metadata where page evidence is returned. Arguments sit inside the required `request` object so each mode exposes only its compatible fields. Unknown, missing, unrelated, conflicting, control-character, or out-of-bound fields fail before startup or page mutation.
 
 | Mode          | Fields                                                                                                                                                 | Result                                                                                                                               |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
@@ -46,7 +46,7 @@ Browser attaches page listeners as soon as it owns a page. It retains the newest
 
 ### `browser_act`
 
-`browser_act` accepts only the following deterministic actions. It rejects unknown, unrelated, conflicting, unsupported, or out-of-bound fields before dispatch.
+`browser_act` accepts one action-specific object under the required `request` field. It rejects unknown, unrelated, conflicting, unsupported, or out-of-bound fields before dispatch.
 
 | Action                               | Fields and behaviour                                                                                                                |
 | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |

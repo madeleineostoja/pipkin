@@ -45,10 +45,19 @@ function recall(entries: unknown[]) {
     registerTool: (tool: unknown) => (definition = tool),
   } as any);
   return {
-    execute: (params: { id: string; lines?: string; find?: string }) =>
-      definition.execute("recall", params, undefined, undefined, {
-        sessionManager: { getEntries: () => entries },
-      }),
+    execute: (params: { id: string; lines?: string; find?: string }) => {
+      const { id, ...selector } = params;
+      return definition.execute(
+        "recall",
+        {
+          id,
+          ...(Object.keys(selector).length > 0 ? { selector } : {}),
+        },
+        undefined,
+        undefined,
+        { sessionManager: { getEntries: () => entries } },
+      );
+    },
     definition,
   };
 }
@@ -132,12 +141,12 @@ describe("context_recall", () => {
       toolResult("text", [{ type: "text", text: "one\ntwo" }]),
     ]);
     expect(definition.parameters.additionalProperties).toBe(false);
-    expect(definition.parameters.properties.lines.description).toContain(
-      "mutually exclusive with find",
-    );
-    expect(definition.parameters.properties.find.description).toContain(
-      "mutually exclusive with lines",
-    );
+    expect(definition.parameters.properties.selector.anyOf).toHaveLength(2);
+    expect(
+      definition.parameters.properties.selector.anyOf.map(
+        (branch: { required: string[] }) => branch.required,
+      ),
+    ).toEqual([["lines"], ["find"]]);
     await expect(
       execute({ id: "text", lines: "1", find: "one" }),
     ).rejects.toThrow("either lines or find");
@@ -365,7 +374,7 @@ describe("context_recall", () => {
       toolCall("malformed-process", "get_process_result", {
         id: "process-1",
         wait: true,
-        resultMode: "outcome",
+        result: { mode: "outcome" },
       }),
       toolResult("malformed-process", [{ type: "text", text: "summary" }], {
         retainedResult: { version: 1 },

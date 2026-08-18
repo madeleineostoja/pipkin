@@ -18,7 +18,7 @@ The read-only `lsp` tool complements text search with language-server relationsh
 | `diagnostics`       | What diagnostics does the server report for this file?               |
 | `status`            | Which servers are discovered, running, cooling down, or unavailable? |
 
-Position queries use a workspace-relative or absolute `file` with 1-indexed `line` and `column`. When symbol text is known, `symbol` can replace the column and `occurrence` selects a repeated instance.
+Each call places one action-specific object under `request`. Position queries use a workspace-relative or absolute `file` with 1-indexed `line` and `column`. When symbol text is known, `symbol` can replace the column and `occurrence` selects a repeated instance.
 
 Use LSP for focused semantic relationships, text search for literal discovery, and Explore for multi-step mapping. Diagnostics are advisory; project lint, typecheck, tests, and builds remain authoritative.
 
@@ -47,7 +47,7 @@ Use foreground Bash when completion is immediately required. Use managed process
 
 Use `wait: true` only for finite processes expected to terminate. For servers, watchers, and other long-lived processes, use `wait: false` to inspect current status and retained output; inspect again whenever newer information is needed. A wait timeout ends only the wait and leaves the process running.
 
-Results state process status, wait outcome, and output selection in prose before the complete bounded selected output. Their `details` retain bounded normalized snapshots and selectors; `resultMode: "outcome"` retains that same point-in-time result for `context_recall`. A later output-mode request is required for newer output.
+Results state process status, wait outcome, and output selection in prose before the complete bounded selected output. Their `details` retain bounded normalized snapshots and selectors. For `get_process_result`, optional `result` selects either `{ mode: "outcome" }` or output mode with an optional mutually exclusive `selector` containing `tailLines` or `find`; omitted `result` defaults to unfiltered output. Outcome mode retains that same point-in-time result for `context_recall`. A later output-mode request is required for newer output.
 
 `/processes` groups Running and Settled work, shows command, working directory, PID, settlement, and exceptional output-integrity information on a process landing page, and provides live merged output. Output follows the bottom until you scroll upward; returning to the bottom resumes following new output.
 

@@ -518,7 +518,17 @@ describe("Pipkin bundle", () => {
     const browserAct = JSON.parse(
       JSON.stringify(browser?.tools.get("browser_act")?.definition.parameters),
     );
-    expect(browserAct.properties.action.enum).toEqual([
+    const browserActions = browserAct.properties.request.anyOf;
+    expect(
+      browserActions.flatMap(
+        (branch: {
+          properties: { action: { const?: string; enum?: string[] } };
+        }) =>
+          branch.properties.action.const
+            ? [branch.properties.action.const]
+            : (branch.properties.action.enum ?? []),
+      ),
+    ).toEqual([
       "navigate",
       "back",
       "forward",
@@ -538,12 +548,17 @@ describe("Pipkin bundle", () => {
       "switch_tab",
       "close_tab",
     ]);
-    expect(browserAct.properties.condition.properties.kind.enum).toEqual([
-      "url",
-      "text",
-      "target",
-      "load_state",
-    ]);
+    const waitAction = browserActions.find(
+      (branch: { properties: { action: { const?: string } } }) =>
+        branch.properties.action.const === "wait",
+    );
+    expect(
+      waitAction.properties.condition.anyOf.map(
+        (branch: { properties: { kind: { const: string } } }) =>
+          branch.properties.kind.const,
+      ),
+    ).toEqual(["url", "text", "target", "load_state"]);
+    expect(JSON.stringify(browserAct).length).toBeLessThan(24_000);
     const webFetch = web?.tools.get("web_fetch")?.definition;
     const batchWebFetch = web?.tools.get("batch_web_fetch")?.definition;
     expect(webFetch?.description).toContain("one URL");
@@ -599,7 +614,9 @@ describe("Pipkin bundle", () => {
       .getAllRegisteredTools()
       .find(({ definition }) => definition.name === "browser_act")?.definition;
     expect(definition).toBeDefined();
-    const input = { action: "navigate", url: "file:///tmp/not-allowed" };
+    const input = {
+      request: { action: "navigate", url: "file:///tmp/not-allowed" },
+    };
 
     await expect(
       definition!.execute(

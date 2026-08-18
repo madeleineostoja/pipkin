@@ -15,7 +15,8 @@ import {
   normalizeAct,
   normalizeObserve,
   type BrowserActInput,
-  type BrowserObserveInput,
+  type BrowserActParametersInput,
+  type BrowserObserveParametersInput,
 } from "./schema.js";
 
 export default function (pi: ExtensionAPI): void {
@@ -47,11 +48,14 @@ export default function (pi: ExtensionAPI): void {
     parameters: BrowserObserveParameters,
     renderCall: toolCallRenderer({
       name: "browser_observe",
-      detail: (input: BrowserObserveInput) =>
-        `${input.mode}${input.target ? ` · ${targetSummary(input.target)}` : ""}`,
+      detail: (input: BrowserObserveParametersInput) => {
+        const target =
+          "target" in input.request ? input.request.target : undefined;
+        return `${input.request.mode}${target ? ` · ${targetSummary(target)}` : ""}`;
+      },
       pending: "Observing rendered page…",
     }),
-    async execute(_id, input: BrowserObserveInput, signal, onUpdate) {
+    async execute(_id, input: BrowserObserveParametersInput, signal, onUpdate) {
       try {
         const request = normalizeObserve(input);
         onUpdate?.({
@@ -75,12 +79,13 @@ export default function (pi: ExtensionAPI): void {
     renderCall: toolCallRenderer({
       name: "browser_act",
       detail: (input) => {
-        const summary = actionSummary(input as BrowserActInput);
-        return `${input.action}${input.url ? ` · ${urlSummary(input.url)}` : input.tabId ? ` · ${input.tabId}` : summary ? ` · ${summary}` : ""}`;
+        const request = input.request as BrowserActInput;
+        const summary = actionSummary(request);
+        return `${request.action}${request.url ? ` · ${urlSummary(request.url)}` : request.tabId ? ` · ${request.tabId}` : summary ? ` · ${summary}` : ""}`;
       },
       pending: "Updating browser…",
     }),
-    async execute(_id, input: BrowserActInput, signal, onUpdate) {
+    async execute(_id, input: BrowserActParametersInput, signal, onUpdate) {
       try {
         const request = normalizeAct(input);
         onUpdate?.({

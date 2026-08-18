@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { BrowserError } from "./errors.js";
 import { truncate, truncateSnapshot } from "./observe.js";
-import { normalizeAct, normalizeObserve, normalizeTarget } from "./schema.js";
+import {
+  normalizeAct as normalizeActParameters,
+  normalizeObserve as normalizeObserveParameters,
+  normalizeTarget,
+} from "./schema.js";
+
+const normalizeAct = (request: unknown) => normalizeActParameters({ request });
+const normalizeObserve = (request: unknown) =>
+  normalizeObserveParameters({ request });
 
 describe("Browser schemas", () => {
   it("keeps action fields closed and permits loopback HTTP navigation", () => {

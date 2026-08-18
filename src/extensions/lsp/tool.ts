@@ -58,56 +58,123 @@ const Actions = [
 ] as const;
 type Action = (typeof Actions)[number];
 
-export const LspParameters = Type.Object(
-  {
-    action: Type.Union(
-      Actions.map((action) => Type.Literal(action)),
-      {
-        description:
-          "Semantic operation to perform. Position actions require a file and line; diagnostics requires a file; workspace_symbols and status may omit a file.",
-      },
-    ),
-    file: Type.Optional(
-      Type.String({
-        description:
-          "Workspace-relative or absolute source file. Required except status and workspace_symbols without a target file.",
-      }),
-    ),
-    line: Type.Optional(
-      Type.Integer({ description: "1-indexed line for position actions." }),
-    ),
-    column: Type.Optional(
-      Type.Integer({ description: "1-indexed column for position actions." }),
-    ),
-    symbol: Type.Optional(
-      Type.String({
-        description:
-          "Symbol text resolved on line when column is omitted; use occurrence to choose repeated text.",
-      }),
-    ),
-    occurrence: Type.Optional(
-      Type.Integer({
-        minimum: 1,
-        description: "1-indexed occurrence of symbol on the specified line.",
-      }),
-    ),
-    query: Type.Optional(
-      Type.String({
-        description:
-          "Workspace symbol query; required when action is workspace_symbols.",
-      }),
-    ),
-    timeout: Type.Optional(
-      Type.Number({
-        minimum: 0.1,
-        description: "Request timeout in seconds, capped at 15 seconds.",
-      }),
-    ),
-  },
-  { additionalProperties: false },
+const lspFile = Type.String({
+  description: "Workspace-relative or absolute source file.",
+});
+const lspLine = Type.Integer({
+  minimum: 1,
+  description: "1-indexed source line.",
+});
+const lspColumn = Type.Integer({
+  minimum: 1,
+  description: "1-indexed source column.",
+});
+const lspSymbol = Type.String({
+  description: "Symbol text resolved on the selected line.",
+});
+const lspOccurrence = Type.Optional(
+  Type.Integer({
+    minimum: 1,
+    description: "1-indexed occurrence of repeated symbol text.",
+  }),
 );
-type LspInput = Omit<Static<typeof LspParameters>, "action"> & {
+const lspTimeout = Type.Optional(
+  Type.Number({
+    minimum: 0.1,
+    description: "Request timeout in seconds, capped at 15 seconds.",
+  }),
+);
+const positionAction = Type.Union(
+  [
+    "definition",
+    "type_definition",
+    "implementation",
+    "references",
+    "hover",
+  ].map((action) => Type.Literal(action)),
+  { description: "Position-based semantic operation." },
+);
+const fileAction = Type.Union(
+  ["document_symbols", "diagnostics"].map((action) => Type.Literal(action)),
+  { description: "File-based semantic operation." },
+);
+const lspRequest = Type.Union(
+  [
+    Type.Object(
+      {
+        action: positionAction,
+        file: lspFile,
+        line: lspLine,
+        column: lspColumn,
+        timeout: lspTimeout,
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        action: positionAction,
+        file: lspFile,
+        line: lspLine,
+        symbol: lspSymbol,
+        occurrence: lspOccurrence,
+        timeout: lspTimeout,
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        action: fileAction,
+        file: lspFile,
+        timeout: lspTimeout,
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        action: Type.Literal("workspace_symbols", {
+          description: "Search workspace symbols by query.",
+        }),
+        query: Type.String({
+          description: "Required workspace symbol query.",
+        }),
+        file: Type.Optional(
+          Type.String({
+            description: "Optional file used to select a workspace route.",
+          }),
+        ),
+        timeout: lspTimeout,
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        action: Type.Literal("status", {
+          description: "Report configured language-server status.",
+        }),
+      },
+      { additionalProperties: false },
+    ),
+  ],
+  { description: "Action-specific language-semantic request." },
+);
+
+export const LspParameters = Type.Object(
+  { request: lspRequest },
+  {
+    additionalProperties: false,
+    description: "One action-specific LSP request.",
+  },
+);
+type LspParametersInput = Static<typeof LspParameters>;
+type LspInput = {
   action: Action;
+  file?: string;
+  line?: number;
+  column?: number;
+  symbol?: string;
+  occurrence?: number;
+  query?: string;
+  timeout?: number;
 };
 type ToolDetails = Record<string, unknown>;
 
@@ -137,15 +204,22 @@ export function registerLsp(pi: ExtensionAPI): void {
     parameters: LspParameters,
     renderCall: toolCallRenderer({
       name: "lsp",
-      detail: (args: LspInput) => {
-        const action = args.action.replaceAll("_", " ");
-        const target = lspTarget(args, action);
+      detail: (args: LspParametersInput) => {
+        const request = args.request as LspInput;
+        const action = request.action.replaceAll("_", " ");
+        const target = lspTarget(request, action);
         return `${action}${target ? ` · ${target}` : ""}`;
       },
       pending: "Querying language server…",
     }),
-    async execute(_toolCallId, input: LspInput, signal, _onUpdate, ctx) {
-      return executeLsp(input, signal, ctx);
+    async execute(
+      _toolCallId,
+      input: LspParametersInput,
+      signal,
+      _onUpdate,
+      ctx,
+    ) {
+      return executeLsp(input.request as LspInput, signal, ctx);
     },
     renderResult: toolResultRenderer({
       summary(result, context) {

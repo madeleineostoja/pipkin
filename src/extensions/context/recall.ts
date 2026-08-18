@@ -11,28 +11,41 @@ import {
   toolCallRenderer,
   toolResultRenderer,
 } from "#lib/ui/tool-result-renderer";
-import { Type } from "typebox";
+import { Type, type Static } from "typebox";
 import { formatBashTarget } from "./bash-target.ts";
 import { decodeRetainedResult, hasRetainedResult } from "./retained-result.ts";
 
+const RecallSelector = Type.Union(
+  [
+    Type.Object(
+      {
+        lines: Type.String({
+          description: '1-indexed line range like "10-20" or single line "5".',
+        }),
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        find: Type.String({
+          description:
+            "Case-insensitive literal search for one-text-block results.",
+        }),
+      },
+      { additionalProperties: false },
+    ),
+  ],
+  { description: "Optional mutually exclusive retained-content selection." },
+);
 const RecallParams = Type.Object(
   {
-    id: Type.String({ description: "The toolCallId from an elision stub" }),
-    lines: Type.Optional(
-      Type.String({
-        description:
-          'Optional 1-indexed line range like "10-20" or single line "5"; mutually exclusive with find.',
-      }),
-    ),
-    find: Type.Optional(
-      Type.String({
-        description:
-          "Optional case-insensitive literal search for one-text-block results; mutually exclusive with lines",
-      }),
-    ),
+    id: Type.String({ description: "The toolCallId from an elision stub." }),
+    selector: Type.Optional(RecallSelector),
   },
   { additionalProperties: false },
 );
+type RecallParametersInput = Static<typeof RecallParams>;
+type RecallInput = { id: string; lines?: string; find?: string };
 
 const SEARCH_CONTEXT_LINES = 3;
 const SEARCH_MATCH_LIMIT = 10;
@@ -119,11 +132,12 @@ export function registerRecallTool(pi: ExtensionAPI): void {
     parameters: RecallParams,
     async execute(
       _toolCallId: string,
-      params: { id: string; lines?: string; find?: string },
+      input: RecallParametersInput,
       _signal: AbortSignal | undefined,
       _onUpdate: unknown,
       ctx: ExtensionContext,
     ): Promise<any> {
+      const params: RecallInput = { id: input.id, ...input.selector };
       validateParams(params);
       const result = findToolResult(ctx, params.id);
       if (!result) {
@@ -201,11 +215,15 @@ export function registerRecallTool(pi: ExtensionAPI): void {
     },
     renderCall: toolCallRenderer({
       name: "context_recall",
-      detail: (args) =>
+      detail: (args: RecallParametersInput) =>
         [
           shortenedId(args.id),
-          args.lines ? `lines ${args.lines}` : undefined,
-          args.find ? `find “${args.find}”` : undefined,
+          args.selector && "lines" in args.selector
+            ? `lines ${args.selector.lines}`
+            : undefined,
+          args.selector && "find" in args.selector
+            ? `find “${args.selector.find}”`
+            : undefined,
         ]
           .filter(Boolean)
           .join(" · "),
@@ -500,11 +518,14 @@ function resolveRecalledResult(
 }
 
 function isOutcomeArguments(value: unknown): boolean {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    (value as { resultMode?: unknown }).resultMode === "outcome"
-  );
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const input = value as {
+    resultMode?: unknown;
+    result?: { mode?: unknown };
+  };
+  return input.resultMode === "outcome" || input.result?.mode === "outcome";
 }
 
 function isFailedProcessOutcomeFallback(details: unknown): boolean {

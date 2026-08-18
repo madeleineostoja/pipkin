@@ -1,5 +1,5 @@
 import { StringEnum } from "@earendil-works/pi-ai";
-import { Type } from "typebox";
+import { Type, type Static } from "typebox";
 import { BrowserError } from "./errors.js";
 import { LIMITS } from "./limits.js";
 import { isSnapshotRef } from "./target.js";
@@ -33,249 +33,406 @@ const actions = [
   "switch_tab",
   "close_tab",
 ] as const;
+const targetValue = Type.String({
+  minLength: 1,
+  maxLength: LIMITS.targetChars,
+  description:
+    "Non-empty snapshot ref, semantic locator value, or CSS selector, at most 1,000 characters.",
+});
 const target = Type.Object(
   {
     kind: StringEnum(targetKinds, {
       description:
         "Resolution kind: snapshot ref, semantic locator, or explicit CSS fallback.",
     }),
-    value: Type.String({
-      minLength: 1,
-      maxLength: LIMITS.targetChars,
-      description:
-        "Non-empty ref, semantic locator value, or CSS selector, at most 1,000 characters.",
-    }),
+    value: targetValue,
     name: Type.Optional(
       Type.String({
         minLength: 1,
         maxLength: LIMITS.nameChars,
         description:
-          "Accessible name for a role target only, at most 500 characters.",
+          "Accessible name for role targets, at most 500 characters.",
       }),
     ),
     exact: Type.Optional(
       Type.Boolean({
         description:
-          "Exact matching for role, text, label, or placeholder targets only.",
+          "Exact matching for role, text, label, or placeholder targets.",
       }),
-    ),
-  },
-  {
-    additionalProperties: false,
-    description: "One strict target in the active rendered page.",
-  },
-);
-const waitCondition = Type.Object(
-  {
-    kind: StringEnum(["url", "text", "target", "load_state"] as const, {
-      description: "Read-only wait condition kind.",
-    }),
-    value: Type.Optional(
-      Type.String({
-        minLength: 1,
-        maxLength: LIMITS.urlChars,
-        description:
-          "URL or visible text to wait for; URL is at most 2,000 and text at most 1,000 characters.",
-      }),
-    ),
-    match: Type.Optional(
-      StringEnum(["contains", "exact"] as const, {
-        description:
-          "URL matching mode; contains is the default and regex or glob patterns are unsupported.",
-      }),
-    ),
-    exact: Type.Optional(
-      Type.Boolean({
-        description:
-          "Whether visible text must match exactly; defaults to false.",
-      }),
-    ),
-    target: Type.Optional(target),
-    state: Type.Optional(
-      StringEnum(
-        [
-          "attached",
-          "visible",
-          "hidden",
-          "detached",
-          "domcontentloaded",
-          "load",
-        ] as const,
-        {
-          description:
-            "Target state or load state required by the selected condition kind.",
-        },
-      ),
     ),
   },
   {
     additionalProperties: false,
     description:
+      "One strict target in the active rendered page; kind-specific field compatibility is validated before use.",
+  },
+);
+
+const waitCondition = Type.Union(
+  [
+    Type.Object(
+      {
+        kind: Type.Literal("url", {
+          description: "Wait for the active page URL.",
+        }),
+        value: Type.String({
+          minLength: 1,
+          maxLength: LIMITS.urlChars,
+          description: "Bounded URL text to match.",
+        }),
+        match: Type.Optional(
+          StringEnum(["contains", "exact"] as const, {
+            description:
+              "URL matching mode; contains is the default and regex or glob patterns are unsupported.",
+          }),
+        ),
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        kind: Type.Literal("text", {
+          description: "Wait for visible rendered text.",
+        }),
+        value: Type.String({
+          minLength: 1,
+          maxLength: LIMITS.targetChars,
+          description: "Bounded visible text to match.",
+        }),
+        exact: Type.Optional(
+          Type.Boolean({
+            description:
+              "Whether visible text must match exactly; defaults to false.",
+          }),
+        ),
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        kind: Type.Literal("target", {
+          description: "Wait for a strict target state.",
+        }),
+        target,
+        state: StringEnum(
+          ["attached", "visible", "hidden", "detached"] as const,
+          { description: "Required target state." },
+        ),
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        kind: Type.Literal("load_state", {
+          description: "Wait for a page load state.",
+        }),
+        state: StringEnum(["domcontentloaded", "load"] as const, {
+          description: "Required page load state.",
+        }),
+      },
+      { additionalProperties: false },
+    ),
+  ],
+  {
+    description:
       "Closed structured wait condition with fields selected by kind.",
   },
 );
 
+const observeRequest = Type.Union(
+  [
+    Type.Object(
+      {
+        mode: Type.Literal("snapshot", {
+          description: "Capture an AI accessibility snapshot.",
+        }),
+        target: Type.Optional(target),
+        depth: Type.Optional(
+          Type.Integer({
+            minimum: 1,
+            maximum: 20,
+            description: "AI snapshot depth, defaulting to 10.",
+          }),
+        ),
+        boxes: Type.Optional(
+          Type.Boolean({
+            description: "Include bounding boxes in the AI snapshot.",
+          }),
+        ),
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        mode: Type.Literal("screenshot", {
+          description: "Capture the viewport or full rendered page.",
+        }),
+        fullPage: Type.Optional(
+          Type.Boolean({
+            description:
+              "Capture the full page instead of the viewport; defaults to false.",
+          }),
+        ),
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        mode: Type.Literal("screenshot", {
+          description: "Capture one strict target.",
+        }),
+        target,
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        mode: Type.Literal("text", {
+          description: "Read rendered inner text.",
+        }),
+        target: Type.Optional(target),
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        mode: Type.Literal("element", {
+          description: "Inspect one strict element.",
+        }),
+        target,
+        styleProperties: Type.Optional(
+          Type.Array(
+            Type.String({
+              minLength: 1,
+              maxLength: LIMITS.cssPropertyChars,
+              description:
+                "Hyphenated CSS property or custom property to include.",
+            }),
+            {
+              minItems: 1,
+              maxItems: LIMITS.cssProperties,
+              uniqueItems: true,
+              description:
+                "Additional unique CSS properties for element inspection.",
+            },
+          ),
+        ),
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        mode: Type.Literal("diagnostics", {
+          description: "Read retained browser diagnostics.",
+        }),
+        categories: Type.Optional(
+          Type.Array(
+            StringEnum(
+              [
+                "console",
+                "page_error",
+                "request_failed",
+                "http_error",
+              ] as const,
+              { description: "Diagnostic category to return." },
+            ),
+            {
+              minItems: 1,
+              maxItems: 4,
+              uniqueItems: true,
+              description: "Unique diagnostic categories to return.",
+            },
+          ),
+        ),
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        mode: Type.Literal("tabs", {
+          description: "List live browser tabs.",
+        }),
+      },
+      { additionalProperties: false },
+    ),
+  ],
+  { description: "Mode-specific browser observation request." },
+);
+
+const actionUrl = Type.String({
+  minLength: 1,
+  maxLength: LIMITS.urlChars,
+  description: "Credential-free HTTP(S) URL.",
+});
+const actionValue = Type.String({
+  maxLength: LIMITS.fillChars,
+  description: "Text up to 20,000 characters; Browser never echoes it.",
+});
+const actionKey = Type.String({
+  minLength: 1,
+  maxLength: LIMITS.keyChars,
+  description: "Playwright key string, at most 100 characters.",
+});
+const actionValues = Type.Array(
+  Type.String({
+    maxLength: LIMITS.selectValueChars,
+    description: "Existing select option value, at most 500 characters.",
+  }),
+  {
+    minItems: 1,
+    maxItems: LIMITS.selectValues,
+    description: "One to 20 existing select option values.",
+  },
+);
+const deltaX = Type.Integer({
+  minimum: -LIMITS.scrollDelta,
+  maximum: LIMITS.scrollDelta,
+  description: "Horizontal scroll delta from -10,000 to 10,000 CSS pixels.",
+});
+const deltaY = Type.Integer({
+  minimum: -LIMITS.scrollDelta,
+  maximum: LIMITS.scrollDelta,
+  description: "Vertical scroll delta from -10,000 to 10,000 CSS pixels.",
+});
+const tabId = Type.String({
+  minLength: 1,
+  maxLength: LIMITS.tabChars,
+  description: "Existing opaque tab ID from browser_observe tabs.",
+});
+function actionKind<T extends (typeof actions)[number]>(action: T) {
+  return Type.Literal(action, {
+    description: `Perform the ${action.replaceAll("_", " ")} action.`,
+  });
+}
+const actRequest = Type.Union(
+  [
+    Type.Object(
+      { action: actionKind("navigate"), url: actionUrl },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        action: StringEnum(["back", "forward", "reload"] as const, {
+          description: "Navigate browser history or reload the active page.",
+        }),
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        action: StringEnum(["click", "hover", "check", "uncheck"] as const, {
+          description: "Interact with one required strict target.",
+        }),
+        target,
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        action: StringEnum(["fill", "type"] as const, {
+          description: "Supply text to one required strict target.",
+        }),
+        target,
+        value: actionValue,
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        action: actionKind("press"),
+        key: actionKey,
+        target: Type.Optional(target),
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      { action: actionKind("select"), target, values: actionValues },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        action: actionKind("scroll"),
+        deltaX,
+        deltaY,
+        target: Type.Optional(target),
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        action: actionKind("wait"),
+        condition: waitCondition,
+        timeoutMs: Type.Optional(
+          Type.Integer({
+            minimum: LIMITS.waitMinMs,
+            maximum: LIMITS.waitMaxMs,
+            description:
+              "Read-only wait deadline from 100 to 120,000 milliseconds; defaults to 10,000.",
+          }),
+        ),
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        action: actionKind("set_viewport"),
+        width: Type.Integer({
+          minimum: LIMITS.viewport.minWidth,
+          maximum: LIMITS.viewport.maxWidth,
+          description: "Viewport width in CSS pixels.",
+        }),
+        height: Type.Integer({
+          minimum: LIMITS.viewport.minHeight,
+          maximum: LIMITS.viewport.maxHeight,
+          description: "Viewport height in CSS pixels.",
+        }),
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        action: actionKind("open_tab"),
+        url: Type.Optional(actionUrl),
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        action: StringEnum(["switch_tab", "close_tab"] as const, {
+          description: "Switch to or close one existing tab.",
+        }),
+        tabId,
+      },
+      { additionalProperties: false },
+    ),
+  ],
+  { description: "Action-specific deterministic browser request." },
+);
+
 export const BrowserObserveParameters = Type.Object(
   {
-    mode: StringEnum(
-      [
-        "snapshot",
-        "screenshot",
-        "text",
-        "element",
-        "diagnostics",
-        "tabs",
-      ] as const,
-      {
-        description: "Observation mode for the active rendered tab.",
-      },
-    ),
-    target: Type.Optional(target),
-    depth: Type.Optional(
-      Type.Integer({
-        minimum: 1,
-        maximum: 20,
-        description: "AI snapshot depth, defaulting to 10.",
-      }),
-    ),
-    boxes: Type.Optional(
-      Type.Boolean({
-        description: "Include bounding boxes in an AI snapshot.",
-      }),
-    ),
-    fullPage: Type.Optional(
-      Type.Boolean({
-        description:
-          "Capture the full page screenshot when no target is supplied.",
-      }),
-    ),
-    styleProperties: Type.Optional(
-      Type.Array(
-        Type.String({
-          minLength: 1,
-          maxLength: LIMITS.cssPropertyChars,
-          description: "Hyphenated CSS property or custom property to include.",
-        }),
-        {
-          minItems: 1,
-          maxItems: LIMITS.cssProperties,
-          uniqueItems: true,
-          description:
-            "Additional unique CSS properties for element inspection.",
-        },
-      ),
-    ),
-    categories: Type.Optional(
-      Type.Array(
-        StringEnum(
-          ["console", "page_error", "request_failed", "http_error"] as const,
-          { description: "Diagnostic category to return." },
-        ),
-        {
-          minItems: 1,
-          maxItems: 4,
-          uniqueItems: true,
-          description: "Unique diagnostic categories to return.",
-        },
-      ),
-    ),
+    request: observeRequest,
   },
-  { additionalProperties: false },
+  {
+    additionalProperties: false,
+    description: "One mode-specific browser observation request.",
+  },
 );
 
 export const BrowserActParameters = Type.Object(
   {
-    action: StringEnum(actions, {
-      description:
-        "Deterministic navigation, interaction, scrolling, wait, viewport, or tab action.",
-    }),
-    url: Type.Optional(
-      Type.String({
-        minLength: 1,
-        maxLength: LIMITS.urlChars,
-        description:
-          "Credential-free HTTP(S) URL for navigate or optional open_tab.",
-      }),
-    ),
-    target: Type.Optional(target),
-    value: Type.Optional(
-      Type.String({
-        maxLength: LIMITS.fillChars,
-        description:
-          "Text for fill or type only; at most 20,000 characters and never echoed by Browser.",
-      }),
-    ),
-    key: Type.Optional(
-      Type.String({
-        minLength: 1,
-        maxLength: LIMITS.keyChars,
-        description:
-          "Playwright key string for press only, at most 100 characters.",
-      }),
-    ),
-    values: Type.Optional(
-      Type.Array(
-        Type.String({
-          maxLength: LIMITS.selectValueChars,
-          description: "Existing select option value, at most 500 characters.",
-        }),
-        {
-          minItems: 1,
-          maxItems: LIMITS.selectValues,
-          description: "One to 20 existing select option values for select.",
-        },
-      ),
-    ),
-    deltaX: Type.Optional(
-      Type.Integer({
-        minimum: -LIMITS.scrollDelta,
-        maximum: LIMITS.scrollDelta,
-        description:
-          "Horizontal scroll delta in CSS pixels, from -10,000 to 10,000.",
-      }),
-    ),
-    deltaY: Type.Optional(
-      Type.Integer({
-        minimum: -LIMITS.scrollDelta,
-        maximum: LIMITS.scrollDelta,
-        description:
-          "Vertical scroll delta in CSS pixels, from -10,000 to 10,000.",
-      }),
-    ),
-    condition: Type.Optional(waitCondition),
-    timeoutMs: Type.Optional(
-      Type.Integer({
-        minimum: LIMITS.waitMinMs,
-        maximum: LIMITS.waitMaxMs,
-        description:
-          "Read-only wait deadline in milliseconds, 100 to 120,000; defaults to 10,000.",
-      }),
-    ),
-    width: Type.Optional(
-      Type.Integer({
-        minimum: LIMITS.viewport.minWidth,
-        maximum: LIMITS.viewport.maxWidth,
-        description: "Viewport width in CSS pixels.",
-      }),
-    ),
-    height: Type.Optional(
-      Type.Integer({
-        minimum: LIMITS.viewport.minHeight,
-        maximum: LIMITS.viewport.maxHeight,
-        description: "Viewport height in CSS pixels.",
-      }),
-    ),
-    tabId: Type.Optional(
-      Type.String({
-        minLength: 1,
-        maxLength: LIMITS.tabChars,
-        description: "Existing opaque tab ID from browser_observe tabs.",
-      }),
-    ),
+    request: actRequest,
   },
-  { additionalProperties: false },
+  {
+    additionalProperties: false,
+    description: "One action-specific browser request.",
+  },
 );
 
+export type BrowserObserveParametersInput = Static<
+  typeof BrowserObserveParameters
+>;
+export type BrowserActParametersInput = Static<typeof BrowserActParameters>;
 export type Target = {
   kind: (typeof targetKinds)[number];
   value: string;
@@ -365,9 +522,16 @@ export function normalizeTarget(value: unknown): Target {
 }
 
 export function normalizeObserve(value: unknown): BrowserObserveInput {
+  if (!record(value) || !only(value, ["request"])) {
+    throw new BrowserError(
+      "target",
+      "Browser observation has an invalid schema.",
+    );
+  }
+  const request = value.request;
   if (
-    !record(value) ||
-    !only(value, [
+    !record(request) ||
+    !only(request, [
       "mode",
       "target",
       "depth",
@@ -383,14 +547,14 @@ export function normalizeObserve(value: unknown): BrowserObserveInput {
       "element",
       "diagnostics",
       "tabs",
-    ].includes(value.mode as string)
+    ].includes(request.mode as string)
   ) {
     throw new BrowserError(
       "target",
       "Browser observation has an invalid schema.",
     );
   }
-  const input = value as BrowserObserveInput;
+  const input = request as BrowserObserveInput;
   const targetValue =
     input.target === undefined ? undefined : normalizeTarget(input.target);
   if (
@@ -447,11 +611,11 @@ export function normalizeObserve(value: unknown): BrowserObserveInput {
     tabs: ["mode"],
   };
   if (
-    !only(value, permitted[input.mode]) ||
+    !only(request, permitted[input.mode]) ||
     (input.mode === "element" && !targetValue) ||
     (input.mode === "screenshot" &&
       targetValue &&
-      Object.hasOwn(value, "fullPage"))
+      Object.hasOwn(request, "fullPage"))
   ) {
     throw new BrowserError(
       "target",
@@ -462,6 +626,13 @@ export function normalizeObserve(value: unknown): BrowserObserveInput {
 }
 
 export function normalizeAct(value: unknown): BrowserActInput {
+  if (!record(value) || !only(value, ["request"])) {
+    throw new BrowserError("target", "Browser action has an invalid schema.");
+  }
+  const request = value.request;
+  if (!record(request)) {
+    throw new BrowserError("target", "Browser action has an invalid schema.");
+  }
   const fields = [
     "action",
     "url",
@@ -478,13 +649,12 @@ export function normalizeAct(value: unknown): BrowserActInput {
     "tabId",
   ];
   if (
-    !record(value) ||
-    !only(value, fields) ||
-    !actions.includes(value.action as BrowserActInput["action"])
+    !only(request, fields) ||
+    !actions.includes(request.action as BrowserActInput["action"])
   ) {
     throw new BrowserError("target", "Browser action has an invalid schema.");
   }
-  const input = value as BrowserActInput;
+  const input = request as BrowserActInput;
   const targetValue =
     input.target === undefined ? undefined : normalizeTarget(input.target);
   const allowed: Record<BrowserActInput["action"], readonly string[]> = {
@@ -507,7 +677,7 @@ export function normalizeAct(value: unknown): BrowserActInput {
     switch_tab: ["action", "tabId"],
     close_tab: ["action", "tabId"],
   };
-  if (!only(value, allowed[input.action])) {
+  if (!only(request, allowed[input.action])) {
     throw new BrowserError(
       "target",
       "Fields are invalid or incompatible with this Browser action.",

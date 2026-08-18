@@ -12,10 +12,6 @@ import {
 } from "./runtime.js";
 
 const ResultModeValues = [Type.Literal("output"), Type.Literal("outcome")];
-const ProcessResultMode = Type.Union(ResultModeValues, {
-  description:
-    "Defaults to output when process output affects the next decision. Choose outcome only for status: it retains one point-in-time result for context_recall while failed process output stays directly visible. tailLines and find require output mode.",
-});
 const StopResultMode = Type.Union(ResultModeValues, {
   description:
     "Defaults to output when final output affects the next decision. Choose outcome only for final status: it retains one point-in-time result for context_recall while failed process output stays directly visible.",
@@ -35,6 +31,56 @@ const StartParams = Type.Object(
 
 type StartInput = Static<typeof StartParams>;
 
+const OutputSelector = Type.Union(
+  [
+    Type.Object(
+      {
+        tailLines: Type.Integer({
+          minimum: 1,
+          maximum: 200,
+          description: "Newest retained output lines to inspect.",
+        }),
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        find: Type.String({
+          description:
+            "Trimmed case-insensitive 1–256-byte literal output search.",
+        }),
+      },
+      { additionalProperties: false },
+    ),
+  ],
+  { description: "Optional mutually exclusive output selection." },
+);
+const ResultSelection = Type.Union(
+  [
+    Type.Object(
+      {
+        mode: Type.Literal("output", {
+          description: "Return bounded retained output directly.",
+        }),
+        selector: Type.Optional(OutputSelector),
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        mode: Type.Literal("outcome", {
+          description:
+            "Retain a successful point-in-time result for context_recall and return concise status.",
+        }),
+      },
+      { additionalProperties: false },
+    ),
+  ],
+  {
+    description:
+      "Result delivery; omitted defaults to output without a selector. Failed output always remains directly visible.",
+  },
+);
 const ResultParams = Type.Object(
   {
     id: Type.String({
@@ -47,24 +93,10 @@ const ResultParams = Type.Object(
     timeoutSeconds: Type.Optional(
       Type.Number({
         description:
-          "Positive maximum wait in seconds; timeout leaves the process running.",
+          "Positive maximum wait in seconds; valid only with wait:true, and timeout leaves the process running.",
       }),
     ),
-    resultMode: Type.Optional(ProcessResultMode),
-    tailLines: Type.Optional(
-      Type.Integer({
-        minimum: 1,
-        maximum: 200,
-        description:
-          "Newest retained output lines to inspect; mutually exclusive with find.",
-      }),
-    ),
-    find: Type.Optional(
-      Type.String({
-        description:
-          "Trimmed case-insensitive 1–256-byte literal output search; mutually exclusive with tailLines.",
-      }),
-    ),
+    result: Type.Optional(ResultSelection),
   },
   { additionalProperties: false },
 );
@@ -205,18 +237,6 @@ function outcomeSummary(result: {
   waitOutcome?: string;
 }): string {
   return `${processStatus(result.snapshot)}${result.waitOutcome ? ` ${waitStatus(result.waitOutcome, result.snapshot.status)}` : ""}`;
-}
-
-function validateOutcomeSelection(
-  mode: "output" | "outcome",
-  tailLines: number | undefined,
-  find: string | undefined,
-): void {
-  if (mode === "outcome" && (tailLines !== undefined || find !== undefined)) {
-    throw new Error(
-      "get_process_result: tailLines and find require resultMode:output",
-    );
-  }
 }
 
 type ProcessResultDetails = {
@@ -360,18 +380,22 @@ export function registerProcessTools(
         args.wait ? "Waiting for process…" : "Reading process state…",
     }),
     async execute(toolCallId, params, signal) {
-      const mode = params.resultMode ?? "output";
-      validateOutcomeSelection(mode, params.tailLines, params.find);
+      const mode = params.result?.mode ?? "output";
+      const selector =
+        params.result?.mode === "output" ? params.result.selector : undefined;
+      const tailLines =
+        selector && "tailLines" in selector ? selector.tailLines : undefined;
+      const find = selector && "find" in selector ? selector.find : undefined;
       const result = await runtime().result(
         params.id,
         params.wait,
         params.timeoutSeconds,
         signal,
-        { tailLines: params.tailLines, find: params.find },
+        { tailLines, find },
       );
       const ordinary = ordinaryResult({
         ...result,
-        find: params.find,
+        find,
         resultMode: mode,
       });
       if (mode === "output" || result.snapshot.status === "failed") {

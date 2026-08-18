@@ -405,14 +405,24 @@ describe("lsp tool inputs and bounded render data", () => {
     ]);
   });
 
+  it("keeps column and symbol position requests mutually exclusive", () => {
+    const schema = JSON.parse(JSON.stringify(LspParameters));
+    const [columnRequest, symbolRequest] = schema.properties.request.anyOf;
+
+    expect(columnRequest.required).toContain("column");
+    expect(columnRequest.properties.symbol).toBeUndefined();
+    expect(columnRequest.properties.occurrence).toBeUndefined();
+    expect(symbolRequest.required).toContain("symbol");
+    expect(symbolRequest.properties.column).toBeUndefined();
+  });
+
   it("documents that workspace_symbols requires query", async () => {
-    expect(
-      (
-        LspParameters.properties.query as unknown as {
-          description: string;
-        }
-      ).description,
-    ).toContain("required when action is workspace_symbols");
+    const schema = JSON.parse(JSON.stringify(LspParameters));
+    const workspaceSymbols = schema.properties.request.anyOf.find(
+      (branch: { properties: { action: { const?: string } } }) =>
+        branch.properties.action.const === "workspace_symbols",
+    );
+    expect(workspaceSymbols.required).toContain("query");
     const result = await executeLsp(
       { action: "workspace_symbols" },
       undefined,

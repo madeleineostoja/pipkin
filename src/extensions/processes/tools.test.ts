@@ -91,6 +91,7 @@ describe("process tools", () => {
     const output = await get.execute("output-call", {
       id: "process-1",
       wait: false,
+      result: { mode: "output", selector: { tailLines: 20 } },
     });
     expect(output.content[0].text).toContain(
       "Managed process process-1 completed.",
@@ -108,7 +109,7 @@ describe("process tools", () => {
       selector: { type: "tail", sourceLines: 1 },
       resultMode: "output",
     });
-    expect(calls[0]?.at(-1)).toEqual({ tailLines: undefined, find: undefined });
+    expect(calls[0]?.at(-1)).toEqual({ tailLines: 20, find: undefined });
 
     const renderCall = (isPartial: boolean) =>
       get.renderCall!({ id: "process-1", wait: true }, theme, { isPartial })
@@ -121,6 +122,28 @@ describe("process tools", () => {
     expect(renderCall(false)).toBe("get_process_result process-1");
 
     expect(get.parameters.additionalProperties).toBe(false);
+    const resultSchema = (
+      get.parameters as {
+        properties: {
+          result: {
+            anyOf: Array<{
+              properties: {
+                mode: { const: string };
+                selector?: { anyOf: Array<{ required: string[] }> };
+              };
+            }>;
+          };
+        };
+      }
+    ).properties.result;
+    expect(
+      resultSchema.anyOf.map((branch) => branch.properties.mode.const),
+    ).toEqual(["output", "outcome"]);
+    expect(
+      resultSchema.anyOf[0]?.properties.selector?.anyOf.map(
+        (branch) => branch.required,
+      ),
+    ).toEqual([["tailLines"], ["find"]]);
     expect(tools.get("stop_process")!.parameters.additionalProperties).toBe(
       false,
     );
@@ -150,7 +173,7 @@ describe("process tools", () => {
     const outcome = await get.execute("outcome-call", {
       id: "process-1",
       wait: true,
-      resultMode: "outcome",
+      result: { mode: "outcome" },
     });
     expect(outcome.content[0].text).toContain('context_recall("outcome-call")');
     expect(outcome.details.retainedResult.result.content[0].text).toContain(

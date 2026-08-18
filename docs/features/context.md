@@ -51,13 +51,13 @@ Expanding it shows a bounded reason breakdown. These are custom session entries 
 
 Use the tool-call ID from an elision stub or recallable outcome.
 
-| Request                                              | Effect                                                        |
-| ---------------------------------------------------- | ------------------------------------------------------------- |
-| `{ "id": "TOOL_CALL_ID" }`                           | Return the original stored content blocks                     |
-| `{ "id": "TOOL_CALL_ID", "lines": "40-80" }`         | Return a positive 1-indexed line or range from one text block |
-| `{ "id": "TOOL_CALL_ID", "find": "AssertionError" }` | Search one text block case-insensitively with bounded context |
+| Request                                                              | Effect                                                        |
+| -------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `{ "id": "TOOL_CALL_ID" }`                                           | Return the original stored content blocks                     |
+| `{ "id": "TOOL_CALL_ID", "selector": { "lines": "40-80" } }`         | Return a positive 1-indexed line or range from one text block |
+| `{ "id": "TOOL_CALL_ID", "selector": { "find": "AssertionError" } }` | Search one text block case-insensitively with bounded context |
 
-`lines` and `find` are mutually exclusive. Search returns at most ten source-ordered matches with three surrounding lines and reports truncation or omitted matches. A search with no matches succeeds; missing content, invalid ranges, unsupported content shapes, and empty slices are errors.
+The selector union makes `lines` and `find` mutually exclusive. Search returns at most ten source-ordered matches with three surrounding lines and reports truncation or omitted matches. A search with no matches succeeds; missing content, invalid ranges, unsupported content shapes, and empty slices are errors.
 
 Recall preserves a bounded source label for terminal presentation but does not add it to model content or alter pruning decisions.
 
@@ -71,6 +71,6 @@ On successful output, `bash_outcome` returns concise status and retains the ordi
 
 ## Managed-process outcomes
 
-`get_process_result` and `stop_process` default to bounded visible output. Choose `resultMode: "outcome"` when only point-in-time status matters; successful results return concise status and exact recall guidance. Failed process output remains visible.
+`get_process_result` and `stop_process` default to bounded visible output. For `get_process_result`, choose `result: { mode: "outcome" }` when only point-in-time status matters; `stop_process` retains its scalar `resultMode`. Successful outcome results return concise status and exact recall guidance. Failed process output remains visible.
 
 Recall can recover that retained snapshot after compaction or process-record eviction, but it cannot recover output produced later or already dropped by retention. Request a later output-mode result for newer output. Tail and literal-search filters require output mode.
