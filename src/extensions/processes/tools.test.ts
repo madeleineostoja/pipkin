@@ -5,6 +5,7 @@ type Tool = {
   name: string;
   parameters: { additionalProperties?: boolean };
   execute: (...args: any[]) => Promise<any>;
+  renderCall?: (...args: any[]) => { render: (width: number) => string[] };
   renderResult?: (...args: any[]) => { render: (width: number) => string[] };
 };
 
@@ -37,7 +38,10 @@ const snapshot = {
   outputComplete: true,
 } as const;
 
-const theme = { fg: (_color: string, text: string) => text } as never;
+const theme = {
+  fg: (_color: string, text: string) => text,
+  bold: (text: string) => text,
+} as never;
 
 describe("process tools", () => {
   it("returns readable status and selected output while retaining normalized details", async () => {
@@ -105,6 +109,16 @@ describe("process tools", () => {
       resultMode: "output",
     });
     expect(calls[0]?.at(-1)).toEqual({ tailLines: undefined, find: undefined });
+
+    const renderCall = (isPartial: boolean) =>
+      get.renderCall!({ id: "process-1", wait: true }, theme, { isPartial })
+        .render(120)
+        .map((line: string) => line.trimEnd())
+        .join("\n");
+    expect(renderCall(true)).toBe(
+      "get_process_result process-1\nWaiting for process…",
+    );
+    expect(renderCall(false)).toBe("get_process_result process-1");
 
     expect(get.parameters.additionalProperties).toBe(false);
     expect(tools.get("stop_process")!.parameters.additionalProperties).toBe(

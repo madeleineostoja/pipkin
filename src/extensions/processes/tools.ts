@@ -355,7 +355,7 @@ export function registerProcessTools(
     parameters: ResultParams,
     renderCall: toolCallRenderer({
       name: "get_process_result",
-      detail: (args: ResultInput) => `${args.id}${args.wait ? " · wait" : ""}`,
+      detail: (args: ResultInput) => args.id,
       pending: (args: ResultInput) =>
         args.wait ? "Waiting for process…" : "Reading process state…",
     }),
