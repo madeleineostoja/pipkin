@@ -67,7 +67,11 @@ export const renderBrowserObserveResult = toolResultRenderer({
 export const renderBrowserActResult = toolResultRenderer({
   summary(result) {
     const value = details(result.details);
-    return `${value.action ?? "Browser action"} · ${typeof value.activeTabId === "string" ? value.activeTabId : context(value)} · ${value.outcome ?? "complete"}`;
+    const target =
+      typeof value.target === "string" && value.target
+        ? bounded(value.target, 120)
+        : "current page";
+    return `${value.action ?? "Browser action"} · ${target} · ${value.outcome ?? "complete"}`;
   },
   partial(result) {
     return `${details(result.details).phase ?? "Navigating"}…`;

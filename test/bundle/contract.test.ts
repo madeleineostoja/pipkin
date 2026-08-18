@@ -515,6 +515,35 @@ describe("Pipkin bundle", () => {
     expect(
       browser?.tools.get("browser_act")?.definition.renderResult,
     ).toBeTypeOf("function");
+    const browserAct = JSON.parse(
+      JSON.stringify(browser?.tools.get("browser_act")?.definition.parameters),
+    );
+    expect(browserAct.properties.action.enum).toEqual([
+      "navigate",
+      "back",
+      "forward",
+      "reload",
+      "click",
+      "hover",
+      "check",
+      "uncheck",
+      "fill",
+      "type",
+      "press",
+      "select",
+      "scroll",
+      "wait",
+      "set_viewport",
+      "open_tab",
+      "switch_tab",
+      "close_tab",
+    ]);
+    expect(browserAct.properties.condition.properties.kind.enum).toEqual([
+      "url",
+      "text",
+      "target",
+      "load_state",
+    ]);
     const webFetch = web?.tools.get("web_fetch")?.definition;
     const batchWebFetch = web?.tools.get("batch_web_fetch")?.definition;
     expect(webFetch?.description).toContain("one URL");

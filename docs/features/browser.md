@@ -14,7 +14,7 @@ A disconnect, reset, or context recreation loses all tabs, refs, and diagnostics
 
 ## Workflow and targets
 
-Use `browser_observe` to understand rendered state, particularly `snapshot`, then use `browser_act` to navigate or manage tabs, and observe again after a document or tab change. Snapshot refs belong only to the current document; rerendering, navigation, switching tabs, or recreating the context can make them stale.
+Use `browser_observe` to understand rendered state, particularly `snapshot`, then use `browser_act` to interact through a ref or semantic target. Observe again after a document or tab change and after an uncertain result. Snapshot refs belong only to the current document; rerendering, navigation, switching tabs, or recreating the context can make them stale.
 
 A target is a closed object with these fields:
 
@@ -25,7 +25,7 @@ A target is a closed object with these fields:
 | `name`  | Optional accessible name, only for `role`, at most 500 characters.                                                                          |
 | `exact` | Optional boolean for `role`, `text`, `label`, and `placeholder` only; defaults to `false`.                                                  |
 
-`ref` maps to Playwright's `aria-ref=<ref>` selector; the other semantic kinds map to their corresponding Playwright `getBy…` locator, and `css` is an explicit fallback. Resolution is strict: it must match exactly one element. Stale refs and ambiguous targets are not healed; observe again instead.
+`ref` maps to Playwright's `aria-ref=<ref>` selector and accepts only snapshot ref spellings emitted by Browser; the other semantic kinds map to their corresponding Playwright `getBy…` locator, and `css` is an explicit fallback. Resolution is strict: it must match exactly one element. Stale refs and ambiguous targets are not healed; observe again instead.
 
 ## Tools
 
@@ -46,33 +46,45 @@ Browser attaches page listeners as soon as it owns a page. It retains the newest
 
 ### `browser_act`
 
-The initial action surface is navigation and page control only:
+`browser_act` accepts only the following deterministic actions. It rejects unknown, unrelated, conflicting, unsupported, or out-of-bound fields before dispatch.
 
-| Action                      | Fields and behaviour                                                                   |
-| --------------------------- | -------------------------------------------------------------------------------------- |
-| `navigate`                  | Required credential-free HTTP(S) `url`; replaces the active tab at `domcontentloaded`. |
-| `back`, `forward`, `reload` | No additional fields; use history/reload and wait for `domcontentloaded`.              |
-| `set_viewport`              | Required integer `width` and `height` within the viewport bounds.                      |
-| `open_tab`                  | Optional validated HTTP(S) `url`; creates and activates a tab.                         |
-| `switch_tab`, `close_tab`   | Required existing opaque `tabId`, at most 128 characters.                              |
+| Action                               | Fields and behaviour                                                                                                                |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `navigate`                           | Required credential-free HTTP(S) `url`; replaces the active tab at `domcontentloaded`.                                              |
+| `back`, `forward`, `reload`          | No additional fields; use history/reload and wait for `domcontentloaded`.                                                           |
+| `click`, `hover`, `check`, `uncheck` | Required strict `target`; preserve Playwright actionability with no force.                                                          |
+| `fill`, `type`                       | Required `target` and text `value` up to 20,000 characters. Browser never echoes supplied text.                                     |
+| `press`                              | Required key up to 100 characters and optional target. Without a target it presses on the active page.                              |
+| `select`                             | Required `target` and 1–20 existing option `values`, each up to 500 characters.                                                     |
+| `scroll`                             | Integer `deltaX` and `deltaY`, each `-10000…10000` and not both zero; optional target scrolls that element, otherwise the viewport. |
+| `wait`                               | Required closed `condition` and optional `timeoutMs`; this is read-only, never a fixed sleep.                                       |
+| `set_viewport`                       | Required integer `width` and `height` within the viewport bounds.                                                                   |
+| `open_tab`                           | Optional validated HTTP(S) `url`; creates and activates a tab.                                                                      |
+| `switch_tab`, `close_tab`            | Required existing opaque `tabId`, at most 128 characters.                                                                           |
 
-Navigation, history, reload, and tab-context outcomes include a short fresh snapshot. Action results report action, active tab, sanitized URL/title, and a compact outcome. Browser never exposes arbitrary JavaScript, raw Playwright options, CDP, or target-mutating actions in this slice.
+A wait condition is one of: URL `value` with `contains` (default) or `exact` matching; visible text `value` with optional `exact`; a shared `target` with `attached`, `visible`, `hidden`, or `detached` state; or load state `domcontentloaded` or `load`. Regexes, globs, `networkidle`, and sleep are not supported. Wait timeout is an integer `100–120000` ms and defaults to 10 seconds.
+
+Element actions use a fixed 10-second deadline; launch and navigation use 30 seconds. Navigation, history, reload, tab-context outcomes, and active-tab recovery include a short fresh snapshot. Ordinary interaction results instead contain a compact action, sanitized target kind, active tab, sanitized URL/title, and outcome, and tell the agent when to observe. Browser never exposes arbitrary JavaScript, raw Playwright options, CDP, or forced actions.
+
+Browser has no credential vault, credential storage, or dedicated credential-acquisition behaviour. Generic `fill` and `type` may target password fields when the model already has a value. Browser suppresses supplied fill/type values from Browser-owned output, but cannot redact them from the Pi transcript or model-provider path.
 
 Page ownership is synchronous. A popup opened while a dispatched action is running becomes active when that action settles and the result reports the new tab. A page opened outside an action is listed but does not steal focus. If the active page closes itself, Browser selects the most recently active live tab; when none remains it creates a fresh blank tab. Closing the final tab therefore leaves one usable blank page; closing a non-active tab does not invalidate the active tab. Tab IDs are monotonic and never reused within a context.
 
 ## Limits and output bounds
 
-| Boundary                   | Contract                                                                                                                                  |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| Default/caller viewport    | `1440×900` at device scale factor 1; width `320–2560`, height `240–1600` CSS pixels.                                                      |
-| Launch/navigation deadline | 30 seconds; navigation waits for `domcontentloaded`, never `networkidle`.                                                                 |
-| URL/target/name/tab ID     | 2,000 / 1,000 / 500 / 128 characters; URL has no credentials or control characters.                                                       |
-| Snapshot                   | Depth `1–20`, default `10`; 16,000 characters and 600 lines.                                                                              |
-| Rendered text/element HTML | 16,000 characters and 600 lines / 12,000 characters; page-controlled element values and style values are each capped at 1,000 characters. |
-| Requested styles           | 1–32 unique property names, each at most 128 characters.                                                                                  |
-| Diagnostics                | Retain newest 100; return newest 50 within 16,000 characters; each message is at most 1,000 and URL at most 2,000 characters.             |
-| Screenshot                 | PNG only: at most 10 MiB encoded, 4,096 CSS-pixel width, and 12,000 CSS-pixel height.                                                     |
-| Tabs                       | At most 20 live tabs.                                                                                                                     |
+| Boundary                           | Contract                                                                                                                                               |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Default/caller viewport            | `1440×900` at device scale factor 1; width `320–2560`, height `240–1600` CSS pixels.                                                                   |
+| Launch/navigation/element deadline | 30 seconds / 30 seconds at `domcontentloaded` / 10 seconds; never `networkidle`.                                                                       |
+| Wait                               | Default 10 seconds; integer `100–120000` milliseconds.                                                                                                 |
+| Fill/type/key/select/scroll        | 20,000 characters / 20,000 characters / 100 characters / 1–20 values of at most 500 characters / integer deltas `-10000…10000`, at least one non-zero. |
+| URL/target/name/tab ID             | 2,000 / 1,000 / 500 / 128 characters; URL has no credentials or control characters.                                                                    |
+| Snapshot                           | Depth `1–20`, default `10`; 16,000 characters and 600 lines.                                                                                           |
+| Rendered text/element HTML         | 16,000 characters and 600 lines / 12,000 characters; page-controlled element values and style values are each capped at 1,000 characters.              |
+| Requested styles                   | 1–32 unique property names, each at most 128 characters.                                                                                               |
+| Diagnostics                        | Retain newest 100; return newest 50 within 16,000 characters; each message is at most 1,000 and URL at most 2,000 characters.                          |
+| Screenshot                         | PNG only: at most 10 MiB encoded, 4,096 CSS-pixel width, and 12,000 CSS-pixel height.                                                                  |
+| Tabs                               | At most 20 live tabs.                                                                                                                                  |
 
 When text has both a character and line limit, Browser stops at the first limit, appends `…`, and reports original/returned character and line counts. It never splits a UTF-16 surrogate pair or an AI snapshot ref token. Oversized screenshots fail as `content`; Browser neither writes, truncates, nor rescales them.
 
@@ -80,6 +92,6 @@ When text has both a character and line limit, Browser stops at the first limit,
 
 Browser failures use `installation`, `launch`, `cancelled`, `target`, `stale_ref`, `timeout`, `page_gone`, `uncertain_outcome`, `browser_disconnected`, `content`, or `backend`. Before dispatch, invalid targets/URLs and stale refs win; then a dispatched state-changing action failure is `uncertain_outcome`; then cancellation, timeout, page loss/disconnect, and backend failures follow. Errors retain only a bounded underlying reason.
 
-An observation may retry once after a proven pre-dispatch/disconnected fresh-context failure. An action is never replayed: cancellation, timeout, page closure, or disconnect after it dispatched is `uncertain_outcome`, so observe before deciding what to do next. Read-only observation cancellation is `cancelled`; a read-only timeout is `timeout`; a closed page or disconnected browser without a mutation is `page_gone` or `browser_disconnected`.
+Every operation records its dispatch boundary immediately before its Playwright call. An observation may retry once after a proven pre-dispatch/disconnected fresh-context failure. No `browser_act` action is replayed: cancellation, timeout, page closure, or disconnect after a state-changing dispatch is `uncertain_outcome`, so observe before deciding what to do next. `wait` is read-only: its cancellation and timeout remain `cancelled` and `timeout`, while page loss/disconnect remains `page_gone` or `browser_disconnected`. Invalid input, missing targets, and stale refs are pre-dispatch; stale refs direct the agent to observe again.
 
 Top-level navigation accepts only credential-free `http:` and `https:`, including loopback and private development hosts; it rejects `file:`, `data:`, JavaScript, browser-internal, extension, and credential URLs. This is **not** an SSRF boundary: redirects, subresources, and loaded pages retain ordinary Chromium network authority and may initiate requests to public or private services. Rendered text, diagnostics, and images are untrusted external evidence. Browser is extension-owned process/network activity, outside Sandbox and Readonly mediation; Chromium's sandbox is not a Pipkin trust boundary.

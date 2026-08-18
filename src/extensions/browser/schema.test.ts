@@ -16,6 +16,57 @@ describe("Browser schemas", () => {
     ).toThrow(BrowserError);
   });
 
+  it("validates the closed interaction and wait action surface before dispatch", () => {
+    expect(
+      normalizeAct({
+        action: "fill",
+        target: { kind: "role", value: "textbox", name: "Message" },
+        value: "secret value",
+      }),
+    ).toMatchObject({ action: "fill" });
+    expect(
+      normalizeAct({
+        action: "wait",
+        condition: { kind: "url", value: "/ready", match: "contains" },
+        timeoutMs: 100,
+      }),
+    ).toMatchObject({ action: "wait" });
+    expect(() =>
+      normalizeAct({ action: "scroll", deltaX: 0, deltaY: 0 }),
+    ).toThrow(BrowserError);
+    expect(() =>
+      normalizeAct({
+        action: "select",
+        target: { kind: "css", value: "select" },
+        values: [],
+      }),
+    ).toThrow(BrowserError);
+    expect(() =>
+      normalizeAct({
+        action: "wait",
+        condition: { kind: "load_state", state: "networkidle" },
+      }),
+    ).toThrow(BrowserError);
+    expect(() =>
+      normalizeAct({
+        action: "click",
+        target: { kind: "ref", value: "x", exact: false },
+      }),
+    ).toThrow(BrowserError);
+    expect(() =>
+      normalizeAct({
+        action: "click",
+        target: { kind: "ref", value: "e12 >> text=other" },
+      }),
+    ).toThrow(BrowserError);
+    expect(
+      normalizeAct({
+        action: "click",
+        target: { kind: "ref", value: "f1e12" },
+      }),
+    ).toMatchObject({ target: { value: "f1e12" } });
+  });
+
   it("preserves Unicode boundaries while marking bounded output", () => {
     const result = truncate("a😀bc", 3, 600);
     expect(result.text).toBe("a😀…");

@@ -121,7 +121,7 @@ These tools are called by the agent rather than typed as slash commands.
 | `web_fetch`             | Retrieve bounded readable content from one public URL                                  |
 | `batch_web_fetch`       | Retrieve one to eight public URLs with fixed concurrency                               |
 | `browser_observe`       | Inspect isolated rendered pages, images, diagnostics, and tabs                         |
-| `browser_act`           | Navigate and manage isolated browser tabs                                              |
+| `browser_act`           | Navigate, interact, scroll, wait, and manage isolated browser tabs                     |
 | `record_papercut`       | Record qualifying incidental friction after an exercised workaround                    |
 
 ## Important safety boundaries

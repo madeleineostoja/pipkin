@@ -56,6 +56,40 @@ describe("BrowserOwner invocation lane", () => {
     expect(order).toEqual(["one-start", "one-end", "two"]);
   });
 
+  it("preserves dispatch classification when cancellation races an action", async () => {
+    const owner = new BrowserOwner();
+    const controller = new AbortController();
+    await expect(
+      owner.run(controller.signal, async () => {
+        owner.markDispatched(true);
+        controller.abort();
+      }),
+    ).rejects.toMatchObject({
+      category: "uncertain_outcome",
+    } satisfies Partial<BrowserError>);
+  });
+
+  it("keeps a dispatched read-only wait cancellation as cancelled", async () => {
+    const owner = new BrowserOwner();
+    const controller = new AbortController();
+    await expect(
+      owner.run(controller.signal, async () => {
+        owner.markDispatched(false);
+        controller.abort();
+      }),
+    ).rejects.toMatchObject({
+      category: "cancelled",
+    } satisfies Partial<BrowserError>);
+  });
+
+  it("redacts supplied form text from Browser-owned evidence", () => {
+    const owner = new BrowserOwner();
+    owner.rememberSensitiveText("correct horse battery staple");
+    expect(owner.redactText("typed correct horse battery staple")).toBe(
+      "typed [redacted]",
+    );
+  });
+
   it("sanitizes credentials, query data, and overlong diagnostic URLs", () => {
     const url = sanitizeUrl(
       `https://user:secret@example.test/path?token=${"x".repeat(3_000)}#fragment`,

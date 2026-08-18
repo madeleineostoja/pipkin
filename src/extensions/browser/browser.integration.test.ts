@@ -22,7 +22,7 @@ describe("Browser integration", () => {
         }
         response.setHeader("content-type", "text/html");
         response.end(`
-          <main><button aria-label="Save">Save</button><p style="color: rgb(1, 2, 3)">Rendered</p></main>
+          <main><button aria-label="Save" onclick="document.querySelector('p').textContent = 'Saved'">Save</button><button aria-label="Semantic" onclick="document.querySelector('p').textContent = 'Semantic saved'">Semantic</button><button aria-label="Add" onclick="setTimeout(() => document.querySelector('main').insertAdjacentHTML('beforeend', '<button aria-label=Late>Late</button>'), 20)">Add</button><p style="color: rgb(1, 2, 3)">Rendered</p></main>
           <script>
             console.warn("fixture warning");
             fetch("/missing"); fetch("http://127.0.0.1:1/no-server").catch(() => {});
@@ -46,15 +46,89 @@ describe("Browser integration", () => {
         const snapshotText = (snapshot.content[0] as { text: string }).text;
         const ref = /\[ref=([^\]]+)\]/.exec(snapshotText)?.[1];
         expect(ref).toBeTruthy();
-        const refText = await owner.run(undefined, () =>
-          observe(owner, {
-            mode: "text",
+        await owner.run(undefined, () =>
+          act(owner, {
+            action: "click",
             target: { kind: "ref", value: ref! },
           }),
         );
-        expect(refText.content[0]).toMatchObject({
-          text: expect.stringContaining("Save"),
+        const updated = await owner.run(undefined, () =>
+          observe(owner, { mode: "text" }),
+        );
+        expect(updated.content[0]).toMatchObject({
+          text: expect.stringContaining("Saved"),
         });
+        await owner.run(undefined, () =>
+          act(owner, {
+            action: "click",
+            target: { kind: "role", value: "button", name: "Semantic" },
+          }),
+        );
+        await owner.run(undefined, () =>
+          act(owner, {
+            action: "wait",
+            condition: { kind: "text", value: "Semantic saved" },
+          }),
+        );
+        await owner.run(undefined, () =>
+          act(owner, {
+            action: "click",
+            target: { kind: "role", value: "button", name: "Add" },
+          }),
+        );
+        await owner.run(undefined, () =>
+          act(owner, {
+            action: "wait",
+            condition: {
+              kind: "target",
+              target: { kind: "role", value: "button", name: "Late" },
+              state: "visible",
+            },
+          }),
+        );
+        await owner.run(undefined, () =>
+          act(owner, {
+            action: "wait",
+            condition: { kind: "load_state", state: "load" },
+          }),
+        );
+        await owner.run(undefined, () =>
+          act(owner, { action: "navigate", url: `${url}/rerender` }),
+        );
+        await expect(
+          owner.run(undefined, () =>
+            observe(owner, {
+              mode: "text",
+              target: { kind: "ref", value: ref! },
+            }),
+          ),
+        ).rejects.toMatchObject({
+          category: "stale_ref",
+          message: expect.stringContaining("observe again"),
+        });
+        await owner.run(undefined, () =>
+          act(owner, {
+            action: "wait",
+            condition: { kind: "url", value: "/rerender", match: "contains" },
+          }),
+        );
+        await expect(
+          owner.run(undefined, () =>
+            act(owner, {
+              action: "wait",
+              condition: {
+                kind: "target",
+                target: {
+                  kind: "role",
+                  value: "button",
+                  name: "Never appears",
+                },
+                state: "visible",
+              },
+              timeoutMs: 100,
+            }),
+          ),
+        ).rejects.toMatchObject({ category: "timeout" });
         const element = await owner.run(undefined, () =>
           observe(owner, {
             mode: "element",

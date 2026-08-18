@@ -44,7 +44,9 @@ export class BrowserOwner {
   private aborting = false;
   private actionPages: Tab[] | undefined;
   private activeChange?: string;
+  private dispatchedMutation?: boolean;
   private stateLost = false;
+  private readonly sensitiveTexts = new Set<string>();
 
   constructor(private readonly browserType: ChromiumFacade = chromium) {}
 
@@ -114,15 +116,45 @@ export class BrowserOwner {
   contextState(): { generation: number; stateLost: boolean } {
     return { generation: this.generation, stateLost: this.stateLost };
   }
+  withContext(error: BrowserError, recovery?: string): BrowserError {
+    const changes = [...new Set([recovery, this.activeChange].filter(Boolean))];
+    if (!this.stateLost && changes.length === 0) {
+      return error;
+    }
+    return new BrowserError(error.category, error.message, {
+      ...error.details,
+      ...(this.stateLost ? { stateLost: true } : {}),
+      ...(changes.length > 0 ? { recovery: changes.join(" ") } : {}),
+    });
+  }
   consumeActiveChange(): string | undefined {
     const change = this.activeChange;
     this.activeChange = undefined;
     return change;
   }
+  /** Keeps model-supplied text out of subsequent Browser-owned evidence. */
+  rememberSensitiveText(value: string): void {
+    if (value) {
+      this.sensitiveTexts.add(value);
+    }
+  }
+  redactText(value: string): string {
+    let redacted = value;
+    for (const sensitive of [...this.sensitiveTexts].sort(
+      (left, right) => right.length - left.length,
+    )) {
+      redacted = redacted.replaceAll(sensitive, "[redacted]");
+    }
+    return redacted;
+  }
 
   beginAction(): void {
     this.actionPages = [];
     this.activeChange = undefined;
+  }
+  /** Records the operation boundary before Playwright can affect page state. */
+  markDispatched(mutation: boolean): void {
+    this.dispatchedMutation = mutation;
   }
   async settleAction(): Promise<void> {
     const popup = this.actionPages
@@ -205,6 +237,7 @@ export class BrowserOwner {
     operation: () => Promise<T>,
     signal?: AbortSignal,
   ): Promise<T> {
+    this.dispatchedMutation = undefined;
     let aborted = false;
     let abortTask: Promise<void> | undefined;
     const abort = () => {
@@ -219,12 +252,18 @@ export class BrowserOwner {
     try {
       const result = await operation();
       if (aborted || signal?.aborted) {
-        throw new BrowserError("cancelled", "Browser call was cancelled.");
+        throw this.cancellationError();
       }
       return result;
     } catch (error) {
       if (aborted || signal?.aborted) {
-        throw new BrowserError("cancelled", "Browser call was cancelled.");
+        if (
+          error instanceof BrowserError &&
+          error.category === "uncertain_outcome"
+        ) {
+          throw error;
+        }
+        throw this.cancellationError(error);
       }
       throw error;
     } finally {
@@ -233,8 +272,25 @@ export class BrowserOwner {
         this.activeAbort = undefined;
       }
       await abortTask;
+      this.dispatchedMutation = undefined;
       this.aborting = false;
     }
+  }
+
+  private cancellationError(error?: unknown): BrowserError {
+    const details = error instanceof BrowserError ? error.details : {};
+    if (this.dispatchedMutation) {
+      return this.withContext(
+        new BrowserError(
+          "uncertain_outcome",
+          "Browser action may have completed before it was cancelled; observe the page before retrying.",
+          details,
+        ),
+      );
+    }
+    return this.withContext(
+      new BrowserError("cancelled", "Browser call was cancelled.", details),
+    );
   }
 
   private async ensure(): Promise<void> {
@@ -271,6 +327,8 @@ export class BrowserOwner {
         deviceScaleFactor: 1,
         acceptDownloads: false,
       });
+      context.setDefaultTimeout(LIMITS.elementMs);
+      context.setDefaultNavigationTimeout(LIMITS.navigationMs);
       this.assertCurrent(generation);
       context.on("page", (page) => this.own(page));
       this.browser = browser;
@@ -363,8 +421,11 @@ export class BrowserOwner {
     this.diagnostics.push({
       ...record,
       sequence: this.sequence++,
-      message: bounded(record.message, LIMITS.diagnosticMessageChars),
-      url: record.url ? sanitizeUrl(record.url) : undefined,
+      message: bounded(
+        this.redactText(record.message),
+        LIMITS.diagnosticMessageChars,
+      ),
+      url: record.url ? this.redactText(sanitizeUrl(record.url)) : undefined,
     });
     if (this.diagnostics.length > LIMITS.diagnosticRetention) {
       this.diagnostics.splice(
@@ -421,6 +482,7 @@ export class BrowserOwner {
     this.actionPages = undefined;
     this.tabs.clear();
     this.diagnostics = [];
+    this.sensitiveTexts.clear();
   }
 }
 

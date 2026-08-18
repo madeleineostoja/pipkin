@@ -25,7 +25,7 @@ export async function observe(
       if (attempt === 0 && normalized.category === "browser_disconnected") {
         continue;
       }
-      throw normalized;
+      throw owner.withContext(normalized);
     }
   }
   throw new BrowserError(
@@ -40,20 +40,28 @@ async function observeOnce(
 ): Promise<BrowserResult> {
   // Tabs and diagnostics are observations of a usable session too: establish it first.
   const page = await owner.page();
+  let result: BrowserResult;
   switch (input.mode) {
     case "tabs":
-      return tabs(owner);
+      result = await tabs(owner);
+      break;
     case "diagnostics":
-      return diagnostics(owner, input, page);
+      result = await diagnostics(owner, input, page);
+      break;
     case "snapshot":
-      return snapshot(page, input, owner);
+      result = await snapshot(page, input, owner);
+      break;
     case "screenshot":
-      return screenshot(page, input, owner);
+      result = await screenshot(page, input, owner);
+      break;
     case "text":
-      return text(page, input, owner);
+      result = await text(page, input, owner);
+      break;
     case "element":
-      return element(page, input, owner);
+      result = await element(page, input, owner);
+      break;
   }
+  return recovered(result, owner.consumeActiveChange());
 }
 
 export async function snapshot(
@@ -139,7 +147,7 @@ async function screenshot(
   }
   const details = {
     mode: "screenshot",
-    ...(await pageDetails(page)),
+    ...(await pageDetails(page, owner)),
     scope: target
       ? input.target!.kind
       : input.fullPage
@@ -294,13 +302,15 @@ function diagnostics(
     content: [
       {
         type: "text",
-        text: clipped.text || "No matching browser diagnostics.",
+        text: owner.redactText(
+          clipped.text || "No matching browser diagnostics.",
+        ),
       },
     ],
     details: {
       mode: "diagnostics",
       records: records.length,
-      url: sanitizeUrl(page.url()),
+      url: owner.redactText(sanitizeUrl(page.url())),
       ...owner.contextState(),
       ...clipped.details,
     },
@@ -314,8 +324,12 @@ async function tabs(owner: BrowserOwner): Promise<BrowserResult> {
       id: tab.id,
       title: tab.page.isClosed()
         ? ""
-        : bounded(await tab.page.title().catch(() => ""), LIMITS.titleChars),
-      url: tab.page.isClosed() ? "about:blank" : sanitizeUrl(tab.page.url()),
+        : owner.redactText(
+            bounded(await tab.page.title().catch(() => ""), LIMITS.titleChars),
+          ),
+      url: tab.page.isClosed()
+        ? "about:blank"
+        : owner.redactText(sanitizeUrl(tab.page.url())),
       active: tab.id === active,
     })),
   );
@@ -333,6 +347,16 @@ async function tabs(owner: BrowserOwner): Promise<BrowserResult> {
   };
 }
 
+async function recovered(
+  result: BrowserResult | Promise<BrowserResult>,
+  recovery: string | undefined,
+): Promise<BrowserResult> {
+  const completed = await result;
+  return recovery
+    ? { ...completed, details: { ...completed.details, recovery } }
+    : completed;
+}
+
 async function result(
   text: string,
   page: Page,
@@ -340,21 +364,48 @@ async function result(
   owner?: BrowserOwner,
 ): Promise<BrowserResult> {
   return {
-    content: [{ type: "text", text }],
-    details: {
-      ...(await pageDetails(page)),
-      ...details,
-      ...owner?.contextState(),
-    },
+    content: [{ type: "text", text: owner?.redactText(text) ?? text }],
+    details: scrub(
+      {
+        ...(await pageDetails(page, owner)),
+        ...details,
+        ...owner?.contextState(),
+      },
+      owner,
+    ),
   };
 }
 async function pageDetails(
   page: Page,
+  owner?: BrowserOwner,
 ): Promise<{ url: string; title: string }> {
+  const title = bounded(await page.title().catch(() => ""), LIMITS.titleChars);
   return {
-    url: sanitizeUrl(page.url()),
-    title: bounded(await page.title().catch(() => ""), LIMITS.titleChars),
+    url: owner?.redactText(sanitizeUrl(page.url())) ?? sanitizeUrl(page.url()),
+    title: owner?.redactText(title) ?? title,
   };
+}
+function scrub(
+  value: Record<string, unknown>,
+  owner?: BrowserOwner,
+): Record<string, unknown> {
+  if (!owner) {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [
+      key,
+      typeof entry === "string"
+        ? owner.redactText(entry)
+        : Array.isArray(entry)
+          ? entry.map((item) =>
+              typeof item === "string" ? owner.redactText(item) : item,
+            )
+          : entry && typeof entry === "object"
+            ? scrub(entry as Record<string, unknown>, owner)
+            : entry,
+    ]),
+  );
 }
 
 export function truncate(

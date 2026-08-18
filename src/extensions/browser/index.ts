@@ -2,7 +2,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { toolCallRenderer } from "#lib/ui/tool-result-renderer";
 import { act } from "./act.js";
 import { observe } from "./observe.js";
-import { bounded, BrowserOwner, sanitizeUrl } from "./owner.js";
+import { BrowserOwner } from "./owner.js";
+import { actionSummary, targetSummary, urlSummary } from "./presentation.js";
 import {
   renderBrowserActResult,
   renderBrowserObserveResult,
@@ -44,12 +45,14 @@ export default function (pi: ExtensionAPI): void {
     name: "browser_act",
     label: "Browser Act",
     description:
-      "Navigate and manage isolated browser tabs. Observe first for rendered state and refs, act through this deterministic navigation surface, then observe again after page-changing actions.",
+      "Navigate, interact with strict snapshot refs or semantic targets, scroll, wait for structured rendered state, and manage isolated tabs. Observe first for refs, act without force or replay, then observe after page-changing actions or uncertain outcomes.",
     parameters: BrowserActParameters,
     renderCall: toolCallRenderer({
       name: "browser_act",
-      detail: (input: BrowserActInput) =>
-        `${input.action}${input.url ? ` · ${sanitizeUrl(input.url)}` : input.tabId ? ` · ${bounded(input.tabId, 128)}` : ""}`,
+      detail: (input) => {
+        const summary = actionSummary(input as BrowserActInput);
+        return `${input.action}${input.url ? ` · ${urlSummary(input.url)}` : input.tabId ? ` · ${input.tabId}` : summary ? ` · ${summary}` : ""}`;
+      },
       pending: "Updating browser…",
     }),
     async execute(_id, input: BrowserActInput, signal, onUpdate) {
@@ -64,8 +67,4 @@ export default function (pi: ExtensionAPI): void {
   });
   pi.on("session_start", () => owner.reset());
   pi.on("session_shutdown", () => owner.shutdown());
-}
-
-function targetSummary(target: BrowserObserveInput["target"]): string {
-  return target ? `${target.kind}:${bounded(target.value, 120)}` : "page";
 }

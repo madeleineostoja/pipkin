@@ -16,6 +16,8 @@ export type BrowserErrorCategory =
 type ErrorContext = {
   dispatched?: boolean;
   mutation?: boolean;
+  /** Input text was supplied to a keyboard/form action and must never reach output. */
+  redactCause?: boolean;
 };
 
 const require = createRequire(import.meta.url);
@@ -46,14 +48,14 @@ export function browserError(
       error.category !== "target" &&
       error.category !== "stale_ref"
     ) {
-      return uncertain(error);
+      return uncertain(error, context.redactCause);
     }
     return error;
   }
   const message =
     error instanceof Error ? error.message : "Browser backend failed.";
   if (context.dispatched && context.mutation) {
-    return uncertain(message);
+    return uncertain(message, context.redactCause);
   }
   if (/executable doesn't exist|executable.*not found/i.test(message)) {
     return new BrowserError(
@@ -61,14 +63,10 @@ export function browserError(
       `Chromium is unavailable for Playwright ${playwrightVersion}. Repair Pipkin's normal npm installation (npm install or npm rebuild) so @playwright/browser-chromium can populate its managed cache.`,
     );
   }
-  if (
-    /Target page, context or browser has been closed|browser has been closed|has been closed/i.test(
-      message,
-    )
-  ) {
+  if (/browserType\.launch|failed to launch/i.test(message)) {
     return new BrowserError(
-      "page_gone",
-      "Browser page is no longer available; observe the current tabs.",
+      "launch",
+      "Chromium could not start. Check platform dependencies or the host sandbox, then observe again after repair.",
       { cause: bounded(message) },
     );
   }
@@ -79,10 +77,14 @@ export function browserError(
       { cause: bounded(message) },
     );
   }
-  if (/browserType\.launch|failed to launch/i.test(message)) {
+  if (
+    /Target page, context or browser has been closed|browser has been closed|has been closed/i.test(
+      message,
+    )
+  ) {
     return new BrowserError(
-      "launch",
-      "Chromium could not start. Check platform dependencies or the host sandbox, then observe again after repair.",
+      "page_gone",
+      "Browser page is no longer available; observe the current tabs.",
       { cause: bounded(message) },
     );
   }
@@ -98,12 +100,15 @@ export function browserError(
   });
 }
 
-function uncertain(error: BrowserError | string): BrowserError {
+function uncertain(
+  error: BrowserError | string,
+  redactCause = false,
+): BrowserError {
   const cause = typeof error === "string" ? error : error.message;
   return new BrowserError(
     "uncertain_outcome",
     "Browser action may have completed before it failed; observe the page before retrying.",
-    { cause: bounded(cause) },
+    { cause: redactCause ? "Sensitive text action failed." : bounded(cause) },
   );
 }
 function bounded(value: string): string {

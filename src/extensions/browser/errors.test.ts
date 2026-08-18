@@ -11,12 +11,34 @@ describe("Browser error precedence", () => {
     expect(error.details.cause).toContain("Timeout");
   });
 
+  it("redacts text-entry causes after dispatch", () => {
+    const error = browserError(new Error("typing secret value failed"), {
+      dispatched: true,
+      mutation: true,
+      redactCause: true,
+    });
+    expect(error).toMatchObject({ category: "uncertain_outcome" });
+    expect(error.details.cause).not.toContain("secret value");
+  });
+
   it("keeps pre-dispatch target failures stable", () => {
     const error = browserError(
       new BrowserError("target", "Browser tab was not found."),
       { dispatched: false, mutation: true },
     );
     expect(error).toMatchObject({ category: "target" });
+  });
+
+  it("classifies a launch closure before generic page loss", () => {
+    expect(
+      browserError(
+        new Error(
+          "browserType.launch: Target page, context or browser has been closed",
+        ),
+      ),
+    ).toMatchObject({
+      category: "launch",
+    });
   });
 
   it("reports the installed Playwright version for missing executables", () => {
