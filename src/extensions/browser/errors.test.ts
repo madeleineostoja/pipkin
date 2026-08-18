@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BrowserError, browserError } from "./errors.js";
+import { BrowserError, browserError, failureResult } from "./errors.js";
 
 describe("Browser error precedence", () => {
   it("does not downgrade a dispatched action failure to a retryable error", () => {
@@ -38,6 +38,30 @@ describe("Browser error precedence", () => {
       ),
     ).toMatchObject({
       category: "launch",
+    });
+  });
+
+  it("preserves category, cause, recovery, and state loss for native failures", () => {
+    const result = failureResult(
+      new BrowserError("browser_disconnected", "Browser disconnected.", {
+        cause: "closed transport",
+        recovery: "Observe again.",
+        stateLost: true,
+      }),
+    );
+    expect(result).toMatchObject({
+      content: [
+        {
+          type: "text",
+          text: expect.stringContaining("browser_disconnected"),
+        },
+      ],
+      details: {
+        category: "browser_disconnected",
+        cause: "closed transport",
+        recovery: "Observe again.",
+        stateLost: true,
+      },
     });
   });
 

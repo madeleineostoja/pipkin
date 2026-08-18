@@ -52,5 +52,14 @@ describe("Browser action presentation", () => {
         },
       }),
     ).toBe("url:https://example.test/ready");
+    const relative = actionSummary({
+      action: "wait",
+      condition: {
+        kind: "url",
+        value: "/ready?token=relative-secret#fragment",
+      },
+    });
+    expect(relative).toBe("url:/ready");
+    expect(relative).not.toContain("relative-secret");
   });
 });

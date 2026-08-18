@@ -59,11 +59,11 @@ export async function act(
     // Resolve strict targets before the dispatch boundary; no action can heal a stale ref.
     let locator: Locator | undefined;
     if (elementActions.has(input.action) && input.target) {
-      locator = await strictTarget(page, input.target);
+      locator = await strictTarget(page, input.target, owner);
     }
     let waitTarget: Locator | undefined;
     if (input.action === "wait" && input.condition?.kind === "target") {
-      waitTarget = await strictWaitTarget(page, input.condition.target);
+      waitTarget = await strictWaitTarget(page, input.condition.target, owner);
     }
 
     if (redacted) {
@@ -142,7 +142,7 @@ export async function act(
         if (locator) {
           await locator.press(input.key!, { timeout: LIMITS.elementMs });
         } else {
-          await elementDeadline(page.keyboard.press(input.key!));
+          await targetlessPress(owner, page, input.key!);
         }
         outcome = "Pressed key";
         break;
@@ -211,7 +211,7 @@ export async function act(
         content: [
           {
             type: "text",
-            text: `${outcome}.\n\n${(fresh.content[0] as { text: string }).text}`,
+            text: `${owner.stateLossNotice() ? `${owner.stateLossNotice()}\n\n` : ""}${outcome}.\n\n${(fresh.content[0] as { text: string }).text}`,
           },
         ],
         details: {
@@ -320,25 +320,36 @@ async function compact(
     content: [
       {
         type: "text",
-        text: `${outcome}. Observe again when rendered state matters.`,
+        text: `${owner.stateLossNotice() ? `${owner.stateLossNotice()}\n\n` : ""}${outcome}. Observe again when rendered state matters.`,
       },
     ],
     details,
   };
 }
 
-async function elementDeadline<T>(operation: Promise<T>): Promise<T> {
+async function targetlessPress(
+  owner: BrowserOwner,
+  page: Page,
+  key: string,
+): Promise<void> {
+  const operation = page.keyboard.press(key);
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<"deadline">((resolve) => {
+    timer = setTimeout(() => resolve("deadline"), LIMITS.elementMs);
+  });
   try {
-    return await Promise.race([
-      operation,
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(
-          () => reject(new Error("Element action timed out.")),
-          LIMITS.elementMs,
-        );
-      }),
-    ]);
+    if (
+      (await Promise.race([
+        operation.then(() => "complete" as const),
+        deadline,
+      ])) === "deadline"
+    ) {
+      // Keyboard has no timeout option. Closing this generation makes the
+      // underlying protocol call settle before this invocation releases the lane.
+      await owner.abortOperation();
+      await operation.catch(() => {});
+      throw new BrowserError("timeout", "Element action timed out.");
+    }
   } finally {
     if (timer) {
       clearTimeout(timer);

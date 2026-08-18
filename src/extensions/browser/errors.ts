@@ -37,6 +37,25 @@ export class BrowserError extends Error {
   }
 }
 
+export function failureResult(error: BrowserError): {
+  content: [{ type: "text"; text: string }];
+  details: Record<string, unknown>;
+} {
+  const recovery =
+    typeof error.details.recovery === "string"
+      ? ` ${error.details.recovery}`
+      : "";
+  return {
+    content: [
+      {
+        type: "text",
+        text: `Browser ${error.category}: ${error.message}${recovery}`,
+      },
+    ],
+    details: { category: error.category, ...error.details },
+  };
+}
+
 export function browserError(
   error: unknown,
   context: ErrorContext = {},

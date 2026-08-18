@@ -18,11 +18,14 @@ export async function observe(
   input: BrowserObserveInput,
 ): Promise<BrowserResult> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    const generation = owner.contextState().generation;
     try {
       return await observeOnce(owner, input);
     } catch (error) {
       const normalized = browserError(error);
-      if (attempt === 0 && normalized.category === "browser_disconnected") {
+      // A closed-target error can be Playwright's surface for a browser
+      // disconnect. Retry only when the owner observed that generation loss.
+      if (attempt === 0 && owner.canRetryObservation(generation)) {
         continue;
       }
       throw owner.withContext(normalized);
@@ -61,7 +64,7 @@ async function observeOnce(
       result = await element(page, input, owner);
       break;
   }
-  return recovered(result, owner.consumeActiveChange());
+  return recovered(result, owner.consumeActiveChange(), owner);
 }
 
 export async function snapshot(
@@ -70,7 +73,7 @@ export async function snapshot(
   owner?: BrowserOwner,
 ): Promise<BrowserResult> {
   const root = input.target
-    ? await strictTarget(page, input.target)
+    ? await strictTarget(page, input.target, owner)
     : page.locator("body");
   let value: string;
   try {
@@ -87,11 +90,13 @@ export async function snapshot(
         )
       : error;
   }
+  const emitted = owner ? owner.registerSnapshot(page, value) : value;
   const clipped = truncateSnapshot(
-    value,
+    emitted,
     LIMITS.snapshotChars,
     LIMITS.outputLines,
   );
+  owner?.retainSnapshotRefs(clipped.text);
   return result(
     clipped.text,
     page,
@@ -112,7 +117,7 @@ async function screenshot(
   owner: BrowserOwner,
 ): Promise<BrowserResult> {
   const target = input.target
-    ? await strictTarget(page, input.target)
+    ? await strictTarget(page, input.target, owner)
     : undefined;
   const dimensions = target
     ? await target.boundingBox()
@@ -176,7 +181,7 @@ async function text(
   owner: BrowserOwner,
 ): Promise<BrowserResult> {
   const root = input.target
-    ? await strictTarget(page, input.target)
+    ? await strictTarget(page, input.target, owner)
     : page.locator("body");
   const clipped = truncate(
     await root.innerText(),
@@ -200,7 +205,7 @@ async function element(
   input: BrowserObserveInput,
   owner: BrowserOwner,
 ): Promise<BrowserResult> {
-  const locator = await strictTarget(page, input.target!);
+  const locator = await strictTarget(page, input.target!, owner);
   const html = truncate(
     await locator.evaluate((node) => node.outerHTML),
     LIMITS.elementHtmlChars,
@@ -339,22 +344,47 @@ async function tabs(owner: BrowserOwner): Promise<BrowserResult> {
         type: "text",
         text:
           items
-            .map((item) => `${item.active ? "*" : " "} ${item.id} ${item.url}`)
+            .map(
+              (item) =>
+                `${item.active ? "*" : " "} ${item.id} ${item.title || "(untitled)"} · ${item.url}`,
+            )
             .join("\n") || "No tabs.",
       },
     ],
-    details: { mode: "tabs", tabs: items, ...owner.contextState() },
+    details: {
+      mode: "tabs",
+      tabs: items,
+      activeTabId: active,
+      ...owner.contextState(),
+    },
   };
 }
 
 async function recovered(
   result: BrowserResult | Promise<BrowserResult>,
   recovery: string | undefined,
+  owner: BrowserOwner,
 ): Promise<BrowserResult> {
   const completed = await result;
-  return recovery
-    ? { ...completed, details: { ...completed.details, recovery } }
-    : completed;
+  const notice = owner.stateLossNotice();
+  const content = notice
+    ? completed.content.map((entry, index) =>
+        index === 0 && entry.type === "text"
+          ? { ...entry, text: `${notice}\n\n${entry.text}` }
+          : entry,
+      )
+    : completed.content;
+  return {
+    ...completed,
+    content,
+    details: {
+      ...completed.details,
+      ...(recovery ? { recovery } : {}),
+      ...(notice
+        ? { recovery: [recovery, notice].filter(Boolean).join(" ") }
+        : {}),
+    },
+  };
 }
 
 async function result(

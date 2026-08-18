@@ -38,7 +38,10 @@ export function urlSummary(value: string): string {
     url.hash = "";
     return bounded(url.toString());
   } catch {
-    return bounded(value);
+    // Wait URL values may be relative. They still must not expose query or
+    // fragment data in call rows or compact results.
+    const [path] = value.split(/[?#]/u, 1);
+    return bounded(path || "/");
   }
 }
 

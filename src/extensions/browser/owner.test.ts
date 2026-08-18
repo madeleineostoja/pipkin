@@ -11,7 +11,7 @@ function deferred<T>() {
 }
 
 describe("BrowserOwner invocation lane", () => {
-  it("removes a cancelled queued call without blocking the following call", async () => {
+  it("keeps later work and shutdown behind a cancelled queued call's predecessor", async () => {
     const owner = new BrowserOwner();
     const first = deferred<void>();
     const started: string[] = [];
@@ -19,6 +19,10 @@ describe("BrowserOwner invocation lane", () => {
       started.push("first");
       await first.promise;
     });
+    const firstResult = firstCall.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
     const controller = new AbortController();
     const cancelled = owner.run(controller.signal, async () => {
       started.push("cancelled");
@@ -31,10 +35,24 @@ describe("BrowserOwner invocation lane", () => {
     await expect(cancelled).rejects.toMatchObject({
       category: "cancelled",
     } satisfies Partial<BrowserError>);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(started).toEqual(["first"]);
+    const shutdown = owner.shutdown();
+    let stopped = false;
+    void shutdown.then(() => {
+      stopped = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(stopped).toBe(false);
     first.resolve();
-    await firstCall;
-    await expect(after).resolves.toBe("complete");
-    expect(started).toEqual(["first", "after"]);
+    await expect(firstResult).resolves.toMatchObject({
+      category: "cancelled",
+    } satisfies Partial<BrowserError>);
+    await expect(after).rejects.toMatchObject({
+      category: "cancelled",
+    } satisfies Partial<BrowserError>);
+    await shutdown;
+    expect(started).toEqual(["first"]);
   });
 
   it("serializes operations", async () => {

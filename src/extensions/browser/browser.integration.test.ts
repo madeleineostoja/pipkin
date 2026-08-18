@@ -35,6 +35,7 @@ describe("Browser integration", () => {
       const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
       const owner = new BrowserOwner();
       owners.push(owner);
+      expect(owner.liveTabs()).toHaveLength(0);
       try {
         const action = await owner.run(undefined, () =>
           act(owner, { action: "navigate", url }),
@@ -46,6 +47,15 @@ describe("Browser integration", () => {
         const snapshotText = (snapshot.content[0] as { text: string }).text;
         const ref = /\[ref=([^\]]+)\]/.exec(snapshotText)?.[1];
         expect(ref).toBeTruthy();
+        const scoped = await owner.run(undefined, () =>
+          observe(owner, {
+            mode: "text",
+            target: { kind: "ref", value: ref! },
+          }),
+        );
+        expect(scoped.content[0]).toMatchObject({
+          text: expect.stringContaining("Save"),
+        });
         await owner.run(undefined, () =>
           act(owner, {
             action: "click",
@@ -132,13 +142,13 @@ describe("Browser integration", () => {
         const element = await owner.run(undefined, () =>
           observe(owner, {
             mode: "element",
-            target: { kind: "role", value: "button", name: "Save" },
+            target: { kind: "text", value: "Rendered", exact: true },
             styleProperties: ["color"],
           }),
         );
         expect(element.details).toMatchObject({
           visible: true,
-          styles: { color: expect.any(String) },
+          styles: { color: "rgb(1, 2, 3)" },
         });
         await owner.run(undefined, () =>
           act(owner, { action: "set_viewport", width: 800, height: 600 }),
@@ -152,11 +162,21 @@ describe("Browser integration", () => {
             target: { kind: "role", value: "button", name: "Save" },
           }),
         );
+        expect(viewportImage.details).toMatchObject({
+          width: 800,
+          height: 600,
+        });
         for (const image of [viewportImage, elementImage]) {
           expect(image.content[1]).toMatchObject({
             type: "image",
             mimeType: "image/png",
           });
+          expect(
+            Buffer.from(
+              (image.content[1] as { data: string }).data,
+              "base64",
+            ).subarray(0, 8),
+          ).toEqual(Buffer.from("89504e470d0a1a0a", "hex"));
         }
         const opened = await owner.run(undefined, () =>
           act(owner, { action: "open_tab" }),
@@ -177,6 +197,15 @@ describe("Browser integration", () => {
         expect((diagnostics.content[0] as { text: string }).text).toContain(
           "request_failed",
         );
+        expect(diagnostics.details.records).toBeLessThanOrEqual(50);
+        await owner.run(undefined, () =>
+          act(owner, { action: "close_tab", tabId: "tab-2" }),
+        );
+        const finalClose = await owner.run(undefined, () =>
+          act(owner, { action: "close_tab", tabId: "tab-1" }),
+        );
+        expect(finalClose.details.activeTabId).toBe("tab-3");
+        expect(owner.liveTabs()).toHaveLength(1);
       } finally {
         await new Promise<void>((resolve, reject) =>
           server.close((error) => (error ? reject(error) : resolve())),

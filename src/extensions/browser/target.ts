@@ -1,15 +1,20 @@
 import type { Locator, Page } from "playwright-core";
 import { BrowserError } from "./errors.js";
+import type { BrowserOwner } from "./owner.js";
 import type { Target } from "./schema.js";
 
 /** Maps the intentionally small public target language to Playwright semantic locators. */
-const snapshotRef = /^(?:e\d+|f\d+e\d+)$/u;
+const snapshotRef = /^(?:e\d+|f\d+e\d+)(?:@\d+)?$/u;
 
 export function isSnapshotRef(value: string): boolean {
   return snapshotRef.test(value);
 }
 
-export function resolveTarget(page: Page, target: Target): Locator {
+export function resolveTarget(
+  page: Page,
+  target: Target,
+  owner?: BrowserOwner,
+): Locator {
   switch (target.kind) {
     case "ref":
       if (!isSnapshotRef(target.value)) {
@@ -18,7 +23,14 @@ export function resolveTarget(page: Page, target: Target): Locator {
           "Browser ref has an invalid spelling.",
         );
       }
-      return page.locator(`aria-ref=${target.value}`);
+      const rawRef = owner?.resolveSnapshotRef(page, target.value);
+      if (owner && !rawRef) {
+        throw new BrowserError(
+          "stale_ref",
+          "Browser ref is stale; observe again for fresh refs.",
+        );
+      }
+      return page.locator(`aria-ref=${rawRef ?? target.value}`);
     case "role":
       return page.getByRole(target.value as never, {
         name: target.name,
@@ -42,8 +54,9 @@ export function resolveTarget(page: Page, target: Target): Locator {
 export async function strictTarget(
   page: Page,
   target: Target,
+  owner?: BrowserOwner,
 ): Promise<Locator> {
-  return checkedTarget(page, target, false);
+  return checkedTarget(page, target, false, owner);
 }
 
 /**
@@ -53,18 +66,20 @@ export async function strictTarget(
 export async function strictWaitTarget(
   page: Page,
   target: Target,
+  owner?: BrowserOwner,
 ): Promise<Locator> {
-  return checkedTarget(page, target, target.kind !== "ref");
+  return checkedTarget(page, target, target.kind !== "ref", owner);
 }
 
 async function checkedTarget(
   page: Page,
   target: Target,
   allowAbsent: boolean,
+  owner?: BrowserOwner,
 ): Promise<Locator> {
   let locator: Locator;
   try {
-    locator = resolveTarget(page, target);
+    locator = resolveTarget(page, target, owner);
     const count = await locator.count();
     if (count !== 1 && !(allowAbsent && count === 0)) {
       throw new BrowserError(

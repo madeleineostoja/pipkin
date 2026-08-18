@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Page } from "playwright-core";
 import { BrowserError } from "./errors.js";
+import { BrowserOwner } from "./owner.js";
 import { resolveTarget, strictWaitTarget } from "./target.js";
 
 function fakePage(calls: unknown[]): Page {
@@ -75,6 +76,24 @@ describe("Browser target resolution", () => {
       category: "stale_ref",
       message: expect.stringContaining("observe again"),
     } satisfies Partial<BrowserError>);
+  });
+
+  it("binds emitted refs to their snapshot generation before using aria-ref", () => {
+    const calls: unknown[] = [];
+    const page = fakePage(calls);
+    const owner = new BrowserOwner();
+    const emitted = owner.registerSnapshot(page, "- button [ref=e1] Save");
+    const ref = /\[ref=([^\]]+)\]/u.exec(emitted)?.[1];
+    expect(ref).toBe("e1@1");
+    resolveTarget(page, { kind: "ref", value: ref! }, owner);
+    owner.invalidateRefs(page);
+    try {
+      resolveTarget(page, { kind: "ref", value: ref! }, owner);
+      throw new Error("Expected stale ref rejection.");
+    } catch (error) {
+      expect(error).toMatchObject({ category: "stale_ref" });
+    }
+    expect(calls).toEqual([["locator", "aria-ref=e1"]]);
   });
 
   it("does not allow snapshot refs to compose a selector", () => {

@@ -38,7 +38,13 @@ export class BrowserOwner {
   private accepting = true;
   private generation = 0;
   private nextTab = 1;
+  private nextActivation = 1;
   private sequence = 1;
+  private refEpoch = 0;
+  private refPage?: Page;
+  private readonly snapshotRefs = new Map<string, string>();
+  private disconnectGeneration = -1;
+  private expectedDisconnect = false;
   private activeRecovery?: Promise<void>;
   private activeAbort?: () => Promise<void>;
   private aborting = false;
@@ -54,6 +60,7 @@ export class BrowserOwner {
     await this.shutdown();
     this.accepting = true;
     this.nextTab = 1;
+    this.nextActivation = 1;
     this.sequence = 1;
     this.stateLost = false;
   }
@@ -73,9 +80,12 @@ export class BrowserOwner {
     }
     let release!: () => void;
     const previous = this.queue;
-    this.queue = new Promise<void>((resolve) => {
+    const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
+    // The tail remains chained to its predecessor even when this caller gives
+    // up while waiting. That keeps later work out of a live shared runtime.
+    this.queue = previous.then(() => gate);
     try {
       await this.waitForTurn(previous, signal);
       if (signal?.aborted || !this.accepting) {
@@ -115,6 +125,40 @@ export class BrowserOwner {
   }
   contextState(): { generation: number; stateLost: boolean } {
     return { generation: this.generation, stateLost: this.stateLost };
+  }
+  stateLossNotice(): string | undefined {
+    return this.stateLost
+      ? "Browser context was recreated; prior tabs, refs, and diagnostics were lost."
+      : undefined;
+  }
+  canRetryObservation(generation: number): boolean {
+    return this.disconnectGeneration > generation;
+  }
+  registerSnapshot(page: Page, value: string): string {
+    this.refEpoch += 1;
+    this.refPage = page;
+    this.snapshotRefs.clear();
+    return value.replace(/\[ref=([^\]]+)\]/gu, (_match, raw: string) => {
+      const ref = `${raw}@${this.refEpoch}`;
+      this.snapshotRefs.set(ref, raw);
+      return `[ref=${ref}]`;
+    });
+  }
+  resolveSnapshotRef(page: Page, ref: string): string | undefined {
+    return this.refPage === page ? this.snapshotRefs.get(ref) : undefined;
+  }
+  retainSnapshotRefs(value: string): void {
+    for (const ref of this.snapshotRefs.keys()) {
+      if (!value.includes(`[ref=${ref}]`)) {
+        this.snapshotRefs.delete(ref);
+      }
+    }
+  }
+  invalidateRefs(page?: Page): void {
+    if (!page || this.refPage === page) {
+      this.refPage = undefined;
+      this.snapshotRefs.clear();
+    }
   }
   withContext(error: BrowserError, recovery?: string): BrowserError {
     const changes = [...new Set([recovery, this.activeChange].filter(Boolean))];
@@ -180,13 +224,19 @@ export class BrowserOwner {
     }
     const page = await this.context.newPage();
     const tab = this.own(page);
+    if (!tab) {
+      throw new BrowserError("target", "Browser has reached its 20-tab limit.");
+    }
     this.activate(tab);
     return tab;
   }
 
   activate(tab: Tab): void {
+    if (this.active !== tab) {
+      this.invalidateRefs();
+    }
     this.active = tab;
-    tab.lastActive = Date.now();
+    tab.lastActive = this.nextActivation++;
   }
 
   async close(tab: Tab): Promise<void> {
@@ -209,6 +259,12 @@ export class BrowserOwner {
     await (this.activeAbort?.() ?? this.abortRuntime());
     await this.launch?.catch(() => {});
     await this.queue;
+  }
+
+  /** Stops a Playwright operation with no native per-call cancellation API. */
+  async abortOperation(): Promise<void> {
+    this.aborting = true;
+    await this.abortRuntime();
   }
 
   private async waitForTurn(
@@ -321,7 +377,13 @@ export class BrowserOwner {
       });
       this.startingBrowser = browser;
       this.assertCurrent(generation);
-      browser.on("disconnected", () => this.invalidate(true));
+      browser.on("disconnected", () => {
+        if (!this.expectedDisconnect) {
+          this.generation += 1;
+          this.disconnectGeneration = this.generation;
+          this.invalidate(true);
+        }
+      });
       context = await browser.newContext({
         viewport: LIMITS.defaultViewport,
         deviceScaleFactor: 1,
@@ -337,7 +399,14 @@ export class BrowserOwner {
       this.diagnostics = [];
       const page = await context.newPage();
       this.assertCurrent(generation);
-      this.activate(this.own(page));
+      const tab = this.own(page);
+      if (!tab) {
+        throw new BrowserError(
+          "backend",
+          "Browser could not create its initial tab.",
+        );
+      }
+      this.activate(tab);
     } catch (error) {
       if (this.browser === browser) {
         this.invalidate(false);
@@ -357,15 +426,19 @@ export class BrowserOwner {
     }
   }
 
-  private own(page: Page): Tab {
+  private own(page: Page): Tab | undefined {
     const existing = this.tabs.get(page);
     if (existing) {
       return existing;
     }
+    if (this.liveTabs().length >= LIMITS.tabCount) {
+      void page.close().catch(() => {});
+      return undefined;
+    }
     const tab: Tab = {
       id: `tab-${this.nextTab++}`,
       page,
-      lastActive: Date.now(),
+      lastActive: this.nextActivation++,
     };
     this.tabs.set(page, tab);
     this.actionPages?.push(tab);
@@ -406,8 +479,14 @@ export class BrowserOwner {
         });
       }
     });
+    page.on("framenavigated", (frame) => {
+      if (frame === page.mainFrame()) {
+        this.invalidateRefs(page);
+      }
+    });
     page.on("close", () => {
       this.tabs.delete(page);
+      this.invalidateRefs(page);
       if (this.active === tab) {
         this.active = undefined;
         this.activeChange = "Active tab closed; selected a fallback tab.";
@@ -452,7 +531,9 @@ export class BrowserOwner {
     }
     if (this.context && this.browser?.isConnected()) {
       const tab = this.own(await this.context.newPage());
-      this.activate(tab);
+      if (tab) {
+        this.activate(tab);
+      }
       this.activeChange = "Active tab closed; opened a fresh blank tab.";
     }
   }
@@ -462,11 +543,16 @@ export class BrowserOwner {
     const context = this.context;
     const browser = this.browser;
     const starting = this.startingBrowser;
+    this.expectedDisconnect = true;
     this.invalidate(Boolean(context || browser || starting));
-    await context?.close().catch(() => {});
-    await browser?.close().catch(() => {});
-    if (starting && starting !== browser) {
-      await starting.close().catch(() => {});
+    try {
+      await context?.close().catch(() => {});
+      await browser?.close().catch(() => {});
+      if (starting && starting !== browser) {
+        await starting.close().catch(() => {});
+      }
+    } finally {
+      this.expectedDisconnect = false;
     }
   }
 
@@ -480,6 +566,7 @@ export class BrowserOwner {
     this.active = undefined;
     this.activeRecovery = undefined;
     this.actionPages = undefined;
+    this.invalidateRefs();
     this.tabs.clear();
     this.diagnostics = [];
     this.sensitiveTexts.clear();
