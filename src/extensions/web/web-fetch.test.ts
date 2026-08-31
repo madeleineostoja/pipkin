@@ -116,6 +116,60 @@ describe("web_fetch", () => {
     expect(console.error).toBe(previousConsoleError);
   });
 
+  it("does not leak Defuddle URL diagnostics from structured page metadata", async () => {
+    const transport: WebTransport = {
+      profile: { browser: "chrome_147", os: "windows" },
+      fetch: async () =>
+        page(
+          "https://example.com/post",
+          "text/html",
+          '<html><head><link rel="canonical" href="https://example.com/post"><script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"Organization","url":"https://example.com"},{"@type":"WebSite","url":"https://example.com/docs"}]}</script></head><body><article><h1>Heading</h1><p>Readable page text.</p></article></body></html>',
+        ),
+    };
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const result = await executeWebFetch(
+        { url: "https://example.com/post" },
+        undefined,
+        undefined,
+        { transport },
+      );
+
+      expect(result.content[0]?.text).toContain("Readable page text.");
+      expect(warning).not.toHaveBeenCalled();
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it("shields invalid Open Graph URLs before lower-priority metadata", async () => {
+    const transport: WebTransport = {
+      profile: { browser: "chrome_147", os: "windows" },
+      fetch: async () =>
+        page(
+          "https://example.com/post",
+          "text/html",
+          '<html><head><meta property="twitter:url" content="https://example.com/post"><meta property="og:url" content="not a valid URL"></head><body><article><h1>Heading</h1><p>Readable page text.</p></article></body></html>',
+        ),
+    };
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const result = await executeWebFetch(
+        { url: "https://example.com/post" },
+        undefined,
+        undefined,
+        { transport },
+      );
+
+      expect(result.content[0]?.text).toContain("Readable page text.");
+      expect(warning).not.toHaveBeenCalled();
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it("uses bounded extraction metadata and discloses semantic truncation", async () => {
     const transport: WebTransport = {
       profile: { browser: "chrome_147", os: "windows" },

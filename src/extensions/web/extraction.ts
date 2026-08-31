@@ -27,6 +27,7 @@ export async function extractHtml(
 ): Promise<ExtractedPage> {
   assertActive(dependencies.deadline, dependencies.parentSignal);
   const { document } = parseHTML(html);
+  shieldInvalidMetadataUrl(document);
   assertActive(dependencies.deadline, dependencies.parentSignal);
   let nestedFailure: unknown;
   assertActive(dependencies.deadline, dependencies.parentSignal);
@@ -91,6 +92,94 @@ export function renderJson(text: string): string | undefined {
 
 export function isHtml(contentType: string): boolean {
   return /(?:^|\/)html(?:;|$)|application\/xhtml\+xml/iu.test(contentType);
+}
+
+function shieldInvalidMetadataUrl(document: Document): void {
+  const candidate = pageMetadataUrl(document);
+  if (!candidate || URL.canParse(candidate)) {
+    return;
+  }
+  // Linkedom omits location. Defuddle otherwise tries this invalid metadata URL,
+  // catches the failure, and writes its stack directly to the process console.
+  Object.defineProperty(document, "location", {
+    configurable: true,
+    value: new URL("about:blank"),
+  });
+}
+
+function pageMetadataUrl(document: Document): string | undefined {
+  const metadata = [...document.querySelectorAll("meta[property]")];
+  const content = (property: string) =>
+    metadata
+      .find((meta) => meta.getAttribute("property")?.toLowerCase() === property)
+      ?.getAttribute("content")
+      ?.trim();
+  const direct = content("og:url") || content("twitter:url");
+  if (direct) {
+    return direct;
+  }
+
+  const schemaUrls = schemaPageUrls(document);
+  if (schemaUrls.length > 0) {
+    return schemaUrls.join(", ");
+  }
+
+  return (
+    document
+      .querySelector('link[rel="canonical"]')
+      ?.getAttribute("href")
+      ?.trim() || undefined
+  );
+}
+
+function schemaPageUrls(document: Document): string[] {
+  const roots: unknown[] = [];
+  for (const script of document.querySelectorAll(
+    'script[type="application/ld+json"]',
+  )) {
+    try {
+      const parsed = JSON.parse(script.textContent ?? "") as unknown;
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        "@graph" in parsed &&
+        Array.isArray(parsed["@graph"])
+      ) {
+        roots.push(...parsed["@graph"]);
+      } else {
+        roots.push(parsed);
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  const direct = roots.flatMap((root) =>
+    root && typeof root === "object" && !Array.isArray(root) && "url" in root
+      ? schemaStrings(root.url)
+      : [],
+  );
+  const urls = direct.length > 0 ? direct : roots.flatMap(nestedSchemaUrls);
+  return [...new Set(urls.filter(Boolean))];
+}
+
+function nestedSchemaUrls(value: unknown): string[] {
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap(nestedSchemaUrls);
+  }
+  return Object.entries(value).flatMap(([key, child]) =>
+    key === "url" ? schemaStrings(child) : nestedSchemaUrls(child),
+  );
+}
+
+function schemaStrings(value: unknown): string[] {
+  if (typeof value === "string" || typeof value === "number") {
+    return [String(value)];
+  }
+  return Array.isArray(value) ? value.flatMap(schemaStrings) : [];
 }
 
 function fallbackContent(
