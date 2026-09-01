@@ -10,7 +10,11 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
-import { acquireFileLease, type FileLease } from "#lib/file-lease";
+import {
+  acquireFileLease,
+  FileLeaseTimeoutError,
+  type FileLease,
+} from "#lib/file-lease";
 import { ensureGitInfoExclude } from "#lib/git";
 import { pipkinProjectDirectory } from "#lib/project-path";
 import { z } from "zod";
@@ -708,15 +712,19 @@ export type CheckoutPaths = {
   worktrees: string;
   trash: string;
 };
-export type CheckoutLeaseOwner = {
-  runId: string;
-  runPath: string;
-  checkoutRoot: string;
-  gitDir: string;
-  pid: number;
-  hostname: string;
-  startedAt: string;
-};
+const checkoutLeaseOwnerSchema = z
+  .object({
+    runId: id,
+    runPath: nonEmpty,
+    checkoutRoot: nonEmpty,
+    gitDir: nonEmpty,
+    pid: z.number().int().positive(),
+    hostname: nonEmpty,
+    startedAt: nonEmpty,
+  })
+  .strict();
+
+export type CheckoutLeaseOwner = z.infer<typeof checkoutLeaseOwnerSchema>;
 export type CheckoutLeaseCapability = {
   readonly paths: CheckoutPaths;
   readonly owner: CheckoutLeaseOwner;
@@ -741,6 +749,24 @@ export class StaleRevisionError extends StateError {
       `Run state at ${path} changed from revision ${expected} to ${actual}.`,
       path,
     );
+  }
+}
+
+export class CheckoutLeaseBusyError extends Error {
+  constructor(
+    readonly anchorPath: string,
+    readonly timeoutMs: number,
+    readonly owner?: CheckoutLeaseOwner,
+    options?: ErrorOptions,
+  ) {
+    const ownerDetail = owner
+      ? ` Last recorded owner: Implement run ${owner.runId}, PID ${owner.pid} on ${owner.hostname}, since ${owner.startedAt}.`
+      : "";
+    super(
+      `Timed out after ${timeoutMs}ms acquiring the checkout lease at ${anchorPath}.${ownerDetail} Wait for the owning run to settle or stop it before retrying.`,
+      options,
+    );
+    this.name = "CheckoutLeaseBusyError";
   }
 }
 
@@ -787,10 +813,23 @@ export async function acquireCheckoutLease(args: {
       runPath,
     );
   }
-  const lease = await acquireFileLease(paths.lock, {
-    timeoutMs: args.timeoutMs,
-    signal: args.signal,
-  });
+  let lease: FileLease;
+  try {
+    lease = await acquireFileLease(paths.lock, {
+      timeoutMs: args.timeoutMs,
+      signal: args.signal,
+    });
+  } catch (error) {
+    if (error instanceof FileLeaseTimeoutError) {
+      throw new CheckoutLeaseBusyError(
+        paths.lock,
+        args.timeoutMs,
+        readCheckoutLeaseOwner(paths.owner),
+        { cause: error },
+      );
+    }
+    throw error;
+  }
   const owner: CheckoutLeaseOwner = {
     runId: args.runId,
     runPath,
@@ -807,6 +846,18 @@ export async function acquireCheckoutLease(args: {
     throw error;
   }
   return capability(paths, owner, lease);
+}
+
+function readCheckoutLeaseOwner(
+  ownerPath: string,
+): CheckoutLeaseOwner | undefined {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(ownerPath, "utf8"));
+    const result = checkoutLeaseOwnerSchema.safeParse(parsed);
+    return result.success ? result.data : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function capability(

@@ -26,7 +26,7 @@ Sandbox starts enabled for macOS main sessions. Child sessions resolve policy fr
 | `/sandbox on`  | Enable protection for later model Bash/direct-tool calls in the current session                    |
 | `/sandbox off` | Disable protection for later calls and children spawned afterward                                  |
 
-The footer shows `sandbox` while enabled, `sandbox off` after explicit disable, and a warning with the active-runtime denial count after confirmed direct-tool or kernel Bash write denial. `/sandbox` lists recent denials newest first; its policy page reports effective authority, including temporary/cache and package dependency roots available to repository-read-only Bash.
+The footer shows `sandbox` while enabled, `sandbox off` after explicit disable, and warning-yellow `sandbox (N)` with the active-runtime denial count after confirmed direct-tool or kernel Bash write denial. `/sandbox` lists recent denials newest first; its policy page reports effective authority, including temporary/cache and package dependency roots available to repository-read-only Bash.
 
 On macOS, model Bash runs through `/usr/bin/sandbox-exec`. Configured global and ignored/untracked project `sandbox.writable` roots are resolved once at session start and apply equally to Bash, managed Processes, and direct `write`/`edit`; in repository-read-only children, configured project descendants are narrow workspace exceptions. Git and Pi/Pipkin configuration remain denied even when a configured root is otherwise admitted. See [Configuration](../configuration.md#sandbox-writable-roots) for the bounded path syntax and validation rules.
 

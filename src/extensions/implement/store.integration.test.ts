@@ -4,7 +4,11 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { acquireCheckoutLease, checkoutPaths } from "./store.js";
+import {
+  acquireCheckoutLease,
+  CheckoutLeaseBusyError,
+  checkoutPaths,
+} from "./store.js";
 
 const roots: string[] = [];
 
@@ -42,14 +46,22 @@ describe("checkout-local store lease", () => {
       expect(
         readFileSync(join(first, ".git", "info", "exclude"), "utf8"),
       ).toContain(`/${CONFIG_DIR_NAME}/pipkin/implement/`);
-      await expect(
-        acquireCheckoutLease({
-          checkoutRoot: first,
-          runId: "run-2",
-          gitDir: join(first, ".git"),
-          timeoutMs: 25,
-        }),
-      ).rejects.toThrow("Timed out");
+      const blocked = await acquireCheckoutLease({
+        checkoutRoot: first,
+        runId: "run-2",
+        gitDir: join(first, ".git"),
+        timeoutMs: 25,
+      }).catch((error: unknown) => error);
+      expect(blocked).toBeInstanceOf(CheckoutLeaseBusyError);
+      expect(blocked).toMatchObject({
+        owner: {
+          runId: "run-1",
+          pid: process.pid,
+        },
+      });
+      expect((blocked as Error).message).toContain(
+        "Last recorded owner: Implement run run-1",
+      );
       const independent = await acquireCheckoutLease({
         checkoutRoot: second,
         runId: "run-2",

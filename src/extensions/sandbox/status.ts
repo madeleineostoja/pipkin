@@ -26,7 +26,7 @@ export function sandboxStatusLabel(status: SandboxStatus, denials = 0): string {
     off: "sandbox off",
     unavailable: "sandbox unavailable",
   }[status];
-  return denials > 0 ? `${label} · ${denials} denied` : label;
+  return denials > 0 ? `${label} (${denials})` : label;
 }
 
 export function syncSandboxStatus(

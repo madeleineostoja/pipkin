@@ -90,7 +90,7 @@ A crash-retained active run is terminalized as interrupted under the checkout le
 | `/implement cleanup <run-id>`                     | Settle terminal state and remove provably owned resources after confirmation                          |
 | `/implement stop`                                 | Settle owned processes and terminally stop the active run                                             |
 
-The menu also offers **Clean completed runs (N)** for retained completed history. It does not include failed, incomplete, or historical entries.
+The menu also offers **Clean completed runs (N)** for retained completed history. It does not include failed, incomplete, or historical entries. The footer shows a short warning-yellow `cleaning` status while cleanup or automatic post-run resource release is pending.
 
 `inspect_implement_run` is the read-only model-facing inspection tool. Without `runId`, it lists retained runs in the current checkout; with `runId`, it summarizes that run and reports authoritative artifact paths for ordinary reads. Its collapsed row identifies the retained run and point-in-time phase; expanding it shows the complete bounded inspection artifact. Managed Implement workers cannot call it.
 
@@ -128,7 +128,7 @@ Each checkout owns its Implement state:
 
 `run-state.json` is authoritative. UI, status, evidence views, and Markdown checkboxes are projections. `source-corpus.json` preserves immutable planning input; the execution plan preserves the schedule.
 
-One OS-backed lease protects each checkout's active run and destructive cleanup. Linked checkouts own independent state and may run separately; a second run in the same checkout is rejected.
+One OS-backed lease protects each checkout's active run and destructive cleanup. Linked checkouts own independent state and may run separately; a second run in the same checkout is rejected. Retained-run cleanup is rejected immediately when another run in the current session owns the checkout. If an external owner blocks bulk cleanup, Implement reports its recorded run and process identity when available, then stops the batch after the first lease timeout instead of repeating that timeout for every remaining run.
 
 State is versioned. Before upgrading across an incompatible lifecycle version, settle and clean retained runs with the previous runtime. Newer runtimes reject legacy run state rather than guessing how to resume it.
 

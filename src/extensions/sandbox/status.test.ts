@@ -59,7 +59,7 @@ describe("Sandbox status", () => {
     denials.recordDirect({ tool: "write", reason: "outside workspace" });
     syncSandboxStatus(ctx as never, state, true, denials);
     expect(statuses.get("pipkin:status:0200:sandbox")).toBe(
-      "<warning>󰒃</warning> <warning>sandbox · 1 denied</warning>",
+      "<warning>󰒃</warning> <warning>sandbox (1)</warning>",
     );
     denials.recordBash({
       process: "bash",
@@ -69,12 +69,12 @@ describe("Sandbox status", () => {
     });
     syncSandboxStatus(ctx as never, state, true, denials);
     expect(statuses.get("pipkin:status:0200:sandbox")).toBe(
-      "<warning>󰒃</warning> <warning>sandbox · 2 denied</warning>",
+      "<warning>󰒃</warning> <warning>sandbox (2)</warning>",
     );
     state.setEnabled(false);
     syncSandboxStatus(ctx as never, state, true, denials);
     expect(statuses.get("pipkin:status:0200:sandbox")).toBe(
-      "<warning>󰒃</warning> <warning>sandbox off · 2 denied</warning>",
+      "<warning>󰒃</warning> <warning>sandbox off (2)</warning>",
     );
   });
 });

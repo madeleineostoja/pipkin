@@ -315,7 +315,7 @@ describe("Sandbox lifecycle", () => {
     denials.recordDirect({ tool: "write", reason: "blocked" });
 
     expect(ctx.statuses.get("pipkin:status:0200:sandbox")).toContain(
-      "sandbox · 1 denied",
+      "sandbox (1)",
     );
     await session.sessionShutdown(ctx as never);
     denials.recordDirect({ tool: "write", reason: "later" });

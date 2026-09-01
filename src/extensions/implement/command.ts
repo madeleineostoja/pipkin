@@ -8,6 +8,7 @@ import {
   claimImplementNaming,
   generateSessionName,
 } from "#personality/session-name";
+import { clearPipkinStatus, setPipkinStatus } from "#ui/status";
 import { resolveImplementRoles } from "./subagents.js";
 import { parseCommand, usage, type ParsedCommand } from "./parser.js";
 import {
@@ -28,7 +29,7 @@ import {
 } from "./controls.js";
 import { createImplementActivity } from "./activity.js";
 import { createTerminalHandoffPublisher } from "./terminal-handoff-publisher.js";
-import type { RunState } from "./store.js";
+import { CheckoutLeaseBusyError, type RunState } from "./store.js";
 import { showImplementRunSurface } from "./run-surface.js";
 
 type ImplementActivity = ReturnType<typeof createImplementActivity>;
@@ -130,9 +131,11 @@ export function registerImplementCommand(
         activity?.clear();
         activity = undefined;
         const failures: string[] = [];
-        await stopRun(stopping, "stopped", async (run) => {
-          failures.push(...(await resourceReleaseFailures(run)));
-        });
+        await withCleanupStatus(ctx, () =>
+          stopRun(stopping, "stopped", async (run) => {
+            failures.push(...(await resourceReleaseFailures(run)));
+          }),
+        );
         notifyResourceReleaseFailures(ctx, stopping.runId, failures);
         ctx.ui.notify(
           stopping.store.read().phase === "completed"
@@ -206,6 +209,11 @@ export function registerImplementCommand(
           ctx.ui.notify("Implement has no completed runs to clean.", "info");
           return;
         }
+        if (active && active.store.read().phase !== "completed") {
+          throw new Error(
+            `Run ${active.runId} currently owns the checkout. Wait for it to settle or stop it before cleaning completed run history.`,
+          );
+        }
         if (!ctx.hasUI) {
           throw new Error(
             "Cleaning completed run history requires interactive confirmation.",
@@ -220,15 +228,43 @@ export function registerImplementCommand(
         }
         const failures: string[] = [];
         let cleaned = 0;
-        for (const runId of runIds) {
-          try {
-            await cleanup(runId, checkoutRoot);
-            cleaned += 1;
-          } catch (error) {
-            failures.push(
-              `${runId}: ${error instanceof Error ? error.message : String(error)}`,
-            );
+        let contention:
+          | { runId: string; reason: string; skipped: number }
+          | undefined;
+        await withCleanupStatus(ctx, async () => {
+          for (const [index, runId] of runIds.entries()) {
+            try {
+              await cleanup(runId, checkoutRoot);
+              cleaned += 1;
+            } catch (error) {
+              const reason =
+                error instanceof Error ? error.message : String(error);
+              if (error instanceof CheckoutLeaseBusyError) {
+                contention = {
+                  runId,
+                  reason,
+                  skipped: runIds.length - index - 1,
+                };
+                break;
+              }
+              failures.push(`${runId}: ${reason}`);
+            }
           }
+        });
+        if (contention) {
+          const skipped =
+            contention.skipped > 0
+              ? ` Skipped ${contention.skipped} remaining ${contention.skipped === 1 ? "run" : "runs"}.`
+              : "";
+          const otherFailures =
+            failures.length > 0
+              ? ` Other blocked runs: ${failures.join("; ")}`
+              : "";
+          ctx.ui.notify(
+            `Implement cleaned ${cleaned} completed ${cleaned === 1 ? "run" : "runs"}; cleanup stopped at ${contention.runId} because the checkout is busy: ${contention.reason}${skipped}${otherFailures}`,
+            "warning",
+          );
+          return;
         }
         if (failures.length > 0) {
           ctx.ui.notify(
@@ -246,6 +282,11 @@ export function registerImplementCommand(
       if (!parsed.runId) {
         throw new Error("Cleanup requires a run ID.");
       }
+      if (active && active.runId !== parsed.runId) {
+        throw new Error(
+          `Run ${active.runId} currently owns the checkout. Wait for it to settle or stop it before cleaning run ${parsed.runId}.`,
+        );
+      }
       const state = runState(checkoutRoot, parsed.runId, active);
       if (state.phase !== "completed") {
         if (!ctx.hasUI) {
@@ -261,7 +302,7 @@ export function registerImplementCommand(
           return;
         }
       }
-      await cleanup(parsed.runId, checkoutRoot);
+      await withCleanupStatus(ctx, () => cleanup(parsed.runId!, checkoutRoot));
       ctx.ui.notify(`Implement cleaned run ${parsed.runId}.`, "info");
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -303,15 +344,17 @@ export function registerImplementCommand(
     if (active?.runId !== run.runId) {
       return;
     }
-    const failures = await resourceReleaseFailures(run);
-    cancelSessionNaming(run.runId);
-    active = undefined;
-    try {
-      await run.lease.release();
-    } catch (error) {
-      failures.push(error instanceof Error ? error.message : String(error));
-    }
-    notifyResourceReleaseFailures(ctx, run.runId, failures);
+    await withCleanupStatus(ctx, async () => {
+      const failures = await resourceReleaseFailures(run);
+      cancelSessionNaming(run.runId);
+      active = undefined;
+      try {
+        await run.lease.release();
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : String(error));
+      }
+      notifyResourceReleaseFailures(ctx, run.runId, failures);
+    });
   }
 
   async function handleExecution(
@@ -367,11 +410,13 @@ export function registerImplementCommand(
     try {
       if (parsed.restart) {
         const checkoutRoot = await resolveCheckoutRoot(ctx.cwd);
-        await cleanupCompletedRun({
-          checkoutRoot,
-          runId: parsed.restart.runId,
-          prospectiveStart: true,
-        });
+        await withCleanupStatus(ctx, () =>
+          cleanupCompletedRun({
+            checkoutRoot,
+            runId: parsed.restart!.runId,
+            prospectiveStart: true,
+          }),
+        );
       }
       const result = await startRun({
         pi,
@@ -478,6 +523,44 @@ export function registerImplementCommand(
       .catch(() => {
         // Naming is supplementary to an already-started Implement run.
       });
+  }
+}
+
+const IMPLEMENT_CLEANUP_STATUS = {
+  id: "implement-cleanup",
+  priority: 400,
+  icon: "󰃢",
+  state: "warning",
+  text: "cleaning",
+} as const;
+
+async function withCleanupStatus<T>(
+  ctx: ExtensionCommandContext,
+  operation: () => Promise<T>,
+): Promise<T> {
+  let visible = false;
+  if (ctx.mode === "tui") {
+    try {
+      setPipkinStatus(ctx.ui, IMPLEMENT_CLEANUP_STATUS);
+      visible = true;
+    } catch {
+      // Footer presentation must not block resource settlement.
+    }
+  }
+  try {
+    return await operation();
+  } finally {
+    if (visible) {
+      try {
+        clearPipkinStatus(
+          ctx.ui,
+          IMPLEMENT_CLEANUP_STATUS.id,
+          IMPLEMENT_CLEANUP_STATUS.priority,
+        );
+      } catch {
+        // Footer presentation must not block resource settlement.
+      }
+    }
   }
 }
 
