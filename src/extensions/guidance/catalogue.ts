@@ -169,6 +169,10 @@ export const CROSS_TOOL_RULES: readonly GuidanceRule[] = [
     text: "Use Bash for local repository and shell work; use mcp for configured external service capabilities.",
   },
   {
+    requiredTools: ["mcp"],
+    text: 'Before the first server-specific operation on a known MCP server, call mcp({ connect: "server" }); connect is safe to repeat and refreshes metadata for an existing connection.',
+  },
+  {
     requiredTools: ["mcp", "mcpScript"],
     text: "Use mcp for one external operation; use mcpScript only when composing multiple MCP calls needs loops, filtering, chaining, or fan-out.",
   },

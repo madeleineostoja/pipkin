@@ -127,6 +127,9 @@ describe("Guidance catalogue", () => {
   it("routes configured external services through MCP and scripts only for composition", () => {
     const prompt = renderGuidance(["bash", "mcp", "mcpScript"])!;
     expect(prompt).toContain("local repository and shell work");
+    expect(prompt).toContain("Before the first server-specific operation");
+    expect(prompt).toContain('mcp({ connect: "server" })');
+    expect(prompt).toContain("safe to repeat and refreshes metadata");
     expect(prompt).toContain("one external operation");
     expect(prompt).toContain("composing multiple MCP calls");
   });
