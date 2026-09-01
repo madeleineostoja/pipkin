@@ -129,6 +129,7 @@ const runtimeManagerKey = Symbol.for("pipkin:subagents:manager");
 
 type BundleFixture = {
   agentDir: string;
+  cwd: string;
   eventBus: ReturnType<typeof createEventBus>;
   runtimeListenerCount: () => number;
   loader: DefaultResourceLoader;
@@ -188,6 +189,7 @@ function restoreGlobalSymbols(states: readonly GlobalSymbolState[]): void {
 
 async function loadBundle(
   mcp?: Record<string, { url: string }>,
+  cwd = ROOT,
 ): Promise<BundleFixture> {
   const agentDir = mkdtempSync(join(tmpdir(), "pipkin-bundle-"));
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -252,7 +254,7 @@ async function loadBundle(
 
   try {
     const loader = new DefaultResourceLoader({
-      cwd: ROOT,
+      cwd,
       agentDir,
       eventBus,
       settingsManager: SettingsManager.inMemory(),
@@ -266,6 +268,7 @@ async function loadBundle(
     await loader.reload();
     const fixture = {
       agentDir,
+      cwd,
       eventBus,
       runtimeListenerCount: () => runtimeListenerCount,
       loader,
@@ -338,6 +341,7 @@ async function createBundleRunner(
   fixture: BundleFixture,
   extensions: Extension[],
   reason: "startup" | "reload" = "startup",
+  trusted = true,
 ): Promise<{
   runner: ExtensionRunner;
   extensions: Extension[];
@@ -350,8 +354,8 @@ async function createBundleRunner(
   const runner = new ExtensionRunner(
     extensions,
     fixture.result.runtime,
-    ROOT,
-    SessionManager.inMemory(ROOT),
+    fixture.cwd,
+    SessionManager.inMemory(fixture.cwd),
     new ModelRegistry(modelRuntime),
   );
   const errors: string[] = [];
@@ -379,7 +383,7 @@ async function createBundleRunner(
       getModel: () => undefined,
       getScopedModels: () => [],
       isIdle: () => true,
-      isProjectTrusted: () => true,
+      isProjectTrusted: () => trusted,
       getSignal: () => undefined,
       abort: () => {},
       hasPendingMessages: () => false,
@@ -523,7 +527,41 @@ describe("Pipkin bundle", () => {
           relativeExtensionPath(extension) === "src/extensions/mcp/index.ts",
       );
       expect(provenanceMap(fixture.result.extensions, "tools")).toEqual(
-        expectedProvenance({ ...expectedTools, ...expectedOptionalTools }),
+        expectedProvenance(expectedTools),
+      );
+      expect(provenanceMap(fixture.result.extensions, "commands")).toEqual(
+        expectedProvenance(expectedCommands),
+      );
+      expect(process.env.MCP_DIRECT_TOOLS).toBe("inert");
+      expect(fixture.runtimeListenerCount()).toBe(0);
+
+      const statusSnapshots: unknown[] = [];
+      const shutdownListenerCounts: number[] = [];
+      const unsubscribe = fixture.eventBus.on(
+        "pi-mcp-adapter/status/v1",
+        (snapshot) => {
+          statusSnapshots.push(snapshot);
+          if (
+            typeof snapshot === "object" &&
+            snapshot !== null &&
+            "servers" in snapshot &&
+            Array.isArray(snapshot.servers) &&
+            snapshot.servers.length === 0
+          ) {
+            shutdownListenerCounts.push(fixture.runtimeListenerCount());
+          }
+        },
+      );
+      const { runner, errors } = await createBundleRunner(
+        fixture,
+        fixture.result.extensions,
+      );
+      expect(provenanceMap(fixture.result.extensions, "tools")).toEqual(
+        expectedProvenance({
+          bash: "src/extensions/sandbox/index.ts",
+          ...expectedTools,
+          ...expectedOptionalTools,
+        }),
       );
       expect(provenanceMap(fixture.result.extensions, "commands")).toEqual(
         expectedProvenance({
@@ -551,28 +589,6 @@ describe("Pipkin bundle", () => {
       expect(
         readFileSync(join(fixture.agentDir, "mcp-cache.json"), "utf8"),
       ).toBe('{"version":1,"servers":{}}');
-
-      const statusSnapshots: unknown[] = [];
-      const shutdownListenerCounts: number[] = [];
-      const unsubscribe = fixture.eventBus.on(
-        "pi-mcp-adapter/status/v1",
-        (snapshot) => {
-          statusSnapshots.push(snapshot);
-          if (
-            typeof snapshot === "object" &&
-            snapshot !== null &&
-            "servers" in snapshot &&
-            Array.isArray(snapshot.servers) &&
-            snapshot.servers.length === 0
-          ) {
-            shutdownListenerCounts.push(fixture.runtimeListenerCount());
-          }
-        },
-      );
-      const { runner, errors } = await createBundleRunner(
-        fixture,
-        fixture.result.extensions,
-      );
       await vi.waitFor(() => expect(statusSnapshots).not.toEqual([]));
       expect(statusSnapshots).toEqual(
         expect.arrayContaining([
@@ -677,7 +693,7 @@ describe("Pipkin bundle", () => {
       await fixture.loader.reload();
       fixture.result = fixture.loader.getExtensions();
       expect(fixture.result.errors).toEqual([]);
-      expect(fixture.runtimeListenerCount()).toBe(2);
+      expect(fixture.runtimeListenerCount()).toBe(0);
       const replacementRequest: {
         version: number;
         name: string;
@@ -687,13 +703,19 @@ describe("Pipkin bundle", () => {
         "pi-mcp-adapter:runtime-snapshot:v1",
         replacementRequest,
       );
-      expect(replacementRequest.result).toBeDefined();
+      expect(replacementRequest.result).toBeUndefined();
 
       const replacement = await createBundleRunner(
         fixture,
         fixture.result.extensions,
         "reload",
       );
+      expect(fixture.runtimeListenerCount()).toBe(2);
+      fixture.eventBus.emit(
+        "pi-mcp-adapter:runtime-snapshot:v1",
+        replacementRequest,
+      );
+      expect(replacementRequest.result).toBeDefined();
       await replacement.runner.emit({
         type: "session_shutdown",
         reason: "reload",
@@ -736,6 +758,119 @@ describe("Pipkin bundle", () => {
       } else {
         writeFileSync(ambientProjectMcpPath, ambientProjectMcpBefore, "utf8");
       }
+      if (previousDirectTools === undefined) {
+        delete process.env.MCP_DIRECT_TOOLS;
+      } else {
+        process.env.MCP_DIRECT_TOOLS = previousDirectTools;
+      }
+    }
+  });
+
+  it("registers only Pipkin's MCP recovery command after an untrusted unconfigured start", async () => {
+    const previousDirectTools = process.env.MCP_DIRECT_TOOLS;
+    process.env.MCP_DIRECT_TOOLS = "ambient";
+    try {
+      const fixture = await loadBundle();
+      const { runner, errors } = await createBundleRunner(
+        fixture,
+        fixture.result.extensions,
+        "startup",
+        false,
+      );
+      expect(provenanceMap(fixture.result.extensions, "tools")).toEqual(
+        expectedProvenance({
+          bash: "src/extensions/sandbox/index.ts",
+          ...expectedTools,
+        }),
+      );
+      expect(provenanceMap(fixture.result.extensions, "commands")).toEqual(
+        expectedProvenance({
+          ...expectedCommands,
+          mcp: "src/extensions/mcp/index.ts",
+        }),
+      );
+      expect(existsSync(join(fixture.agentDir, "mcp-cache.json"))).toBe(false);
+      expect(process.env.MCP_DIRECT_TOOLS).toBe("ambient");
+      const mcp = fixture.result.extensions.find(
+        (extension) =>
+          relativeExtensionPath(extension) === "src/extensions/mcp/index.ts",
+      );
+      const notifications: string[] = [];
+      await mcp?.commands.get("mcp")?.handler("", {
+        hasUI: true,
+        mode: "print",
+        cwd: ROOT,
+        ui: { notify: (message: string) => notifications.push(message) },
+      } as never);
+      expect(notifications[0]).toContain("No valid MCP servers are configured");
+      expect(notifications[0]).toContain(getConfigPath(fixture.agentDir));
+      expect(notifications[0]).not.toContain("Project:");
+      expect(notifications[0]).not.toContain(
+        "project location could not be resolved",
+      );
+      expect(notifications[0]).toContain("/reload");
+      expect(errors).toEqual([]);
+      await runner.emit({ type: "session_shutdown", reason: "quit" });
+    } finally {
+      if (previousDirectTools === undefined) {
+        delete process.env.MCP_DIRECT_TOOLS;
+      } else {
+        process.env.MCP_DIRECT_TOOLS = previousDirectTools;
+      }
+    }
+  });
+
+  it("registers the contained adapter surface from a trusted project MCP map", async () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), "pipkin-project-mcp-"));
+    const projectPath = join(projectRoot, ".pi", "pipkin", "config.json");
+    const previousDirectTools = process.env.MCP_DIRECT_TOOLS;
+    try {
+      mkdirSync(dirname(projectPath), { recursive: true });
+      writeFileSync(
+        projectPath,
+        JSON.stringify({
+          mcp: { project: { url: "https://project.example.test/mcp" } },
+        }),
+        "utf8",
+      );
+      const fixture = await loadBundle(undefined, projectRoot);
+      const mcp = fixture.result.extensions.find(
+        (extension) =>
+          relativeExtensionPath(extension) === "src/extensions/mcp/index.ts",
+      );
+      const statusSnapshots: unknown[] = [];
+      const unsubscribe = fixture.eventBus.on(
+        "pi-mcp-adapter/status/v1",
+        (snapshot) => statusSnapshots.push(snapshot),
+      );
+      const { runner, errors } = await createBundleRunner(
+        fixture,
+        fixture.result.extensions,
+      );
+
+      expect(mcp?.tools.has("mcp")).toBe(true);
+      expect(mcp?.tools.has("mcpScript")).toBe(true);
+      expect(mcp?.commands.has("mcp")).toBe(true);
+      expect(mcp?.commands.has("mcp-auth")).toBe(true);
+      expect(process.env.MCP_DIRECT_TOOLS).toBe("__none__");
+      await vi.waitFor(() => expect(statusSnapshots).not.toEqual([]));
+      expect(statusSnapshots).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            servers: [
+              expect.objectContaining({
+                name: expect.stringMatching(/^project__/),
+                status: "not-connected",
+              }),
+            ],
+          }),
+        ]),
+      );
+      expect(errors).toEqual([]);
+      await runner.emit({ type: "session_shutdown", reason: "quit" });
+      unsubscribe();
+    } finally {
+      rmSync(projectRoot, { force: true, recursive: true });
       if (previousDirectTools === undefined) {
         delete process.env.MCP_DIRECT_TOOLS;
       } else {

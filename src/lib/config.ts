@@ -18,6 +18,7 @@ export const MAX_SANDBOX_WRITABLE_ENTRIES = 64;
 export const MAX_SANDBOX_WRITABLE_LENGTH = 1024;
 export const MAX_MCP_SERVER_NAME_LENGTH = 64;
 export const MAX_MCP_SERVER_URL_LENGTH = 2_000;
+export const MCP_PROJECT_NAME_PREFIX = "project__";
 
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 export type ModelPresetName = "utility" | "low" | "medium" | "high";
@@ -38,7 +39,10 @@ export type PipkinConfig = Readonly<{
   mcp?: McpConfig;
   nickname?: string;
 }>;
-export type ProjectPipkinConfig = Readonly<{ sandbox: SandboxConfig }>;
+export type ProjectPipkinConfig = Readonly<{
+  sandbox: SandboxConfig;
+  mcp?: McpConfig;
+}>;
 export type ConfigSnapshot = Readonly<{
   path: string;
   config: PipkinConfig;
@@ -289,14 +293,15 @@ function parseProjectValue(
 ): ProjectConfigSnapshot {
   const { issue, root, issues } = parser(value, initialIssues);
   const sandbox = parseSandbox(root?.sandbox, issue);
+  const mcp = parseMcp(root?.mcp, issue);
   if (root) {
     for (const key of Object.keys(root)) {
-      if (key !== "sandbox") {
+      if (key !== "sandbox" && key !== "mcp") {
         issue(key, "is not supported in project configuration");
       }
     }
   }
-  return freeze({ path, config: { sandbox }, issues });
+  return freeze({ path, config: { sandbox, ...(mcp ? { mcp } : {}) }, issues });
 }
 
 function parser(value: unknown, initialIssues: ConfigIssue[]) {
@@ -372,11 +377,12 @@ function parseMcp(value: unknown, issue: Issue): McpConfig | undefined {
     const field = `mcp.${name}`;
     if (
       name.length > MAX_MCP_SERVER_NAME_LENGTH ||
-      !/^[a-z][a-z0-9_-]*$/.test(name)
+      !/^[a-z][a-z0-9_-]*$/.test(name) ||
+      name.startsWith(MCP_PROJECT_NAME_PREFIX)
     ) {
       issue(
         field,
-        `name must match [a-z][a-z0-9_-]* and be at most ${MAX_MCP_SERVER_NAME_LENGTH} characters`,
+        `name must match [a-z][a-z0-9_-]*, avoid reserved ${MCP_PROJECT_NAME_PREFIX}, and be at most ${MAX_MCP_SERVER_NAME_LENGTH} characters`,
       );
       continue;
     }

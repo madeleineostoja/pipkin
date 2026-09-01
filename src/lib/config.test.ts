@@ -173,23 +173,46 @@ describe("Pipkin config", () => {
     );
   });
 
-  it("rejects MCP from project configuration", () => {
+  it("parses strict project MCP servers independently from invalid siblings", () => {
     const project = parseProjectPipkinConfig(
       JSON.stringify({
         sandbox: { writable: ["build"] },
-        mcp: { project: { url: "https://not-used.test" } },
+        mcp: {
+          project: { url: "https://project.test/mcp" },
+          project__reserved: { url: "https://not-used.test" },
+          broken: { url: "ftp://not-used.test" },
+        },
       }),
     );
 
-    expect(project.config).not.toHaveProperty("mcp");
+    expect(project.config.mcp).toEqual({
+      project: { url: "https://project.test/mcp" },
+    });
     expect(project.issues).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          path: "mcp",
-          message: "is not supported in project configuration",
+          path: "mcp.project__reserved",
+          scope: "project",
         }),
+        expect.objectContaining({ path: "mcp.broken.url", scope: "project" }),
       ]),
     );
+  });
+
+  it("reserves generated project names in both configuration scopes", () => {
+    for (const parse of [parsePipkinConfig, parseProjectPipkinConfig]) {
+      const snapshot = parse(
+        JSON.stringify({
+          mcp: { project__reserved: { url: "https://mcp.test" } },
+        }),
+      );
+      expect(snapshot.config.mcp).toEqual({});
+      expect(snapshot.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: "mcp.project__reserved" }),
+        ]),
+      );
+    }
   });
 
   it("rejects removed context policy configuration", () => {

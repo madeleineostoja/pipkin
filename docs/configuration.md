@@ -23,11 +23,11 @@ Create `<getAgentDir()>/pipkin/config.json`. With Pi's default agent directory, 
 
 Only `models` is required for the complete model-powered feature set. `nickname` and `implement` are optional. Pipkin rejects unknown top-level keys.
 
-Configuration is snapshotted when each consuming extension is constructed. Run Pi's `/reload` after changing it.
+Configuration is snapshotted at each consuming feature's documented lifecycle boundary. Run Pi's `/reload` after changing it.
 
 ## MCP servers
 
-MCP is optional and global-only. Add `mcp.<name>.url` to `<getAgentDir()>/pipkin/config.json`; project configuration rejects `mcp`. An empty `mcp` map is valid and disables the MCP extension surface.
+MCP is optional. Add personal servers to `<getAgentDir()>/pipkin/config.json` and checkout-specific servers to `<canonical-root>/<CONFIG_DIR_NAME>/pipkin/config.json` (currently `<checkout>/.pi/pipkin/config.json`). An empty `mcp` map is valid. Project MCP configuration is read only in trusted sessions, never by searching ancestor directories.
 
 ```json
 {
@@ -41,17 +41,24 @@ MCP is optional and global-only. Add `mcp.<name>.url` to `<getAgentDir()>/pipkin
 
 This is an endpoint-only, strict schema:
 
-| Path             | Required           | Exact contract                                                                           |
-| ---------------- | ------------------ | ---------------------------------------------------------------------------------------- |
-| `mcp`            | No                 | Object map of server definitions                                                         |
-| `mcp.<name>`     | Yes for each entry | Object with only `url`; `<name>` matches `[a-z][a-z0-9_-]*` and is at most 64 characters |
-| `mcp.<name>.url` | Yes                | HTTP(S) URL string at most 2,000 characters                                              |
+| Path             | Required           | Exact contract                                                                                                      |
+| ---------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `mcp`            | No                 | Object map of server definitions                                                                                    |
+| `mcp.<name>`     | Yes for each entry | Object with only `url`; `<name>` matches `[a-z][a-z0-9_-]*`, is at most 64 characters, and cannot begin `project__` |
+| `mcp.<name>.url` | Yes                | HTTP(S) URL string at most 2,000 characters                                                                         |
 
 Pipkin performs no endpoint reachability check while parsing configuration. Each server definition is validated independently: an invalid name, malformed definition, unsupported field, or invalid URL omits only that entry while valid siblings remain available. Invalid `mcp` values are rejected, and all unsupported fields in strict server definitions are reported as configuration issues.
 
 No credential, authentication, transport, lifecycle, or provider-specific setting belongs in this schema. Do not put secrets in configuration or URLs; adapter-owned credentials are separate from Pipkin configuration.
 
-Each MCP extension construction reads one immutable global snapshot. Pipkin does not watch the file during a session. Save the configuration and run Pi's `/reload` to apply a revised server map; the new extension instance receives the new snapshot.
+At session start Pipkin parses both scopes independently, preserving valid siblings and scope-labelled issues. A valid trusted-project entry replaces a global entry with the same logical name; an invalid project sibling leaves the valid global server intact. Global servers keep their configured adapter name. Project servers are supplied to the adapter as `project__<slug>_<digest>__<logical-name>` (at most 112 characters):
+
+- `<slug>` starts with the lowercased canonical-root basename. Each maximal run outside `[a-z0-9]` becomes `_`; surrounding `_` characters are removed; the result is truncated to 24 characters; and an `_` newly left at the end by truncation is removed. An empty result becomes `project`.
+- `<digest>` is the first 12 lowercase hexadecimal characters of SHA-256 over the UTF-8 canonical absolute root string.
+
+These names deliberately key adapter-owned credentials and metadata: global names share credentials, while project names isolate credentials and their URL binding. Moving or recloning a checkout changes its generated name, so authenticate again if needed.
+
+Pipkin resolves the current canonical Git worktree root, or canonical current directory outside a usable worktree; it never searches a different ancestor. Snapshots are immutable for the session and Pipkin does not watch files. Save changes and run `/reload` to reconstruct the map and adapter. [MCP](features/mcp.md) documents the visible operational consequences of these adapter identities.
 
 ## Sandbox writable roots
 
@@ -60,7 +67,7 @@ Sandbox reads `sandbox.writable` from both configuration scopes:
 | Scope   | Path                                                                                                         | Allowed fields                                          |
 | ------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
 | Global  | `<getAgentDir()>/pipkin/config.json` (normally `~/.pi/agent/pipkin/config.json`)                             | `nickname`, `models`, `implement`, `sandbox`, and `mcp` |
-| Project | `<canonical-workspace>/<CONFIG_DIR_NAME>/pipkin/config.json` (currently `<checkout>/.pi/pipkin/config.json`) | `sandbox` only                                          |
+| Project | `<canonical-workspace>/<CONFIG_DIR_NAME>/pipkin/config.json` (currently `<checkout>/.pi/pipkin/config.json`) | `sandbox` and `mcp`                                     |
 
 Project configuration is anchored to the resolved workspace; Pipkin does not search ancestors. Put personal persistent roots in the global file, not in a project file or `.pi/settings.json`.
 

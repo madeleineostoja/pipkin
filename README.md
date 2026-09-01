@@ -72,7 +72,7 @@ Implement coordinates trusted workers in disposable Git worktrees, publishes thr
 
 ### Optional external MCP
 
-When globally configured, **MCP** proxies generic external capabilities one operation at a time or through trusted MCP-only scripts. Unconfigured sessions register no MCP commands or tools.
+When globally or trusted-project configured, **MCP** proxies generic external capabilities one operation at a time or through trusted MCP-only scripts. `/mcp` is always available after startup; without valid servers it explains where to save an `mcp` map and to run `/reload`. `/mcp-auth`, `mcp`, and `mcpScript` require at least one valid server.
 
 [MCP →](docs/features/mcp.md) · [MCP configuration →](docs/configuration.md#mcp-servers)
 
@@ -96,8 +96,8 @@ When globally configured, **MCP** proxies generic external capabilities one oper
 | `/processes`          | Inspect and stop current-session managed processes                        |
 | `/agents`             | Inspect activity/results, guide, or stop public agents                    |
 | `/implement …`        | Start, inspect, stop, restart, or clean Implement runs                    |
-| `/mcp`                | Inspect and manage configured external MCP servers                        |
-| `/mcp-auth <server>`  | Authenticate one configured external MCP server                           |
+| `/mcp`                | Inspect configured MCP servers, or show unconfigured-session recovery     |
+| `/mcp-auth <server>`  | Authenticate one configured external MCP server (when configured)         |
 | `/papercuts`          | Browse, close, and clean up recorded Papercut findings                    |
 | `/btw <question>`     | Ask an ephemeral side question; press `s` to promote a completed exchange |
 
@@ -111,28 +111,28 @@ When globally configured, **MCP** proxies generic external capabilities one oper
 
 These tools are called by the agent rather than typed as slash commands.
 
-| Tool                    | Purpose                                                                                |
-| ----------------------- | -------------------------------------------------------------------------------------- |
-| `bash_outcome`          | Run an action or validation when exit status alone is enough                           |
-| `context_recall`        | Recover retained output or content hidden behind a pruning stub                        |
-| `lsp`                   | Query definitions, types, implementations, references, symbols, hover, and diagnostics |
-| `start_process`         | Start managed foreground work while independent work continues                         |
-| `get_process_result`    | Join or intentionally inspect a managed process                                        |
-| `stop_process`          | Stop managed work that is no longer needed                                             |
-| `Agent`                 | Start an Explore or Review managed subagent and return its ID                          |
-| `get_subagent_result`   | Join or inspect a managed subagent                                                     |
-| `steer_subagent`        | Queue guidance for a running managed subagent                                          |
-| `inspect_implement_run` | List or inspect durable Implement runs and artifact paths                              |
-| `docs`                  | Retrieve bounded library documentation                                                 |
-| `package_search`        | Search documentation, npm, and public GitHub package ecosystems                        |
-| `code_search`           | Search bounded GitHub source visible to the configured credential                      |
-| `web_fetch`             | Retrieve bounded readable content from one public URL                                  |
-| `batch_web_fetch`       | Retrieve one to eight public URLs with fixed concurrency                               |
-| `browser_observe`       | Inspect isolated rendered pages, images, diagnostics, and tabs                         |
-| `browser_act`           | Navigate, interact, scroll, wait, and manage isolated browser tabs                     |
-| `mcp`                   | Use configured external MCP capabilities through one bounded operation at a time       |
-| `mcpScript`             | Compose multiple configured MCP operations in one trusted JavaScript request           |
-| `record_papercut`       | Record qualifying incidental friction after an exercised workaround                    |
+| Tool                    | Purpose                                                                                            |
+| ----------------------- | -------------------------------------------------------------------------------------------------- |
+| `bash_outcome`          | Run an action or validation when exit status alone is enough                                       |
+| `context_recall`        | Recover retained output or content hidden behind a pruning stub                                    |
+| `lsp`                   | Query definitions, types, implementations, references, symbols, hover, and diagnostics             |
+| `start_process`         | Start managed foreground work while independent work continues                                     |
+| `get_process_result`    | Join or intentionally inspect a managed process                                                    |
+| `stop_process`          | Stop managed work that is no longer needed                                                         |
+| `Agent`                 | Start an Explore or Review managed subagent and return its ID                                      |
+| `get_subagent_result`   | Join or inspect a managed subagent                                                                 |
+| `steer_subagent`        | Queue guidance for a running managed subagent                                                      |
+| `inspect_implement_run` | List or inspect durable Implement runs and artifact paths                                          |
+| `docs`                  | Retrieve bounded library documentation                                                             |
+| `package_search`        | Search documentation, npm, and public GitHub package ecosystems                                    |
+| `code_search`           | Search bounded GitHub source visible to the configured credential                                  |
+| `web_fetch`             | Retrieve bounded readable content from one public URL                                              |
+| `batch_web_fetch`       | Retrieve one to eight public URLs with fixed concurrency                                           |
+| `browser_observe`       | Inspect isolated rendered pages, images, diagnostics, and tabs                                     |
+| `browser_act`           | Navigate, interact, scroll, wait, and manage isolated browser tabs                                 |
+| `mcp`                   | Use configured external MCP capabilities through one bounded operation at a time (when configured) |
+| `mcpScript`             | Compose multiple configured MCP operations in one trusted JavaScript request (when configured)     |
+| `record_papercut`       | Record qualifying incidental friction after an exercised workaround                                |
 
 ## Important safety boundaries
 

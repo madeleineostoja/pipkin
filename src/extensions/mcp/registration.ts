@@ -9,6 +9,7 @@ type AdapterFactory = (
 ) => (pi: ExtensionAPI) => void;
 
 type Registration = Readonly<{
+  start: (event: unknown, ctx: unknown) => Promise<void>;
   dispose: () => void;
 }>;
 
@@ -19,6 +20,7 @@ export function registerContainedMcpAdapter(input: {
 }): Registration {
   const { pi, options, createAdapter } = input;
   const eventUnsubscribers = new Set<() => void>();
+  const startHandlers: ((event: unknown, ctx: unknown) => unknown)[] = [];
   const registeredTools = new Set<string>();
   const registeredCommands = new Set<string>();
 
@@ -41,7 +43,16 @@ export function registerContainedMcpAdapter(input: {
     registerFlag: (name: string, definition: unknown) => void;
   };
   mutableFacade.events = events;
-  mutableFacade.on = pi.on.bind(pi);
+  mutableFacade.on = ((
+    channel: string,
+    handler: (event: unknown, ctx: unknown) => unknown,
+  ) => {
+    if (channel === "session_start") {
+      startHandlers.push(handler);
+      return;
+    }
+    pi.on(channel as never, handler as never);
+  }) as typeof pi.on;
   mutableFacade.registerTool = (definition) => {
     const tool = definition as Record<string, unknown>;
     const name = tool.name;
@@ -92,8 +103,18 @@ export function registerContainedMcpAdapter(input: {
     }
   }
 
+  let started = false;
   let disposed = false;
   return {
+    async start(event, ctx) {
+      if (started || disposed) {
+        return;
+      }
+      started = true;
+      for (const handler of startHandlers) {
+        await handler(event, ctx);
+      }
+    },
     dispose() {
       if (disposed) {
         return;

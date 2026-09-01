@@ -25,11 +25,13 @@ function fakePi() {
 }
 
 describe("registerContainedMcpAdapter", () => {
-  it("forwards only the contained surface and removes adapter prompt metadata", () => {
+  it("forwards only the contained surface and removes adapter prompt metadata", async () => {
     const { pi, tools, commands, flags } = fakePi();
     const directListener = vi.fn();
+    const startup = vi.fn();
     const factory = vi.fn(() => (adapterPi: typeof pi) => {
       adapterPi.events.on("adapter-runtime", directListener);
+      adapterPi.on("session_start", startup);
       adapterPi.on("session_shutdown", () => {});
       adapterPi.registerFlag("mcp-config", {});
       adapterPi.registerCommand("mcp", {});
@@ -73,6 +75,9 @@ describe("registerContainedMcpAdapter", () => {
     expect(tools.mcp).not.toHaveProperty("promptGuidelines");
     expect(tools.mcpScript?.description).not.toContain("skill");
     expect(tools.mcpScript?.renderResult).toBeTypeOf("function");
+    await registration.start({ type: "session_start" }, {});
+    await registration.start({ type: "session_start" }, {});
+    expect(startup).toHaveBeenCalledOnce();
 
     pi.events.emit("adapter-runtime", {});
     expect(directListener).toHaveBeenCalledOnce();

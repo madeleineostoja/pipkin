@@ -1,6 +1,6 @@
 # MCP
 
-MCP is Pipkin's optional generic bridge to configured external capabilities. It keeps the adapter's proxy and scripting surfaces inside Pipkin rather than registering a server-specific tool set. Configure one or more endpoints in the global Pipkin configuration, then use the proxy for the external work; see [Configuration](../configuration.md#mcp-servers) for the endpoint-only schema.
+MCP is Pipkin's optional generic bridge to configured external capabilities. It keeps the adapter's proxy and scripting surfaces inside Pipkin rather than registering a server-specific tool set. Configure global or trusted project endpoints, then use the proxy for the external work; [Configuration](../configuration.md#mcp-servers) owns the exact schema, naming, merge, and trust contract.
 
 ## Choose a tool
 
@@ -15,20 +15,20 @@ Pipkin supplies configured servers to the adapter as an isolated snapshot and se
 
 ## Commands and lifecycle
 
-| Command                   | Purpose                                                                           |
-| ------------------------- | --------------------------------------------------------------------------------- |
-| `/mcp` or `/mcp status`   | Show configured-server status from Pipkin's in-memory configuration snapshot      |
-| `/mcp reconnect [server]` | Reconnect one server or the configured servers                                    |
-| `/mcp-auth <server>`      | Start or continue the adapter-owned authentication flow for one configured server |
-| `/mcp logout <server>`    | Clear that server's stored authentication credentials and disconnect it           |
+| Command                   | Purpose                                                                                     |
+| ------------------------- | ------------------------------------------------------------------------------------------- |
+| `/mcp` or `/mcp status`   | Show configured-server status, or configuration recovery guidance when no servers are valid |
+| `/mcp reconnect [server]` | Reconnect one server or the configured servers (configured sessions only)                   |
+| `/mcp-auth <server>`      | Start or continue adapter-owned authentication for one configured server (configured only)  |
+| `/mcp logout <server>`    | Clear stored authentication credentials and disconnect it (configured sessions only)        |
 
-Servers are lazy: loading Pipkin and starting a session do not connect them. The first operation that needs a server connects it and refreshes its metadata. Cached metadata can still support discovery when a server is offline. A failed, unreachable, or authentication-required server is degraded independently; it does not prevent other configured servers or the MCP surface from loading.
+Servers are lazy: starting a configured session does not connect them. The first operation that needs a server connects it and refreshes its metadata. Cached metadata can still support discovery when a server is offline. A failed, unreachable, or authentication-required server is degraded independently; it does not prevent other configured servers or the MCP surface from loading.
 
-Use `/mcp` to inspect the affected server, `/mcp reconnect [server]` to retry its connection, and `/mcp logout <server>` or `/mcp-auth <server>` to recover its authentication. Bare `/mcp` shows status; it does not open configuration management. Adapter setup and enable/disable persistence are unavailable because Pipkin supplies an in-memory configuration. Change endpoints or server enablement only through the global `mcp` server map, then run Pi's `/reload` to construct the extension from a new snapshot and create a new adapter session. Reload is also the ordinary recovery step after repairing a degraded configuration or adapter session.
+`/mcp` is always available after startup. With no valid servers it is a concise recovery diagnostic: save an `mcp` server map at the shown global path (and, for a trusted resolved checkout, project path), then run `/reload`. In that state `/mcp-auth`, `mcp`, and `mcpScript` are absent and no adapter or cache is created. With servers, `/mcp` is adapter-owned status; use `/mcp reconnect [server]` to retry, and `/mcp logout <server>` or `/mcp-auth <server>` to recover authentication. Adapter setup and enable/disable persistence are unavailable because Pipkin supplies an in-memory configuration. Change endpoints only through the relevant `mcp` server map, then run `/reload` to create a fresh session snapshot and adapter.
 
 ## Authentication and credentials
 
-Authentication is adapter-owned. `/mcp-auth <server>` delegates the configured server's authentication flow to the adapter; Pipkin does not supply credentials, validate provider authentication, or add a credential store. Persistent adapter credentials live in the operating system credential store and are bound to the configured server URL, rather than being placed in Pipkin configuration.
+Authentication is adapter-owned. `/mcp-auth <server>` delegates the configured server's authentication flow to the adapter; Pipkin does not supply credentials, validate provider authentication, or add a credential store. Persistent adapter credentials live in the operating system credential store and are keyed by the adapter-visible server identity and URL. Global names preserve shared credentials; generated project-qualified names intentionally isolate project credentials. Project-qualified names are supplied directly to the adapter, with no alias or second credential/cache layer, and remain visible in `/mcp`, `/mcp-auth`, `mcp`, `mcpScript`, status, and metadata. [Configuration](../configuration.md#mcp-servers) defines their exact generated-name formula. Re-authenticate after moving or recloning a checkout when its canonical-root-derived identity changes.
 
 Keep secrets out of configuration, tool inputs, documentation, and URLs. If the operating-system credential store is unavailable, locked, or rejects a credential, repair that host condition or authenticate again through the adapter. `/mcp logout <server>` is the explicit way to discard stored authentication for a server before re-authenticating.
 
