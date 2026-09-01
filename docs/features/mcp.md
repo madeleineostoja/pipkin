@@ -34,6 +34,8 @@ Keep secrets out of configuration, tool inputs, documentation, and URLs. `oauth.
 
 ## Output and recovery
 
+MCP tools use Pipkin's standard tool shell. Collapsed rows show a bounded semantic operation summary; expand a row to inspect the adapter's complete model-facing text. Adapter domain failures remain normal tool results but use Pipkin's compact error summary.
+
 Pipkin requests the adapter's normal output guarding. Guarded text or result details can be truncated in the returned result while the full text is spilled to a private temporary file. Text spill files are not automatically removed and can contain sensitive external data; remove them deliberately when they are no longer needed. Pipkin adds no competing retention or cleanup system.
 
 The adapter retains its `MCP_OUTPUT_GUARD=0` environment kill switch. Pipkin does not override that switch, so an operator who sets it disables the adapter's text and details guarding. Treat returned and spilled content according to the trust of its external source.

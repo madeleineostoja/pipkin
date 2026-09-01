@@ -1,5 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { McpAdapterOptions } from "pi-mcp-adapter";
+import {
+  renderMcpCall,
+  renderMcpResult,
+  renderMcpScriptCall,
+} from "./presentation.js";
 
 const ALLOWED_TOOLS = new Set(["mcp", "mcpScript"]);
 const ALLOWED_COMMANDS = new Set(["mcp", "mcp-auth"]);
@@ -62,6 +67,9 @@ export function registerContainedMcpAdapter(input: {
     const {
       promptSnippet: _promptSnippet,
       promptGuidelines: _promptGuidelines,
+      renderShell: _renderShell,
+      renderCall: _renderCall,
+      renderResult: _renderResult,
       ...contained
     } = tool;
     registeredTools.add(name);
@@ -71,8 +79,14 @@ export function registerContainedMcpAdapter(input: {
             ...contained,
             description:
               "Run trusted JavaScript that composes multiple MCP calls in one request. For one MCP operation, use mcp instead.",
+            renderCall: renderMcpScriptCall,
+            renderResult: renderMcpResult,
           }
-        : contained,
+        : {
+            ...contained,
+            renderCall: renderMcpCall,
+            renderResult: renderMcpResult,
+          },
     );
   };
   mutableFacade.registerCommand = (name, definition) => {

@@ -29,6 +29,8 @@ describe("registerContainedMcpAdapter", () => {
     const { pi, tools, commands, flags } = fakePi();
     const directListener = vi.fn();
     const startup = vi.fn();
+    const adapterRenderCall = vi.fn();
+    const adapterRenderResult = vi.fn();
     const factory = vi.fn(() => (adapterPi: typeof pi) => {
       adapterPi.events.on("adapter-runtime", directListener);
       adapterPi.on("session_start", startup);
@@ -41,7 +43,9 @@ describe("registerContainedMcpAdapter", () => {
         name: "mcp",
         parameters: { type: "object" },
         execute: vi.fn(),
-        renderResult: vi.fn(),
+        renderShell: "self",
+        renderCall: adapterRenderCall,
+        renderResult: adapterRenderResult,
         promptSnippet: "adapter",
         promptGuidelines: ["adapter"],
       });
@@ -50,7 +54,8 @@ describe("registerContainedMcpAdapter", () => {
         description: "Load the mcp-scripting skill",
         parameters: { type: "object" },
         execute: vi.fn(),
-        renderResult: vi.fn(),
+        renderCall: adapterRenderCall,
+        renderResult: adapterRenderResult,
         promptSnippet: "adapter",
         promptGuidelines: ["adapter"],
       });
@@ -74,7 +79,13 @@ describe("registerContainedMcpAdapter", () => {
     expect(tools.mcp).not.toHaveProperty("promptSnippet");
     expect(tools.mcp).not.toHaveProperty("promptGuidelines");
     expect(tools.mcpScript?.description).not.toContain("skill");
-    expect(tools.mcpScript?.renderResult).toBeTypeOf("function");
+    for (const tool of [tools.mcp, tools.mcpScript]) {
+      expect(tool?.renderShell).toBeUndefined();
+      expect(tool?.renderCall).toBeTypeOf("function");
+      expect(tool?.renderCall).not.toBe(adapterRenderCall);
+      expect(tool?.renderResult).toBeTypeOf("function");
+      expect(tool?.renderResult).not.toBe(adapterRenderResult);
+    }
     await registration.start({ type: "session_start" }, {});
     await registration.start({ type: "session_start" }, {});
     expect(startup).toHaveBeenCalledOnce();
