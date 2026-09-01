@@ -130,6 +130,7 @@ const runtimeManagerKey = Symbol.for("pipkin:subagents:manager");
 type BundleFixture = {
   agentDir: string;
   eventBus: ReturnType<typeof createEventBus>;
+  runtimeListenerCount: () => number;
   loader: DefaultResourceLoader;
   result: LoadExtensionsResult;
   dispose: () => Promise<void>;
@@ -193,6 +194,27 @@ async function loadBundle(mcp?: {
   const exitListeners = new Set(process.listeners("exit"));
   const globals = snapshotGlobalSymbols();
   const eventBus = createEventBus();
+  const adapterRuntimeEvents = new Set([
+    "pi-mcp-adapter:runtime-register:v1",
+    "pi-mcp-adapter:runtime-snapshot:v1",
+  ]);
+  let runtimeListenerCount = 0;
+  const on = eventBus.on.bind(eventBus);
+  eventBus.on = ((channel, handler) => {
+    const unsubscribe = on(channel, handler);
+    if (!adapterRuntimeEvents.has(channel)) {
+      return unsubscribe;
+    }
+    runtimeListenerCount += 1;
+    let active = true;
+    return () => {
+      if (active) {
+        active = false;
+        runtimeListenerCount -= 1;
+      }
+      unsubscribe();
+    };
+  }) as typeof eventBus.on;
   const configPath = getConfigPath(agentDir);
   mkdirSync(dirname(configPath), { recursive: true });
   writeFileSync(
@@ -245,6 +267,7 @@ async function loadBundle(mcp?: {
     const fixture = {
       agentDir,
       eventBus,
+      runtimeListenerCount: () => runtimeListenerCount,
       loader,
       result: loader.getExtensions(),
       dispose,
@@ -479,6 +502,17 @@ describe("Pipkin bundle", () => {
     if (!address || typeof address === "string") {
       throw new Error("inert MCP server did not bind a TCP port");
     }
+    const ambientProjectMcpPath = join(ROOT, ".mcp.json");
+    const ambientProjectMcpBefore = existsSync(ambientProjectMcpPath)
+      ? readFileSync(ambientProjectMcpPath, "utf8")
+      : undefined;
+    writeFileSync(
+      ambientProjectMcpPath,
+      JSON.stringify({
+        mcpServers: { ambient: { url: "http://127.0.0.1:9/ambient" } },
+      }),
+      "utf8",
+    );
 
     try {
       const fixture = await loadBundle({
@@ -513,14 +547,27 @@ describe("Pipkin bundle", () => {
         /skill/i,
       );
       expect(process.env.MCP_DIRECT_TOOLS).toBe("__none__");
+      expect(fixture.runtimeListenerCount()).toBe(2);
       expect(
         readFileSync(join(fixture.agentDir, "mcp-cache.json"), "utf8"),
       ).toBe('{"version":1,"servers":{}}');
 
       const statusSnapshots: unknown[] = [];
+      const shutdownListenerCounts: number[] = [];
       const unsubscribe = fixture.eventBus.on(
         "pi-mcp-adapter/status/v1",
-        (snapshot) => statusSnapshots.push(snapshot),
+        (snapshot) => {
+          statusSnapshots.push(snapshot);
+          if (
+            typeof snapshot === "object" &&
+            snapshot !== null &&
+            "servers" in snapshot &&
+            Array.isArray(snapshot.servers) &&
+            snapshot.servers.length === 0
+          ) {
+            shutdownListenerCounts.push(fixture.runtimeListenerCount());
+          }
+        },
       );
       const { runner, errors } = await createBundleRunner(
         fixture,
@@ -541,6 +588,33 @@ describe("Pipkin bundle", () => {
       );
       expect(requests).toBe(0);
 
+      const commandNotifications: string[] = [];
+      const commandContext = {
+        hasUI: true,
+        mode: "print",
+        cwd: ROOT,
+        ui: { notify: (message: string) => commandNotifications.push(message) },
+      };
+      const mcpCommand = mcp?.commands.get("mcp");
+      const mcpAuthCommand = mcp?.commands.get("mcp-auth");
+      expect(mcpCommand).toBeDefined();
+      expect(mcpAuthCommand).toBeDefined();
+      await mcpCommand!.handler("status", commandContext as never);
+      await mcpCommand!.handler("setup", commandContext as never);
+      await mcpCommand!.handler("disable inert", commandContext as never);
+      await mcpCommand!.handler("enable inert", commandContext as never);
+      await mcpAuthCommand!.handler("", commandContext as never);
+      expect(commandNotifications.join("\n")).toContain("inert");
+      expect(commandNotifications.join("\n")).not.toContain("ambient");
+      expect(commandNotifications).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining("MCP setup is unavailable"),
+          expect.stringContaining("/mcp disable is unavailable"),
+          expect.stringContaining("/mcp enable is unavailable"),
+          expect.stringContaining("Use /mcp-auth <server>"),
+        ]),
+      );
+
       const mcpTool = runner
         .getAllRegisteredTools()
         .find(({ definition }) => definition.name === "mcp")?.definition;
@@ -555,21 +629,55 @@ describe("Pipkin bundle", () => {
         ),
       ).resolves.toBeDefined();
       await vi.waitFor(() => expect(requests).toBeGreaterThan(0));
+      const lsp = runner
+        .getAllRegisteredTools()
+        .find(({ definition }) => definition.name === "lsp")?.definition;
+      await expect(
+        lsp!.execute(
+          "after-mcp-failure",
+          { request: { action: "status" } },
+          undefined,
+          undefined,
+          { cwd: ROOT, ui: {} } as never,
+        ),
+      ).resolves.toMatchObject({
+        details: expect.objectContaining({ action: "status" }),
+      });
       expect(errors).toEqual([]);
-      unsubscribe();
       await runner.emit({ type: "session_shutdown", reason: "quit" });
+      expect(shutdownListenerCounts).toEqual([2, 2]);
+      expect(fixture.runtimeListenerCount()).toBe(0);
 
-      const staleRequest: { version: number; name: string; result?: unknown } =
-        {
-          version: 1,
-          name: "inert",
-        };
-      fixture.eventBus.emit("pi-mcp-adapter:runtime-snapshot:v1", staleRequest);
-      expect(staleRequest.result).toBeUndefined();
+      const staleSnapshot: {
+        version: number;
+        name: string;
+        result?: unknown;
+      } = { version: 1, name: "inert" };
+      const staleRegistration: {
+        version: number;
+        name: string;
+        definition: { url: string };
+        result?: unknown;
+      } = {
+        version: 1,
+        name: "stale",
+        definition: { url: "http://127.0.0.1:9/stale" },
+      };
+      fixture.eventBus.emit(
+        "pi-mcp-adapter:runtime-snapshot:v1",
+        staleSnapshot,
+      );
+      fixture.eventBus.emit(
+        "pi-mcp-adapter:runtime-register:v1",
+        staleRegistration,
+      );
+      expect(staleSnapshot.result).toBeUndefined();
+      expect(staleRegistration.result).toBeUndefined();
 
       await fixture.loader.reload();
       fixture.result = fixture.loader.getExtensions();
       expect(fixture.result.errors).toEqual([]);
+      expect(fixture.runtimeListenerCount()).toBe(2);
       const replacementRequest: {
         version: number;
         name: string;
@@ -590,21 +698,44 @@ describe("Pipkin bundle", () => {
         type: "session_shutdown",
         reason: "reload",
       });
-      const replacementStaleRequest: {
+      expect(shutdownListenerCounts).toEqual([2, 2, 2, 2]);
+      expect(fixture.runtimeListenerCount()).toBe(0);
+      unsubscribe();
+      const replacementStaleSnapshot: {
         version: number;
         name: string;
         result?: unknown;
       } = { version: 1, name: "inert" };
+      const replacementStaleRegistration: {
+        version: number;
+        name: string;
+        definition: { url: string };
+        result?: unknown;
+      } = {
+        version: 1,
+        name: "stale",
+        definition: { url: "http://127.0.0.1:9/stale" },
+      };
       fixture.eventBus.emit(
         "pi-mcp-adapter:runtime-snapshot:v1",
-        replacementStaleRequest,
+        replacementStaleSnapshot,
       );
-      expect(replacementStaleRequest.result).toBeUndefined();
+      fixture.eventBus.emit(
+        "pi-mcp-adapter:runtime-register:v1",
+        replacementStaleRegistration,
+      );
+      expect(replacementStaleSnapshot.result).toBeUndefined();
+      expect(replacementStaleRegistration.result).toBeUndefined();
       expect(replacement.errors).toEqual([]);
     } finally {
       await new Promise<void>((resolve, reject) =>
         server.close((error) => (error ? reject(error) : resolve())),
       );
+      if (ambientProjectMcpBefore === undefined) {
+        rmSync(ambientProjectMcpPath, { force: true });
+      } else {
+        writeFileSync(ambientProjectMcpPath, ambientProjectMcpBefore, "utf8");
+      }
       if (previousDirectTools === undefined) {
         delete process.env.MCP_DIRECT_TOOLS;
       } else {
