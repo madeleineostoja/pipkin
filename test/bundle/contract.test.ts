@@ -766,6 +766,63 @@ describe("Pipkin bundle", () => {
     }
   });
 
+  it("reports a trusted project root-resolution failure through Pipkin's MCP recovery command", async () => {
+    const missingProjectRoot = mkdtempSync(
+      join(tmpdir(), "pipkin-missing-mcp-"),
+    );
+    const previousDirectTools = process.env.MCP_DIRECT_TOOLS;
+    process.env.MCP_DIRECT_TOOLS = "ambient";
+    try {
+      const fixture = await loadBundle(undefined, missingProjectRoot);
+      rmSync(missingProjectRoot, { force: true, recursive: true });
+      const { runner, errors } = await createBundleRunner(
+        fixture,
+        fixture.result.extensions,
+      );
+      expect(provenanceMap(fixture.result.extensions, "tools")).toEqual(
+        expectedProvenance({
+          bash: "src/extensions/sandbox/index.ts",
+          ...expectedTools,
+        }),
+      );
+      expect(provenanceMap(fixture.result.extensions, "commands")).toEqual(
+        expectedProvenance({
+          ...expectedCommands,
+          mcp: "src/extensions/mcp/index.ts",
+        }),
+      );
+      expect(existsSync(join(fixture.agentDir, "mcp-cache.json"))).toBe(false);
+      expect(process.env.MCP_DIRECT_TOOLS).toBe("ambient");
+      const mcp = fixture.result.extensions.find(
+        (extension) =>
+          relativeExtensionPath(extension) === "src/extensions/mcp/index.ts",
+      );
+      const notifications: string[] = [];
+      await mcp?.commands.get("mcp")?.handler("", {
+        hasUI: true,
+        mode: "print",
+        cwd: missingProjectRoot,
+        ui: { notify: (message: string) => notifications.push(message) },
+      } as never);
+      expect(notifications[0]).toContain("No valid MCP servers are configured");
+      expect(notifications[0]).toContain(getConfigPath(fixture.agentDir));
+      expect(notifications[0]).toContain(
+        "Trusted project location could not be resolved.",
+      );
+      expect(notifications[0]).not.toContain("Project:");
+      expect(notifications[0]).toContain("/reload");
+      expect(errors).toEqual([]);
+      await runner.emit({ type: "session_shutdown", reason: "quit" });
+    } finally {
+      rmSync(missingProjectRoot, { force: true, recursive: true });
+      if (previousDirectTools === undefined) {
+        delete process.env.MCP_DIRECT_TOOLS;
+      } else {
+        process.env.MCP_DIRECT_TOOLS = previousDirectTools;
+      }
+    }
+  });
+
   it("registers only Pipkin's MCP recovery command after an untrusted unconfigured start", async () => {
     const previousDirectTools = process.env.MCP_DIRECT_TOOLS;
     process.env.MCP_DIRECT_TOOLS = "ambient";
