@@ -60,7 +60,7 @@ Child sessions are in-memory only. They do not appear in `/resume` and cannot be
 
 ## Tools and context
 
-Subagents inherit the parent extension environment except public agent tools (`Agent`, `get_subagent_result`, and `steer_subagent`), which are withheld to prevent recursive fan-out. Nested Explore used by managed Pipkin workflows is private; public-agent children remain inspectable with their parent, while Implement-owned children contribute only to the active Implement count.
+Subagents inherit the parent session's active tools, so inactive parent tools remain inactive in children. The public agent controls (`Agent`, `get_subagent_result`, and `steer_subagent`) are always withheld to prevent recursive fan-out. Repository-read-only children also withhold `edit` and `write`. Eligible Review and Implement workers receive the private nested `explore` tool; an Explore child cannot receive it recursively. Nested Explore used by managed Pipkin workflows is private; public-agent children remain inspectable with their parent, while Implement-owned children contribute only to the active Implement count.
 
 Where Bash is available:
 
@@ -73,7 +73,7 @@ Explore and Review may record qualifying incidental friction through `record_pap
 
 ## Filesystem and Sandbox boundaries
 
-Public subagents share the invoking session's filesystem and do not receive isolated Git worktrees. Repository preservation is a role contract.
+Public subagents share the invoking session's filesystem and do not receive isolated Git worktrees. Their extension, browser, and managed-process state is isolated from the parent and other children. Repository preservation is a role contract.
 
 On enabled macOS Sandbox sessions, Explore, Review, and nested Explore snapshot repository-read-only mode when spawned. Their source and Git state are protected while intended temporary/cache and package dependency runtime writes remain available to Bash so ordinary checks can run. Direct `write` and `edit` may use canonical temporary roots and validated configured generated roots, but remain denied for tracked source, Git, and Pipkin configuration. `/sandbox off` affects later children only. Linux remains instruction-only.
 

@@ -304,25 +304,13 @@ describe("runtime-injected explore tool", () => {
         cwd: "/task-worktree",
         model: { provider: "configured", id: "explore" },
         thinkingLevel: "low",
-        tools: ["read", "bash", "grep", "find", "ls", "lsp", "record_papercut"],
-        excludeTools: [
-          "explore",
-          "Agent",
-          "get_subagent_result",
-          "steer_subagent",
-          "edit",
-          "write",
-        ],
+        tools: ["read", "bash", "lsp"],
       }),
     );
     expect(child.setActiveToolsByName).toHaveBeenCalledWith([
       "read",
       "bash",
-      "grep",
-      "find",
-      "ls",
       "lsp",
-      "record_papercut",
     ]);
     expect(child.prompt).toHaveBeenCalledWith(
       expect.stringMatching(
@@ -350,6 +338,65 @@ describe("runtime-injected explore tool", () => {
         },
       }),
     );
+  });
+
+  it("propagates an Implement worker's caller exclusions into nested Explore", async () => {
+    const parentPrompt = deferred();
+    const parentSession = makeSession();
+    parentSession.prompt = vi.fn(() =>
+      parentPrompt.promise.then(() => undefined),
+    );
+    const childSession = makeSession("nested result");
+    const sessions = [parentSession, childSession];
+    const createSession = vi.fn(async (_options?: unknown) => ({
+      session: sessions.shift()!,
+    }));
+    const runtime = new SubagentRuntime(
+      {
+        getActiveTools: () => [
+          "read",
+          "docs",
+          "inspect_implement_run",
+          "Agent",
+          "get_subagent_result",
+          "steer_subagent",
+          "edit",
+          "write",
+        ],
+      } as never,
+      {
+        createSession,
+        modelPresets: {
+          low: { model: "configured/explore", thinking: "low" },
+        },
+      },
+    );
+    const parent = await runtime.runManagedAgent({
+      owner: {
+        kind: "pipkin:implement",
+        runId: "r1",
+        role: "implementer",
+      },
+      type: "pipkin:implement:implementer",
+      prompt: "implement",
+      cwd: "/task-worktree",
+      ctx: makeCtx() as never,
+      mode: "background",
+      excludeTools: ["inspect_implement_run"],
+    });
+    await vi.waitFor(() => expect(parentSession.prompt).toHaveBeenCalled());
+
+    await runtime.runExploreTool(
+      parent,
+      { question: "inspect", breadth: "quick" },
+      makeCtx() as never,
+    );
+
+    expect(createSession.mock.calls[1]?.[0] as unknown).toEqual(
+      expect.objectContaining({ tools: ["read", "docs"] }),
+    );
+    runtime.stop(parent.id);
+    parentPrompt.resolve();
   });
 
   it("truncates large nested Explore output clearly", async () => {

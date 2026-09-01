@@ -74,47 +74,8 @@ export function resolveImplementRoles(
   };
 }
 
-const READ_ONLY_TOOLS = [
-  "read",
-  "bash",
-  "start_process",
-  "get_process_result",
-  "stop_process",
-  "bash_outcome",
-  "context_recall",
-  "grep",
-  "find",
-  "ls",
-  "explore",
-  "lsp",
-  "record_papercut",
-];
-const PUBLIC_AGENT_TOOLS = ["Agent", "get_subagent_result", "steer_subagent"];
-const MUTATING_TOOLS = ["edit", "write", ...PUBLIC_AGENT_TOOLS];
-
-export function mutableWorkerExcludedTools(): string[] {
-  return ["inspect_implement_run", ...PUBLIC_AGENT_TOOLS];
-}
-
-export function readOnlyWorkerTools(activeTools?: string[]): {
-  tools: string[];
-  excludeTools: string[];
-} {
-  const selected = READ_ONLY_TOOLS.filter(
-    (name) => activeTools?.includes(name) ?? name !== "lsp",
-  );
-  const bashActive = selected.includes("bash");
-  const recallActive = bashActive && selected.includes("context_recall");
-  return {
-    tools: selected.filter(
-      (name) =>
-        (name !== "start_process" || bashActive) &&
-        (name !== "context_recall" || recallActive) &&
-        (name !== "bash_outcome" ||
-          (recallActive && selected.includes("bash_outcome"))),
-    ),
-    excludeTools: MUTATING_TOOLS,
-  };
+export function implementWorkerExcludedTools(): string[] {
+  return ["inspect_implement_run"];
 }
 
 export class RuntimeSubagentClient implements SubagentClient {
@@ -154,11 +115,13 @@ export class RuntimeSubagentClient implements SubagentClient {
           ? "repository-read-only"
           : "workspace-write")) === "repository-read-only"
         ? {
-            ...readOnlyWorkerTools(this.pi.getActiveTools?.()),
+            excludeTools: implementWorkerExcludedTools(),
+            toolAccess: "repository-read-only" as const,
             sandboxWriteMode: "repository-read-only" as const,
           }
         : {
-            excludeTools: mutableWorkerExcludedTools(),
+            excludeTools: implementWorkerExcludedTools(),
+            toolAccess: "inherit" as const,
             sandboxWriteMode: "workspace-write" as const,
           }),
     });

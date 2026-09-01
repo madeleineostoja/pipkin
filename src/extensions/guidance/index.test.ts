@@ -33,6 +33,34 @@ describe("Guidance extension", () => {
     expect(next.systemPrompt.match(/## Pipkin guidance/g)).toHaveLength(1);
   });
 
+  it("renders only final inherited tool selections for public children and Implement workers", () => {
+    const beforeAgentStart = handler();
+    const publicChild = beforeAgentStart({
+      systemPrompt: "Pi instructions",
+      systemPromptOptions: {
+        selectedTools: [
+          "docs",
+          "web_fetch",
+          "browser_observe",
+          "inspect_implement_run",
+        ],
+      },
+    })?.systemPrompt;
+    const implementWorker = beforeAgentStart({
+      systemPrompt: "Pi instructions",
+      systemPromptOptions: {
+        selectedTools: ["docs", "web_fetch", "browser_observe"],
+      },
+    })?.systemPrompt;
+
+    expect(publicChild).toContain("docs:");
+    expect(publicChild).toContain("web_fetch:");
+    expect(publicChild).toContain("browser_observe:");
+    expect(publicChild).toContain("inspect_implement_run:");
+    expect(publicChild).not.toContain("Agent:");
+    expect(implementWorker).not.toContain("inspect_implement_run:");
+  });
+
   it("does nothing when no Pipkin guidance applies", () => {
     expect(
       handler()({

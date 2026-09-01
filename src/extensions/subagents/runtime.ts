@@ -31,6 +31,7 @@ import {
   type PromptMode,
   type PublicBuiltinType,
 } from "./agent-profiles.js";
+import { resolveChildToolNames, type ToolAccessIntent } from "./tool-policy.js";
 import {
   chronologicalInspectionRecords,
   immutableInspection,
@@ -192,6 +193,8 @@ export type RunManagedAgentInput<
   owner?: RuntimeOwner;
   tools?: string[];
   excludeTools?: string[];
+  inheritedActiveTools?: string[];
+  toolAccess?: ToolAccessIntent;
   noTools?: boolean;
   systemPrompt?: string;
   systemPromptMode?: PromptMode;
@@ -231,6 +234,8 @@ type RuntimeRecord = Omit<RuntimeSnapshot, "timestamps"> &
       accepted: boolean;
       payload?: unknown;
     };
+    callerExcludedTools: string[];
+    selectedToolNames?: string[];
     inspectListeners: Set<RuntimeSubscriptionListener>;
   };
 
@@ -269,11 +274,6 @@ type RuntimeManager = {
   nextScope: number;
 };
 const publicTypes = new Set<string>(PUBLIC_BUILTIN_TYPES);
-const publicToolNames = new Set([
-  "Agent",
-  "get_subagent_result",
-  "steer_subagent",
-]);
 const papercutEligibleTypes = new Set<string>([
   ...PUBLIC_BUILTIN_TYPES,
   "pipkin:implement:planner",
@@ -282,59 +282,7 @@ const papercutEligibleTypes = new Set<string>([
 ]);
 const sessionStartReasons = new Set(["startup", "new", "resume", "fork"]);
 const retirementShutdownReasons = new Set(["quit", "new", "resume", "fork"]);
-export function withoutPublicAgentTools(names: string[]): string[] {
-  return names.filter((name) => !publicToolNames.has(name));
-}
 
-function normalizeActiveToolNames(
-  names: string[],
-  options: {
-    allowExplore: boolean;
-    allowPapercut: boolean;
-    registered?: readonly string[];
-  },
-): string[] {
-  const normalized = withoutPublicAgentTools(names).filter(
-    (name) =>
-      (options.allowPapercut || name !== "record_papercut") &&
-      (options.allowExplore || name !== "explore") &&
-      (name !== "lsp" || options.registered?.includes("lsp") !== false),
-  );
-  const active = (name: string) =>
-    normalized.includes(name) && options.registered?.includes(name) !== false;
-  const bashActive = active("bash");
-  const startProcessActive = bashActive && active("start_process");
-  const getProcessResultActive = active("get_process_result");
-  const stopProcessActive = active("stop_process");
-  const recallActive = bashActive && active("context_recall");
-  return normalized.filter(
-    (name) =>
-      (name !== "bash" || bashActive) &&
-      (name !== "start_process" || startProcessActive) &&
-      (name !== "get_process_result" || getProcessResultActive) &&
-      (name !== "stop_process" || stopProcessActive) &&
-      (name !== "context_recall" || recallActive) &&
-      (name !== "bash_outcome" || (recallActive && active("bash_outcome"))),
-  );
-}
-
-const readOnlyToolNames = normalizeActiveToolNames(
-  [
-    "read",
-    "bash",
-    "start_process",
-    "get_process_result",
-    "stop_process",
-    "bash_outcome",
-    "context_recall",
-    "grep",
-    "find",
-    "ls",
-    "lsp",
-    "record_papercut",
-  ],
-  { allowExplore: false, allowPapercut: true },
-);
 const defaultSystemPromptMode: PromptMode = "append";
 const EXPLORE_TOOL_INACTIVITY_MS = 120_000;
 const EXPLORE_TOOL_INACTIVITY_POLL_MS = 10_000;
@@ -939,6 +887,7 @@ export class SubagentRuntime {
       updatedAt: timestamp,
       steeringQueue: [],
       activity: [],
+      callerExcludedTools: [],
       inspectListeners: new Set(),
     };
     this.#records.set(id, record);
@@ -984,6 +933,7 @@ export class SubagentRuntime {
         accepted: false,
       };
     }
+    record.callerExcludedTools = [...new Set(input.excludeTools)];
     this.start(record.id);
     const running = this.#runRecord(record, input);
     if (input.mode === "background") {
@@ -1072,7 +1022,10 @@ export class SubagentRuntime {
         mode: "background",
         ctx,
         signal: timeout.signal,
+        toolAccess: "repository-read-only",
         sandboxWriteMode: "repository-read-only",
+        inheritedActiveTools: this.#selectedToolNamesFor(parent.id),
+        excludeTools: this.#callerExcludedToolsFor(parent.id),
         owner:
           typeof parent.owner === "object" &&
           parent.owner.kind === "pipkin:implement"
@@ -1394,7 +1347,8 @@ export class SubagentRuntime {
     let releaseSandboxChild: { dispose: () => void } | undefined;
     try {
       const { model } = resolveModelRef(input.ctx, record.model);
-      const registered = this.pi.getActiveTools?.();
+      const parentActiveTools =
+        input.inheritedActiveTools ?? this.pi.getActiveTools?.();
       const nested = isNestedOwner(record.owner);
       const promptInput = resolveSystemPromptInput(input);
       const childEventBus = createEventBus();
@@ -1416,41 +1370,26 @@ export class SubagentRuntime {
               eventBus: childEventBus,
             })
           : undefined;
-      const profileTools = publicAgentProfile(record.type)?.tools;
       const allowExplore = isExploreEligible(record.type) && !nested;
-      const allowPapercut = isPapercutEligible(record.type);
-      const completionTools = record.completion
-        ? [MANAGED_COMPLETION_TOOL_NAME]
-        : [];
-      const explicitTools =
-        input.tools === undefined
-          ? undefined
-          : [
-              ...new Set([
-                ...normalizeActiveToolNames(input.tools, {
-                  allowExplore,
-                  allowPapercut,
-                  registered,
-                }),
-                ...completionTools,
-              ]),
-            ];
-      const profileAllowlist =
-        profileTools === undefined
-          ? undefined
-          : [
-              ...new Set([
-                ...normalizeActiveToolNames(profileTools, {
-                  allowExplore,
-                  allowPapercut,
-                  registered,
-                }),
-                ...completionTools,
-              ]),
-            ];
-      const excludeTools = input.excludeTools?.filter(
-        (name) => name !== MANAGED_COMPLETION_TOOL_NAME,
-      );
+      const toolAccess =
+        input.toolAccess ??
+        (publicAgentProfile(record.type) || nested
+          ? "repository-read-only"
+          : "inherit");
+      const selectedTools = input.noTools
+        ? record.completion
+          ? [MANAGED_COMPLETION_TOOL_NAME]
+          : []
+        : resolveChildToolNames({
+            parentActiveTools,
+            ...(input.tools === undefined ? {} : { tools: input.tools }),
+            callerExcludedTools: record.callerExcludedTools,
+            access: toolAccess,
+            allowExplore,
+            allowPapercut: isPapercutEligible(record.type),
+            completion: record.completion !== undefined,
+          });
+      record.selectedToolNames = [...selectedTools];
       const createSessionOptions = {
         cwd: record.cwd,
         model,
@@ -1464,33 +1403,8 @@ export class SubagentRuntime {
               agentDir: resources.agentDir,
               resourceLoader: resources.resourceLoader,
             }),
-        ...(nested
-          ? {
-              tools:
-                explicitTools ??
-                normalizeActiveToolNames(
-                  [...readOnlyToolNames, ...completionTools],
-                  { allowExplore, allowPapercut, registered },
-                ),
-              excludeTools: excludeTools ?? [
-                "explore",
-                ...publicToolNames,
-                "edit",
-                "write",
-              ],
-              ...(record.completion
-                ? { customTools: [this.#managedCompletionTool(record)] }
-                : {}),
-            }
-          : {
-              ...(explicitTools === undefined
-                ? profileAllowlist === undefined
-                  ? {}
-                  : { tools: [...profileAllowlist] }
-                : { tools: explicitTools }),
-              ...(excludeTools === undefined ? {} : { excludeTools }),
-              customTools: this.#customToolsFor(record),
-            }),
+        tools: selectedTools,
+        customTools: this.#customToolsFor(record),
       };
       let session: AgentSession | undefined;
       try {
@@ -1693,12 +1607,7 @@ export class SubagentRuntime {
         return record.finalization ?? projectSnapshot(record);
       }
       record.extensionBinding = "bound";
-      this.#inheritActiveTools(
-        record,
-        initializedSession,
-        input.tools,
-        input.noTools,
-      );
+      this.#setChildActiveTools(initializedSession, selectedTools);
       if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
         return record.finalization ?? projectSnapshot(record);
       }
@@ -1817,64 +1726,17 @@ export class SubagentRuntime {
     }
   }
 
-  #inheritActiveTools(
-    record: RuntimeRecord,
-    session: AgentSession,
-    explicitTools?: string[],
-    noTools?: boolean,
-  ): void {
-    if (noTools) {
-      session.setActiveToolsByName(
-        record.completion ? [MANAGED_COMPLETION_TOOL_NAME] : [],
-      );
-      return;
-    }
-    const getActiveTools = this.pi.getActiveTools?.bind(this.pi);
-    const registered = getActiveTools?.();
-    const allowExplore =
-      isExploreEligible(record.type) && !isNestedOwner(record.owner);
-    const allowPapercut = isPapercutEligible(record.type);
-    const completionTools = record.completion
-      ? [MANAGED_COMPLETION_TOOL_NAME]
-      : [];
-    if (explicitTools) {
-      const activeTools = allowExplore
-        ? [...explicitTools, "explore", ...completionTools]
-        : [...explicitTools, ...completionTools];
-      session.setActiveToolsByName(
-        normalizeActiveToolNames([...new Set(activeTools)], {
-          allowExplore,
-          allowPapercut,
-          registered,
-        }),
-      );
-      return;
-    }
-    const profileTools = publicAgentProfile(record.type)?.tools;
-    if (profileTools !== undefined && !isNestedOwner(record.owner)) {
-      session.setActiveToolsByName(
-        normalizeActiveToolNames(
-          [...new Set([...profileTools, ...completionTools])],
-          { allowExplore, allowPapercut, registered },
-        ),
-      );
-      return;
-    }
-    if (!getActiveTools && !isNestedOwner(record.owner)) {
-      return;
-    }
-    let activeTools = registered ?? [];
-    if (isNestedOwner(record.owner)) {
-      activeTools = readOnlyToolNames;
-    } else if (allowExplore) {
-      activeTools = [...activeTools, "explore"];
-    }
-    session.setActiveToolsByName(
-      normalizeActiveToolNames(
-        [...new Set([...activeTools, ...completionTools])],
-        { allowExplore, allowPapercut, registered },
-      ),
-    );
+  #setChildActiveTools(session: AgentSession, selectedTools: string[]): void {
+    session.setActiveToolsByName(selectedTools);
+  }
+
+  #callerExcludedToolsFor(parentId: string): string[] {
+    return [...(this.#records.get(parentId)?.callerExcludedTools ?? [])];
+  }
+
+  #selectedToolNamesFor(parentId: string): string[] | undefined {
+    const selected = this.#records.get(parentId)?.selectedToolNames;
+    return selected === undefined ? undefined : [...selected];
   }
 
   async #drainSteering(record: RuntimeRecord): Promise<void> {

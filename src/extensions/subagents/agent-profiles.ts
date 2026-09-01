@@ -8,7 +8,6 @@ export type AgentProfile = {
   systemPrompt: string;
   promptMode: PromptMode;
   description: string;
-  tools?: string[];
 };
 
 export const EXPLORE_PROMPT = `You are a repository-preserving codebase exploration specialist.
@@ -79,39 +78,10 @@ export const PUBLIC_AGENT_PROFILES: Record<PublicBuiltinType, AgentProfile> = {
     systemPrompt: EXPLORE_PROMPT,
     promptMode: "append",
     description: EXPLORE_DESC,
-    tools: [
-      "read",
-      "bash",
-      "start_process",
-      "get_process_result",
-      "stop_process",
-      "bash_outcome",
-      "context_recall",
-      "grep",
-      "find",
-      "ls",
-      "lsp",
-      "record_papercut",
-    ],
   },
   Review: {
     systemPrompt: REVIEW_PROMPT,
     promptMode: "append",
     description: REVIEW_DESC,
-    tools: [
-      "read",
-      "bash",
-      "start_process",
-      "get_process_result",
-      "stop_process",
-      "bash_outcome",
-      "context_recall",
-      "grep",
-      "find",
-      "ls",
-      "explore",
-      "lsp",
-      "record_papercut",
-    ],
   },
 };

@@ -1,12 +1,14 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import {
-  mutableWorkerExcludedTools,
-  readOnlyWorkerTools,
+  implementWorkerExcludedTools,
+  RuntimeSubagentClient,
   type ImplementRoles,
 } from "./subagents.js";
+import { SubagentRuntime } from "#subagents/runtime";
 import {
   completionContracts,
   REPOSITORY_PRESERVING_ROLE_CONTRACT,
@@ -26,13 +28,101 @@ import {
 } from "./prompts.js";
 
 describe("managed Pipkin Implement worker tools", () => {
-  it("excludes orchestration inspection and public agent controls from mutable workers", () => {
-    expect(mutableWorkerExcludedTools()).toEqual([
+  it("keeps Implement's worker-specific inspection exclusion separate from generic policy", () => {
+    expect(implementWorkerExcludedTools()).toEqual(["inspect_implement_run"]);
+  });
+
+  it("gives mutable and repository-read-only workers broad inherited tools with Implement's inspection exclusion", async () => {
+    const activeTools = [
+      "read",
+      "edit",
+      "write",
+      "docs",
+      "web_fetch",
+      "browser_observe",
       "inspect_implement_run",
       "Agent",
       "get_subagent_result",
       "steer_subagent",
+    ];
+    const sessions = Array.from(
+      { length: 2 },
+      () =>
+        ({
+          bindExtensions: vi.fn(async () => undefined),
+          prompt: vi.fn(async () => undefined),
+          steer: vi.fn(async () => undefined),
+          abort: vi.fn(async () => undefined),
+          dispose: vi.fn(),
+          getLastAssistantText: vi.fn(() => "done"),
+          setActiveToolsByName: vi.fn(),
+          state: {},
+          messages: [],
+          sessionId: "child",
+          subscribe: vi.fn(() => vi.fn()),
+          getAllTools: vi.fn(() => []),
+          extensionRunner: { hasHandlers: vi.fn(() => false), emit: vi.fn() },
+        }) as unknown as AgentSession,
+    );
+    const createSession = vi.fn(async (_options?: unknown) => ({
+      session: sessions.shift()!,
+    }));
+    const pi = { getActiveTools: () => activeTools };
+    const runtime = new SubagentRuntime(pi as never, { createSession });
+    expect(runtime).toBeInstanceOf(SubagentRuntime);
+    const client = new RuntimeSubagentClient(
+      pi as never,
+      {
+        cwd: "/worktree",
+        model: { provider: "test", id: "model" },
+        modelRegistry: { find: vi.fn() },
+      } as never,
+      "run",
+    );
+
+    const mutable = await client.spawn({
+      type: "pipkin:implement:implementer",
+      prompt: "implement",
+      description: "implement",
+    });
+    const readOnly = await client.spawn({
+      type: "pipkin:implement:reviewer",
+      prompt: "review",
+      description: "review",
+      readOnly: true,
+    });
+
+    const selected = (index: number) => {
+      const options = createSession.mock.calls[index]?.[0];
+      if (!options) {
+        throw new Error(`Missing child session ${index}`);
+      }
+      return (options as unknown as { tools: string[] }).tools;
+    };
+    expect(selected(0)).toEqual([
+      "read",
+      "edit",
+      "write",
+      "docs",
+      "web_fetch",
+      "browser_observe",
+      "explore",
     ]);
+    expect(selected(1)).toEqual([
+      "read",
+      "docs",
+      "web_fetch",
+      "browser_observe",
+      "explore",
+    ]);
+    await expect(client.waitFor(mutable)).resolves.toEqual({
+      status: "completed",
+      result: "done",
+    });
+    await expect(client.waitFor(readOnly)).resolves.toEqual({
+      status: "completed",
+      result: "done",
+    });
   });
 
   it("keeps managed runtime ownership in the Implement adapter", () => {
@@ -51,43 +141,6 @@ describe("managed Pipkin Implement worker tools", () => {
       });
 
     expect(owners).toEqual(["subagents.ts"]);
-  });
-
-  it("keeps Bash verification while excluding public agent controls", () => {
-    const selection = readOnlyWorkerTools([
-      "read",
-      "bash",
-      "start_process",
-      "get_process_result",
-      "stop_process",
-      "bash_outcome",
-      "context_recall",
-      "Agent",
-      "get_subagent_result",
-      "steer_subagent",
-      "record_papercut",
-      "edit",
-    ]);
-
-    expect(selection.tools).toEqual([
-      "read",
-      "bash",
-      "start_process",
-      "get_process_result",
-      "stop_process",
-      "bash_outcome",
-      "context_recall",
-      "record_papercut",
-    ]);
-    expect(selection.excludeTools).toEqual(
-      expect.arrayContaining([
-        "Agent",
-        "get_subagent_result",
-        "steer_subagent",
-        "edit",
-        "write",
-      ]),
-    );
   });
 
   it("maps every completion owner to the established read-only or mutable admission", async () => {
@@ -488,24 +541,5 @@ describe("managed Pipkin Implement worker tools", () => {
         completionContracts[testCase.kind].readOnly,
       );
     }
-  });
-
-  it("does not retain Context Bash companions after active-tool filtering", () => {
-    expect(
-      readOnlyWorkerTools(["read", "bash_outcome", "context_recall"]).tools,
-    ).toEqual(["read"]);
-    expect(readOnlyWorkerTools(["read", "bash", "bash_outcome"]).tools).toEqual(
-      ["read", "bash"],
-    );
-    expect(
-      readOnlyWorkerTools(["read", "get_process_result", "stop_process"]).tools,
-    ).toEqual(["read", "get_process_result", "stop_process"]);
-    expect(
-      readOnlyWorkerTools(["read", "bash", "start_process", "context_recall"])
-        .tools,
-    ).toEqual(["read", "bash", "start_process", "context_recall"]);
-    expect(
-      readOnlyWorkerTools(["read", "bash", "context_recall"]).tools,
-    ).toEqual(["read", "bash", "context_recall"]);
   });
 });

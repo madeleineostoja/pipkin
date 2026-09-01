@@ -31,6 +31,7 @@ function fakePi() {
   return {
     messages,
     pi: {
+      getActiveTools: (): string[] => [],
       sendMessage: (message: Message) => messages.push(message),
     },
   };
@@ -1343,6 +1344,7 @@ describe("SubagentRuntime", () => {
 
   it("runs sibling calls through Pi's sequential loop and terminates after completion", async () => {
     const { pi } = fakePi();
+    pi.getActiveTools = () => ["earlier_sibling", "later_sibling"];
     const earlier = vi.fn(async () => ({
       content: [{ type: "text" as const, text: "earlier sibling" }],
       details: {},
@@ -1367,6 +1369,13 @@ describe("SubagentRuntime", () => {
       createSession: async (options) =>
         createSession({
           ...options,
+          tools: [
+            ...new Set([
+              ...(options?.tools ?? []),
+              "earlier_sibling",
+              "later_sibling",
+            ]),
+          ],
           customTools: [
             ...(options?.customTools ?? []),
             {
@@ -1453,6 +1462,7 @@ describe("SubagentRuntime", () => {
 
   it("stops an externally cancelled live child before completion through Pi's loop", async () => {
     const { pi } = fakePi();
+    pi.getActiveTools = () => ["cancel_child"];
     const controller = new AbortController();
     const cancelled = vi.fn(async () => {
       controller.abort();
@@ -1476,6 +1486,7 @@ describe("SubagentRuntime", () => {
       createSession: async (options) =>
         createSession({
           ...options,
+          tools: [...new Set([...(options?.tools ?? []), "cancel_child"])],
           customTools: [
             ...(options?.customTools ?? []),
             {
@@ -1881,6 +1892,111 @@ describe("SubagentRuntime", () => {
     });
 
     expect(final).toMatchObject({ result: { result: "first" } });
+  });
+
+  it("inherits the broad parent-active set for public agents while applying exact child exclusions", async () => {
+    const activeTools = [
+      "read",
+      "bash",
+      "start_process",
+      "get_process_result",
+      "stop_process",
+      "bash_outcome",
+      "context_recall",
+      "lsp",
+      "docs",
+      "web_fetch",
+      "browser_observe",
+      "inspect_implement_run",
+      "record_papercut",
+      "Agent",
+      "get_subagent_result",
+      "steer_subagent",
+      "edit",
+      "write",
+      "inherited_extension_tool",
+    ];
+    const explore = makeSession();
+    const review = makeSession();
+    const sessions = [explore, review];
+    const createSession = vi.fn(async (_options?: unknown) => ({
+      session: sessions.shift()!,
+    }));
+    const runtime = new SubagentRuntime(
+      { getActiveTools: () => activeTools } as never,
+      { createSession },
+    );
+
+    await runtime.runPublicAgent({
+      type: "Explore",
+      prompt: "inspect",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+    });
+    await runtime.runPublicAgent({
+      type: "Review",
+      prompt: "review",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+    });
+
+    const selected = (index: number) => {
+      const options = createSession.mock.calls[index]?.[0];
+      if (!options) {
+        throw new Error(`Missing child session ${index}`);
+      }
+      return (options as unknown as { tools: string[] }).tools;
+    };
+    expect(selected(0)).toEqual(
+      activeTools.filter(
+        (name) =>
+          ![
+            "Agent",
+            "get_subagent_result",
+            "steer_subagent",
+            "edit",
+            "write",
+          ].includes(name),
+      ),
+    );
+    expect(selected(0)).not.toContain("explore");
+    expect(selected(0)).not.toContain("parent_inactive_tool");
+    expect(selected(1)).toEqual([...selected(0), "explore"]);
+    expect(explore.setActiveToolsByName).toHaveBeenCalledWith(selected(0));
+    expect(review.setActiveToolsByName).toHaveBeenCalledWith(selected(1));
+  });
+
+  it("keeps explicit tool overrides subject to child policy and Bash dependencies", async () => {
+    const session = makeSession();
+    const createSession = vi.fn(async () => ({ session }));
+    const runtime = new SubagentRuntime(
+      { getActiveTools: () => ["read", "lsp", "edit", "write"] } as never,
+      { createSession },
+    );
+
+    await runtime.runPublicAgent({
+      type: "Explore",
+      prompt: "inspect",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+      tools: [
+        "read",
+        "lsp",
+        "edit",
+        "write",
+        "Agent",
+        "get_subagent_result",
+        "steer_subagent",
+        "start_process",
+        "context_recall",
+        "bash_outcome",
+      ],
+    });
+
+    expect(createSession).toHaveBeenCalledWith(
+      expect.objectContaining({ tools: ["read", "lsp"] }),
+    );
+    expect(session.setActiveToolsByName).toHaveBeenCalledWith(["read", "lsp"]);
   });
 
   it("records explicitly supplied model and thinking metadata", () => {
