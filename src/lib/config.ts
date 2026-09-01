@@ -16,6 +16,8 @@ export const THINKING_LEVELS = [
 export const MAX_CONFIG_BYTES = 64 * 1024;
 export const MAX_SANDBOX_WRITABLE_ENTRIES = 64;
 export const MAX_SANDBOX_WRITABLE_LENGTH = 1024;
+export const MAX_MCP_SERVER_NAME_LENGTH = 64;
+export const MAX_MCP_SERVER_URL_LENGTH = 2_000;
 
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 export type ModelPresetName = "utility" | "low" | "medium" | "high";
@@ -27,10 +29,15 @@ export type ConfigIssue = Readonly<{
   scope?: ConfigScope;
 }>;
 export type SandboxConfig = Readonly<{ writable: readonly string[] }>;
+export type McpServerConfig = Readonly<{ url: string }>;
+export type McpConfig = Readonly<{
+  servers: Readonly<Record<string, McpServerConfig>>;
+}>;
 export type PipkinConfig = Readonly<{
   models: Readonly<Partial<Record<ModelPresetName, ModelPreset>>>;
   implement: Readonly<{ workerConcurrency: number }>;
   sandbox?: SandboxConfig;
+  mcp?: McpConfig;
   nickname?: string;
 }>;
 export type ProjectPipkinConfig = Readonly<{ sandbox: SandboxConfig }>;
@@ -252,12 +259,13 @@ function parsePipkinValue(
     }
   }
   const sandbox = parseSandbox(root?.sandbox, issue);
+  const mcp = parseMcp(root?.mcp, issue);
   if (root) {
     for (const key of Object.keys(root)) {
       if (
-        !(["models", "implement", "nickname", "sandbox"] as string[]).includes(
-          key,
-        )
+        !(
+          ["models", "implement", "nickname", "sandbox", "mcp"] as string[]
+        ).includes(key)
       ) {
         issue(key, "is not supported");
       }
@@ -269,6 +277,7 @@ function parsePipkinValue(
       models,
       implement: { workerConcurrency },
       sandbox,
+      ...(mcp ? { mcp } : {}),
       ...(nickname ? { nickname } : {}),
     },
     issues,
@@ -349,6 +358,76 @@ function parseSandbox(value: unknown, issue: Issue): SandboxConfig {
     }
   }
   return freeze({ writable });
+}
+
+function parseMcp(value: unknown, issue: Issue): McpConfig | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    issue("mcp", "must be an object with servers");
+    return undefined;
+  }
+  for (const key of Object.keys(value)) {
+    if (key !== "servers") {
+      issue(`mcp.${key}`, "is not supported");
+    }
+  }
+  if (!isRecord(value.servers)) {
+    issue("mcp.servers", "must be an object of server definitions");
+    return undefined;
+  }
+
+  const servers: Record<string, McpServerConfig> = {};
+  for (const [name, definition] of Object.entries(value.servers)) {
+    const field = `mcp.servers.${name}`;
+    if (
+      name.length > MAX_MCP_SERVER_NAME_LENGTH ||
+      !/^[a-z][a-z0-9_-]*$/.test(name)
+    ) {
+      issue(
+        field,
+        `name must match [a-z][a-z0-9_-]* and be at most ${MAX_MCP_SERVER_NAME_LENGTH} characters`,
+      );
+      continue;
+    }
+    if (!isRecord(definition)) {
+      issue(field, "must be an object with url");
+      continue;
+    }
+    let serverValid = true;
+    for (const key of Object.keys(definition)) {
+      if (key !== "url") {
+        issue(`${field}.${key}`, "is not supported");
+        serverValid = false;
+      }
+    }
+    if (typeof definition.url !== "string") {
+      issue(`${field}.url`, "must be an HTTP(S) URL");
+      serverValid = false;
+    } else if (definition.url.length > MAX_MCP_SERVER_URL_LENGTH) {
+      issue(
+        `${field}.url`,
+        `must be at most ${MAX_MCP_SERVER_URL_LENGTH} characters`,
+      );
+      serverValid = false;
+    } else {
+      try {
+        const url = new URL(definition.url);
+        if (url.protocol !== "http:" && url.protocol !== "https:") {
+          issue(`${field}.url`, "must be an HTTP(S) URL");
+          serverValid = false;
+        }
+      } catch {
+        issue(`${field}.url`, "must be an HTTP(S) URL");
+        serverValid = false;
+      }
+    }
+    if (serverValid) {
+      servers[name] = { url: definition.url as string };
+    }
+  }
+  return freeze({ servers });
 }
 
 function parseNickname(value: unknown, issue: Issue): string | undefined {

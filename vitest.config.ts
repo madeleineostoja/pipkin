@@ -14,6 +14,7 @@ const features = [
   "reference",
   "web",
   "browser",
+  "mcp",
   "papercuts",
   "btw",
 ];

@@ -3,6 +3,8 @@ import {
   getConfigPath,
   getProjectConfigPath,
   MAX_CONFIG_BYTES,
+  MAX_MCP_SERVER_NAME_LENGTH,
+  MAX_MCP_SERVER_URL_LENGTH,
   MAX_SANDBOX_WRITABLE_ENTRIES,
   MAX_SANDBOX_WRITABLE_LENGTH,
   SandboxConfigSchema,
@@ -117,6 +119,85 @@ describe("Pipkin config", () => {
         expect.arrayContaining([expect.objectContaining({ path: "nickname" })]),
       );
     }
+  });
+
+  it("parses strict global MCP servers while retaining valid siblings", () => {
+    const snapshot = parsePipkinConfig(
+      JSON.stringify({
+        models,
+        implement: { workerConcurrency: 2 },
+        mcp: {
+          servers: {
+            docs: { url: "https://mcp.example.test/v1" },
+            local: { url: "http://127.0.0.1:7777/mcp" },
+            broken: { url: "ftp://example.test", extra: true },
+          },
+        },
+      }),
+    );
+
+    expect(snapshot.config.mcp?.servers).toEqual({
+      docs: { url: "https://mcp.example.test/v1" },
+      local: { url: "http://127.0.0.1:7777/mcp" },
+    });
+    expect(snapshot.config.implement.workerConcurrency).toBe(2);
+    expect(snapshot.issues.map((issue) => issue.path)).toEqual(
+      expect.arrayContaining([
+        "mcp.servers.broken.url",
+        "mcp.servers.broken.extra",
+      ]),
+    );
+    expect(Object.isFrozen(snapshot.config.mcp)).toBe(true);
+    expect(Object.isFrozen(snapshot.config.mcp?.servers)).toBe(true);
+  });
+
+  it("rejects malformed bounded MCP names and URLs without adding MCP config", () => {
+    const snapshot = parsePipkinConfig(
+      JSON.stringify({
+        models,
+        mcp: {
+          servers: {
+            Bad: { url: "https://mcp.example.test" },
+            ["a".repeat(MAX_MCP_SERVER_NAME_LENGTH + 1)]: {
+              url: "https://mcp.example.test",
+            },
+            malformed: { url: "not a url" },
+            oversized: {
+              url: `https://example.test/${"x".repeat(MAX_MCP_SERVER_URL_LENGTH)}`,
+            },
+          },
+        },
+      }),
+    );
+
+    expect(snapshot.config.mcp?.servers).toEqual({});
+    expect(snapshot.issues.map((issue) => issue.path)).toEqual(
+      expect.arrayContaining([
+        "mcp.servers.Bad",
+        `mcp.servers.${"a".repeat(MAX_MCP_SERVER_NAME_LENGTH + 1)}`,
+        "mcp.servers.malformed.url",
+        "mcp.servers.oversized.url",
+      ]),
+    );
+  });
+
+  it("rejects MCP from project configuration", () => {
+    const project = parseProjectPipkinConfig(
+      JSON.stringify({
+        sandbox: { writable: ["build"] },
+        mcp: { servers: { project: { url: "https://not-used.test" } } },
+      }),
+    );
+
+    expect(project.config).not.toHaveProperty("mcp");
+    expect(project.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: "mcp",
+          message: "is not supported in project configuration",
+        }),
+      ]),
+    );
   });
 
   it("rejects removed context policy configuration", () => {

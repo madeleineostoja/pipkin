@@ -34,6 +34,7 @@
       "./src/extensions/reference/index.ts",
       "./src/extensions/web/index.ts",
       "./src/extensions/browser/index.ts",
+      "./src/extensions/mcp/index.ts",
       "./src/extensions/papercuts/index.ts",
       "./src/extensions/btw/index.ts"
     ]
@@ -67,6 +68,7 @@
     "ipaddr.js": "^2.5.0",
     "linkedom": "^0.18.13",
     "p-queue": "^9.3.3",
+    "pi-mcp-adapter": "2.31.0",
     "playwright-core": "^1.62.0",
     "svelte-language-server": "0.17.19",
     "typescript": "5.7.3",
@@ -79,6 +81,7 @@
     "@earendil-works/pi-coding-agent": "^0.84.1",
     "@earendil-works/pi-tui": "^0.84.1",
     "@prettier/plugin-oxc": "^0.1.4",
+    "@types/cross-spawn": "^6.0.6",
     "@types/node": "^22.20.1",
     "ajv": "^6.15.0",
     "husky": "^9.1.7",

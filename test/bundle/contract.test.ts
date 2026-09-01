@@ -16,6 +16,7 @@ import {
   fauxAssistantMessage,
   fauxToolCall,
 } from "@earendil-works/pi-ai";
+import { createServer } from "node:http";
 import {
   existsSync,
   mkdirSync,
@@ -54,6 +55,7 @@ const expectedExtensions = [
   "./src/extensions/reference/index.ts",
   "./src/extensions/web/index.ts",
   "./src/extensions/browser/index.ts",
+  "./src/extensions/mcp/index.ts",
   "./src/extensions/papercuts/index.ts",
   "./src/extensions/btw/index.ts",
 ];
@@ -86,6 +88,10 @@ const expectedTools = {
   record_papercut: "src/extensions/papercuts/index.ts",
 };
 
+const expectedOptionalTools = {
+  mcp: "src/extensions/mcp/index.ts",
+  mcpScript: "src/extensions/mcp/index.ts",
+};
 const expectedCommands = {
   sandbox: "src/extensions/sandbox/index.ts",
   readonly: "src/extensions/readonly/index.ts",
@@ -94,6 +100,10 @@ const expectedCommands = {
   implement: "src/extensions/implement/index.ts",
   papercuts: "src/extensions/papercuts/index.ts",
   btw: "src/extensions/btw/index.ts",
+};
+const expectedOptionalCommands = {
+  mcp: "src/extensions/mcp/index.ts",
+  "mcp-auth": "src/extensions/mcp/index.ts",
 };
 
 const expectedMessageRenderers = {
@@ -175,7 +185,9 @@ function restoreGlobalSymbols(states: readonly GlobalSymbolState[]): void {
   }
 }
 
-async function loadBundle(): Promise<BundleFixture> {
+async function loadBundle(mcp?: {
+  servers: Record<string, { url: string }>;
+}): Promise<BundleFixture> {
   const agentDir = mkdtempSync(join(tmpdir(), "pipkin-bundle-"));
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   const exitListeners = new Set(process.listeners("exit"));
@@ -193,6 +205,7 @@ async function loadBundle(): Promise<BundleFixture> {
         high: { model: "openai/gpt-4o", thinking: "high" },
       },
       nickname: "Pipkin",
+      ...(mcp ? { mcp } : {}),
     }),
     { encoding: "utf8", flush: true },
   );
@@ -422,20 +435,181 @@ function projectFiles(directory: string): string[] {
 
 describe("Pipkin bundle", () => {
   it("loads the fixed manifest inventory through Pi's package loader", async () => {
-    const fixture = await loadBundle();
+    const previousDirectTools = process.env.MCP_DIRECT_TOOLS;
+    process.env.MCP_DIRECT_TOOLS = "ambient-server";
+    try {
+      const fixture = await loadBundle();
 
-    expect(manifest.pi.extensions).toEqual(expectedExtensions);
-    expect(fixture.result.errors).toEqual([]);
-    expect(fixture.result.extensions.map(relativeExtensionPath)).toEqual(
-      expectedExtensionPaths,
-    );
-    expect(
-      new Set(fixture.result.extensions.map(relativeExtensionPath)).size,
-    ).toBe(expectedExtensions.length);
-    for (const extension of fixture.result.extensions) {
-      expect(relative(ROOT, extension.sourceInfo.path)).toBe(
-        relativeExtensionPath(extension),
+      expect(manifest.pi.extensions).toEqual(expectedExtensions);
+      expect(fixture.result.errors).toEqual([]);
+      expect(fixture.result.extensions.map(relativeExtensionPath)).toEqual(
+        expectedExtensionPaths,
       );
+      expect(
+        new Set(fixture.result.extensions.map(relativeExtensionPath)).size,
+      ).toBe(expectedExtensions.length);
+      expect(process.env.MCP_DIRECT_TOOLS).toBe("ambient-server");
+      for (const extension of fixture.result.extensions) {
+        expect(relative(ROOT, extension.sourceInfo.path)).toBe(
+          relativeExtensionPath(extension),
+        );
+      }
+    } finally {
+      if (previousDirectTools === undefined) {
+        delete process.env.MCP_DIRECT_TOOLS;
+      } else {
+        process.env.MCP_DIRECT_TOOLS = previousDirectTools;
+      }
+    }
+  });
+
+  it("contains configured MCP and keeps first-run lazy servers offline", async () => {
+    const previousDirectTools = process.env.MCP_DIRECT_TOOLS;
+    process.env.MCP_DIRECT_TOOLS = "inert";
+    let requests = 0;
+    const server = createServer((_request, response) => {
+      requests += 1;
+      response.writeHead(503).end();
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("inert MCP server did not bind a TCP port");
+    }
+
+    try {
+      const fixture = await loadBundle({
+        servers: { inert: { url: `http://127.0.0.1:${address.port}/mcp` } },
+      });
+      const mcp = fixture.result.extensions.find(
+        (extension) =>
+          relativeExtensionPath(extension) === "src/extensions/mcp/index.ts",
+      );
+      expect(provenanceMap(fixture.result.extensions, "tools")).toEqual(
+        expectedProvenance({ ...expectedTools, ...expectedOptionalTools }),
+      );
+      expect(provenanceMap(fixture.result.extensions, "commands")).toEqual(
+        expectedProvenance({
+          ...expectedCommands,
+          ...expectedOptionalCommands,
+        }),
+      );
+      expect(mcp?.tools.has("mcp_script")).toBe(false);
+      expect(mcp?.commands.has("pi-mcp")).toBe(false);
+      expect(mcp?.flags.has("mcp-config")).toBe(false);
+      for (const name of Object.keys(expectedOptionalTools)) {
+        const definition = mcp?.tools.get(name)?.definition;
+        expect(definition?.renderResult).toBeTypeOf("function");
+        expect(undocumentedSchemaProperties(definition?.parameters)).toEqual(
+          [],
+        );
+        expect(definition?.promptSnippet).toBeUndefined();
+        expect(definition?.promptGuidelines).toBeUndefined();
+      }
+      expect(mcp?.tools.get("mcpScript")?.definition.description).not.toMatch(
+        /skill/i,
+      );
+      expect(process.env.MCP_DIRECT_TOOLS).toBe("__none__");
+      expect(
+        readFileSync(join(fixture.agentDir, "mcp-cache.json"), "utf8"),
+      ).toBe('{"version":1,"servers":{}}');
+
+      const statusSnapshots: unknown[] = [];
+      const unsubscribe = fixture.eventBus.on(
+        "pi-mcp-adapter/status/v1",
+        (snapshot) => statusSnapshots.push(snapshot),
+      );
+      const { runner, errors } = await createBundleRunner(
+        fixture,
+        fixture.result.extensions,
+      );
+      await vi.waitFor(() => expect(statusSnapshots).not.toEqual([]));
+      expect(statusSnapshots).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            servers: [
+              expect.objectContaining({
+                name: "inert",
+                status: "not-connected",
+              }),
+            ],
+          }),
+        ]),
+      );
+      expect(requests).toBe(0);
+
+      const mcpTool = runner
+        .getAllRegisteredTools()
+        .find(({ definition }) => definition.name === "mcp")?.definition;
+      expect(mcpTool).toBeDefined();
+      await expect(
+        mcpTool!.execute(
+          "mcp-connect-inert",
+          { connect: "inert" },
+          undefined,
+          undefined,
+          {} as never,
+        ),
+      ).resolves.toBeDefined();
+      await vi.waitFor(() => expect(requests).toBeGreaterThan(0));
+      expect(errors).toEqual([]);
+      unsubscribe();
+      await runner.emit({ type: "session_shutdown", reason: "quit" });
+
+      const staleRequest: { version: number; name: string; result?: unknown } =
+        {
+          version: 1,
+          name: "inert",
+        };
+      fixture.eventBus.emit("pi-mcp-adapter:runtime-snapshot:v1", staleRequest);
+      expect(staleRequest.result).toBeUndefined();
+
+      await fixture.loader.reload();
+      fixture.result = fixture.loader.getExtensions();
+      expect(fixture.result.errors).toEqual([]);
+      const replacementRequest: {
+        version: number;
+        name: string;
+        result?: unknown;
+      } = { version: 1, name: "inert" };
+      fixture.eventBus.emit(
+        "pi-mcp-adapter:runtime-snapshot:v1",
+        replacementRequest,
+      );
+      expect(replacementRequest.result).toBeDefined();
+
+      const replacement = await createBundleRunner(
+        fixture,
+        fixture.result.extensions,
+        "reload",
+      );
+      await replacement.runner.emit({
+        type: "session_shutdown",
+        reason: "reload",
+      });
+      const replacementStaleRequest: {
+        version: number;
+        name: string;
+        result?: unknown;
+      } = { version: 1, name: "inert" };
+      fixture.eventBus.emit(
+        "pi-mcp-adapter:runtime-snapshot:v1",
+        replacementStaleRequest,
+      );
+      expect(replacementStaleRequest.result).toBeUndefined();
+      expect(replacement.errors).toEqual([]);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+      if (previousDirectTools === undefined) {
+        delete process.env.MCP_DIRECT_TOOLS;
+      } else {
+        process.env.MCP_DIRECT_TOOLS = previousDirectTools;
+      }
     }
   });
 
@@ -445,7 +619,10 @@ describe("Pipkin bundle", () => {
     const tools = provenanceMap(fixture.result.extensions, "tools");
     expect(tools).toEqual(expectedProvenance(expectedTools));
     expect(PUBLIC_TOOL_CATALOGUE.map((entry) => entry.name).sort()).toEqual(
-      Object.keys(expectedTools).sort(),
+      [
+        ...Object.keys(expectedTools),
+        ...Object.keys(expectedOptionalTools),
+      ].sort(),
     );
     expect(tools).not.toHaveProperty("propose_papercut");
     expect(tools.record_papercut).toEqual([
@@ -578,7 +755,9 @@ describe("Pipkin bundle", () => {
     expect(batchWebFetch?.renderShell).toBeUndefined();
     expect(batchWebFetch?.renderCall).toBeTypeOf("function");
     expect(batchWebFetch?.renderResult).toBeTypeOf("function");
-    for (const { name: toolName } of PUBLIC_TOOL_CATALOGUE) {
+    for (const { name: toolName } of PUBLIC_TOOL_CATALOGUE.filter(({ name }) =>
+      Object.hasOwn(expectedTools, name),
+    )) {
       const definition = fixture.result.extensions
         .map((extension) => extension.tools.get(toolName)?.definition)
         .find(Boolean);
@@ -705,7 +884,10 @@ describe("Pipkin bundle", () => {
     ).sort();
     const rendererExemptions = new Set(["bash"]);
     expect(catalogueNames).toEqual(
-      names.filter((name) => !rendererExemptions.has(name)),
+      [
+        ...Object.keys(expectedTools),
+        ...Object.keys(expectedOptionalTools),
+      ].sort(),
     );
     expect(PUBLIC_TOOL_EXCEPTIONS).toMatchObject({
       bash: expect.stringContaining("native Bash"),
