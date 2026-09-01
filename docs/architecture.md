@@ -19,10 +19,11 @@ The root manifest loads one complete bundle:
 11. Reference
 12. Web Fetch
 13. Browser
-14. Papercuts
-15. BTW
+14. MCP
+15. Papercuts
+16. BTW
 
-Order is a runtime contract. Sandbox and Readonly form the safety prefix. Processes follows LSP and precedes Subagents; Subagents precedes Implement because Implement consumes its managed runtime. Web Fetch follows Reference while retaining separate ownership of direct public-URL retrieval. Browser follows Web Fetch and owns lazy, isolated rendered-page state without sharing Web Fetch, Processes, or UI internals.
+Order is a runtime contract. Sandbox and Readonly form the safety prefix. Processes follows LSP and precedes Subagents; Subagents precedes Implement because Implement consumes its managed runtime. Web Fetch follows Reference while retaining separate ownership of direct public-URL retrieval. Browser follows Web Fetch and owns lazy, isolated rendered-page state without sharing Web Fetch, Processes, or UI internals. MCP follows Browser and precedes Papercuts.
 
 The bundle integration suite loads the actual manifest through Pi's loader and verifies inventory, public registration ownership, source provenance, startup and reload behavior, internal imports, and safety ordering.
 
@@ -52,9 +53,15 @@ Cross-feature coupling is explicit, narrow, typed, and producer-owned.
 
 Consumers never import another feature's registration root. A new mapping requires a real consumer, an acyclic dependency, a narrow producer-owned type, a `package.json#imports` declaration, Pi Jiti/Vitest/TypeScript resolution coverage, and updates to this guide and `AGENTS.md`.
 
-Guidance owns persistent summaries for Pipkin's public tools, cross-tool strategy, and the external-content instruction boundary. Feature descriptions and schemas retain capability details; result owners retain recovery instructions. Its catalogue is static test data, not a registration API.
+Guidance owns persistent summaries for Pipkin's public tools, cross-tool strategy, and the external-content instruction boundary. MCP results use that boundary as external evidence; MCP does not add another instruction authority. Feature descriptions and schemas retain capability details; result owners retain recovery instructions. Its catalogue is static test data, not a registration API.
 
-UI owns generic presentation, not producer state, cleanup, or terminal delivery. Activity is a bounded live-work projection: producers publish only queued, running, or waiting records and remove them immediately at settlement. It omits prompts, commands, cwd, raw output, hidden runtime objects, provider payloads, cost, and aggregate token telemetry; Subagents may project current context usage and one bounded latest-assistant preview. Personality owns voice and identity, including the asynchronous-context fresh-session welcome and naming generation; Implement owns active-run lifecycle and applies its authoritative name.
+UI owns generic presentation, not producer state, cleanup, or terminal delivery. Activity is a bounded live-work projection: producers publish only queued, running, or waiting records and remove them immediately at settlement. It omits prompts, commands, cwd, raw output, hidden runtime objects, provider payloads, cost, and aggregate token telemetry; Subagents may project current context usage and one bounded latest-assistant preview. Personality owns voice and identity, including the asynchronous-context fresh-session welcome and naming generation; Implement owns active-run lifecycle and applies its authoritative name. MCP suppresses the adapter footer, so UI remains the sole footer owner.
+
+## MCP containment
+
+MCP owns the pinned `pi-mcp-adapter@2.31.0` dependency and translates Pipkin's endpoint-only global configuration into the adapter's complete in-memory snapshot. Its registration facade permits only Pipkin's public proxy tools and commands, rejects adapter flag exposure, and applies a process-lifetime `MCP_DIRECT_TOOLS=__none__` override for configured sessions.
+
+The adapter owns configured-server connection, authentication, and shutdown lifecycle. Pipkin owns the facade around registration: it records every adapter listener attached to the shared Pi event bus and removes those listeners on session shutdown, while the adapter's own lifecycle handlers run through the normal session lifecycle. MCP has no second footer owner and no MCP-specific child-agent machinery; child agents inherit the active generic MCP proxy tools through Subagents' ordinary tool policy.
 
 ## Separate loaders and explicit coordination
 

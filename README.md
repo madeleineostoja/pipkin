@@ -70,6 +70,12 @@ Implement coordinates trusted workers in disposable Git worktrees, publishes thr
 
 [Agents →](docs/features/agents.md) · [Reference →](docs/features/reference.md) · [Web Fetch →](docs/features/web-fetch.md) · [Browser →](docs/features/browser.md) · [Workflow tools →](docs/features/workflow-tools.md)
 
+### Optional external MCP
+
+When globally configured, **MCP** proxies generic external capabilities one operation at a time or through trusted MCP-only scripts. Unconfigured sessions register no MCP commands or tools.
+
+[MCP →](docs/features/mcp.md) · [MCP configuration →](docs/configuration.md#mcp-servers)
+
 ### Session utilities
 
 - **UI** presents compact session status and bounded live activity.
@@ -90,6 +96,8 @@ Implement coordinates trusted workers in disposable Git worktrees, publishes thr
 | `/processes`          | Inspect and stop current-session managed processes                        |
 | `/agents`             | Inspect activity/results, guide, or stop public agents                    |
 | `/implement …`        | Start, inspect, stop, restart, or clean Implement runs                    |
+| `/mcp`                | Inspect and manage configured external MCP servers                        |
+| `/mcp-auth <server>`  | Authenticate one configured external MCP server                           |
 | `/papercuts`          | Browse, close, and clean up recorded Papercut findings                    |
 | `/btw <question>`     | Ask an ephemeral side question; press `s` to promote a completed exchange |
 
@@ -122,6 +130,8 @@ These tools are called by the agent rather than typed as slash commands.
 | `batch_web_fetch`       | Retrieve one to eight public URLs with fixed concurrency                               |
 | `browser_observe`       | Inspect isolated rendered pages, images, diagnostics, and tabs                         |
 | `browser_act`           | Navigate, interact, scroll, wait, and manage isolated browser tabs                     |
+| `mcp`                   | Use configured external MCP capabilities through one bounded operation at a time       |
+| `mcpScript`             | Compose multiple configured MCP operations in one trusted JavaScript request           |
 | `record_papercut`       | Record qualifying incidental friction after an exercised workaround                    |
 
 ## Important safety boundaries
@@ -142,6 +152,7 @@ If `pi-smart-fetch` is separately installed, remove it before reloading Pipkin t
 - [Reference](docs/features/reference.md)
 - [Web Fetch](docs/features/web-fetch.md)
 - [Browser](docs/features/browser.md)
+- [MCP](docs/features/mcp.md)
 - [Interface and Personality](docs/features/interface-and-personality.md)
 - [Workflow tools](docs/features/workflow-tools.md)
 - [Architecture](docs/architecture.md)

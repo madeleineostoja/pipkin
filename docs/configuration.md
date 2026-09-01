@@ -25,14 +25,45 @@ Only `models` is required for the complete model-powered feature set. `nickname`
 
 Configuration is snapshotted when each consuming extension is constructed. Run Pi's `/reload` after changing it.
 
+## MCP servers
+
+MCP is optional and global-only. Add `mcp.servers.<name>.url` to `<getAgentDir()>/pipkin/config.json`; project configuration rejects `mcp`. An empty `servers` map is valid and disables the MCP extension surface.
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "research": {
+        "url": "https://mcp.example.test/v1"
+      }
+    }
+  }
+}
+```
+
+This is an endpoint-only, strict schema:
+
+| Path                     | Required                  | Exact contract                                                                           |
+| ------------------------ | ------------------------- | ---------------------------------------------------------------------------------------- |
+| `mcp`                    | No                        | Object with only `servers`                                                               |
+| `mcp.servers`            | Yes when `mcp` is present | Object map of server definitions                                                         |
+| `mcp.servers.<name>`     | Yes for each entry        | Object with only `url`; `<name>` matches `[a-z][a-z0-9_-]*` and is at most 64 characters |
+| `mcp.servers.<name>.url` | Yes                       | HTTP(S) URL string at most 2,000 characters                                              |
+
+Pipkin performs no endpoint reachability check while parsing configuration. Each server definition is validated independently: an invalid name, malformed definition, unsupported field, or invalid URL omits only that entry while valid siblings remain available. Invalid `mcp` or `servers` objects are rejected, and all unsupported fields in these strict objects are reported as configuration issues.
+
+No credential, authentication, transport, lifecycle, or provider-specific setting belongs in this schema. Do not put secrets in configuration or URLs; adapter-owned credentials are separate from Pipkin configuration.
+
+Each MCP extension construction reads one immutable global snapshot. Pipkin does not watch the file during a session. Save the configuration and run Pi's `/reload` to apply a revised server map; the new extension instance receives the new snapshot.
+
 ## Sandbox writable roots
 
 Sandbox reads `sandbox.writable` from both configuration scopes:
 
-| Scope   | Path                                                                                                         | Allowed fields                                   |
-| ------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------ |
-| Global  | `<getAgentDir()>/pipkin/config.json` (normally `~/.pi/agent/pipkin/config.json`)                             | `nickname`, `models`, `implement`, and `sandbox` |
-| Project | `<canonical-workspace>/<CONFIG_DIR_NAME>/pipkin/config.json` (currently `<checkout>/.pi/pipkin/config.json`) | `sandbox` only                                   |
+| Scope   | Path                                                                                                         | Allowed fields                                          |
+| ------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
+| Global  | `<getAgentDir()>/pipkin/config.json` (normally `~/.pi/agent/pipkin/config.json`)                             | `nickname`, `models`, `implement`, `sandbox`, and `mcp` |
+| Project | `<canonical-workspace>/<CONFIG_DIR_NAME>/pipkin/config.json` (currently `<checkout>/.pi/pipkin/config.json`) | `sandbox` only                                          |
 
 Project configuration is anchored to the resolved workspace; Pipkin does not search ancestors. Put personal persistent roots in the global file, not in a project file or `.pi/settings.json`.
 
