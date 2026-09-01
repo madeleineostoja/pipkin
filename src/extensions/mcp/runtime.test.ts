@@ -159,7 +159,12 @@ describe("registerMcpSession", () => {
     );
     const started = vi.fn();
     const loadProject = vi.fn(() =>
-      project({ docs: { url: "https://project.test" } }),
+      project({
+        docs: {
+          url: "https://project.test",
+          oauth: { clientName: "Project Client" },
+        },
+      }),
     );
     const agentDir = makeAgentDir();
     const previous = process.env.MCP_DIRECT_TOOLS;
@@ -186,6 +191,7 @@ describe("registerMcpSession", () => {
             mcpServers: expect.objectContaining({
               [projectAdapterName(root, "docs")]: expect.objectContaining({
                 url: "https://project.test",
+                oauth: { clientName: "Project Client" },
               }),
               shared: expect.objectContaining({ url: "https://shared.test" }),
             }),

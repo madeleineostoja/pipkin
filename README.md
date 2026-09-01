@@ -72,7 +72,7 @@ Implement coordinates trusted workers in disposable Git worktrees, publishes thr
 
 ### Optional external MCP
 
-When globally or trusted-project configured, **MCP** proxies generic external capabilities one operation at a time or through trusted MCP-only scripts. `/mcp` is always available after startup; without valid servers it explains where to save an `mcp` map and to run `/reload`. `/mcp-auth`, `mcp`, and `mcpScript` require at least one valid server.
+When globally or trusted-project configured with endpoints and optional non-secret OAuth client names, **MCP** proxies generic external capabilities one operation at a time or through trusted MCP-only scripts. `/mcp` is always available after startup; without valid servers it explains where to save an `mcp` map and to run `/reload`. `/mcp-auth`, `mcp`, and `mcpScript` require at least one valid server.
 
 [MCP →](docs/features/mcp.md) · [MCP configuration →](docs/configuration.md#mcp-servers)
 

@@ -18,7 +18,12 @@ export const MAX_SANDBOX_WRITABLE_ENTRIES = 64;
 export const MAX_SANDBOX_WRITABLE_LENGTH = 1024;
 export const MAX_MCP_SERVER_NAME_LENGTH = 64;
 export const MAX_MCP_SERVER_URL_LENGTH = 2_000;
+export const MAX_MCP_OAUTH_CLIENT_NAME_LENGTH = 256;
 export const MCP_PROJECT_NAME_PREFIX = "project__";
+
+// The adapter resolves these forms at authentication time; Pipkin snapshots
+// client identity as a validated literal instead.
+const MCP_ENV_INTERPOLATION_PATTERN = /\$\{\w+\}|\$env:\w+|\{env:\w+\}/;
 
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 export type ModelPresetName = "utility" | "low" | "medium" | "high";
@@ -30,7 +35,11 @@ export type ConfigIssue = Readonly<{
   scope?: ConfigScope;
 }>;
 export type SandboxConfig = Readonly<{ writable: readonly string[] }>;
-export type McpServerConfig = Readonly<{ url: string }>;
+export type McpOAuthConfig = Readonly<{ clientName: string }>;
+export type McpServerConfig = Readonly<{
+  url: string;
+  oauth?: McpOAuthConfig;
+}>;
 export type McpConfig = Readonly<Record<string, McpServerConfig>>;
 export type PipkinConfig = Readonly<{
   models: Readonly<Partial<Record<ModelPresetName, ModelPreset>>>;
@@ -392,9 +401,58 @@ function parseMcp(value: unknown, issue: Issue): McpConfig | undefined {
     }
     let serverValid = true;
     for (const key of Object.keys(definition)) {
-      if (key !== "url") {
+      if (key !== "url" && key !== "oauth") {
         issue(`${field}.${key}`, "is not supported");
         serverValid = false;
+      }
+    }
+    let oauth: McpOAuthConfig | undefined;
+    if ("oauth" in definition) {
+      const oauthField = `${field}.oauth`;
+      if (!isRecord(definition.oauth)) {
+        issue(oauthField, "must be an object with clientName");
+        serverValid = false;
+      } else {
+        for (const key of Object.keys(definition.oauth)) {
+          if (key !== "clientName") {
+            issue(`${oauthField}.${key}`, "is not supported");
+            serverValid = false;
+          }
+        }
+        if (typeof definition.oauth.clientName !== "string") {
+          issue(`${oauthField}.clientName`, "must be text");
+          serverValid = false;
+        } else {
+          const clientName = definition.oauth.clientName.trim();
+          if (
+            clientName.length === 0 ||
+            clientName.length > MAX_MCP_OAUTH_CLIENT_NAME_LENGTH
+          ) {
+            issue(
+              `${oauthField}.clientName`,
+              `must be 1 to ${MAX_MCP_OAUTH_CLIENT_NAME_LENGTH} characters`,
+            );
+            serverValid = false;
+          } else if (
+            Array.from(clientName).some((character) =>
+              /\p{Cc}/u.test(character),
+            )
+          ) {
+            issue(
+              `${oauthField}.clientName`,
+              "must not contain control characters",
+            );
+            serverValid = false;
+          } else if (MCP_ENV_INTERPOLATION_PATTERN.test(clientName)) {
+            issue(
+              `${oauthField}.clientName`,
+              "must not contain environment interpolation",
+            );
+            serverValid = false;
+          } else {
+            oauth = { clientName };
+          }
+        }
       }
     }
     if (typeof definition.url !== "string") {
@@ -419,7 +477,10 @@ function parseMcp(value: unknown, issue: Issue): McpConfig | undefined {
       }
     }
     if (serverValid) {
-      servers[name] = { url: definition.url as string };
+      servers[name] = {
+        url: definition.url as string,
+        ...(oauth ? { oauth } : {}),
+      };
     }
   }
   return freeze(servers);

@@ -33,23 +33,30 @@ MCP is optional. Add personal servers to `<getAgentDir()>/pipkin/config.json` an
 {
   "mcp": {
     "research": {
-      "url": "https://mcp.example.test/v1"
+      "url": "https://mcp.example.test/v1",
+      "oauth": {
+        "clientName": "Approved Client"
+      }
     }
   }
 }
 ```
 
-This is an endpoint-only, strict schema:
+This is a strict endpoint and OAuth client-metadata schema:
 
-| Path             | Required           | Exact contract                                                                                                      |
-| ---------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------- |
-| `mcp`            | No                 | Object map of server definitions                                                                                    |
-| `mcp.<name>`     | Yes for each entry | Object with only `url`; `<name>` matches `[a-z][a-z0-9_-]*`, is at most 64 characters, and cannot begin `project__` |
-| `mcp.<name>.url` | Yes                | HTTP(S) URL string at most 2,000 characters                                                                         |
+| Path                          | Required           | Exact contract                                                                                                                                  |
+| ----------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mcp`                         | No                 | Object map of server definitions                                                                                                                |
+| `mcp.<name>`                  | Yes for each entry | Object with `url` and optional `oauth`; `<name>` matches `[a-z][a-z0-9_-]*`, is at most 64 characters, and cannot begin `project__`             |
+| `mcp.<name>.url`              | Yes                | HTTP(S) URL string at most 2,000 characters                                                                                                     |
+| `mcp.<name>.oauth`            | No                 | Object containing only `clientName`                                                                                                             |
+| `mcp.<name>.oauth.clientName` | Yes with `oauth`   | Literal Dynamic Client Registration `client_name`, trimmed, without control characters or environment interpolation, and at most 256 characters |
 
-Pipkin performs no endpoint reachability check while parsing configuration. Each server definition is validated independently: an invalid name, malformed definition, unsupported field, or invalid URL omits only that entry while valid siblings remain available. Invalid `mcp` values are rejected, and all unsupported fields in strict server definitions are reported as configuration issues.
+Pipkin performs no endpoint reachability check while parsing configuration. Each server definition is validated independently: an invalid name, malformed definition, unsupported field, invalid URL, or invalid OAuth client name omits only that entry while valid siblings remain available. Invalid `mcp` values are rejected, and all unsupported fields in strict server definitions are reported as configuration issues.
 
-No credential, authentication, transport, lifecycle, or provider-specific setting belongs in this schema. Do not put secrets in configuration or URLs; adapter-owned credentials are separate from Pipkin configuration.
+`oauth.clientName` overrides the non-secret literal client name that the adapter advertises during Dynamic Client Registration for that server. It does not provide a pre-registered client ID, secret, access token, or refresh token. Configure only the identity required by the provider; changing it may require `/mcp logout <server>` before authenticating again.
+
+No credential, token, transport, lifecycle, or other provider-specific setting belongs in this schema. Do not put secrets in configuration or URLs; adapter-owned credentials are separate from Pipkin configuration.
 
 At session start Pipkin parses both scopes independently, preserving valid siblings and scope-labelled issues. A valid trusted-project entry replaces a global entry with the same logical name; an invalid project sibling leaves the valid global server intact. Global servers keep their configured adapter name. Project servers are supplied to the adapter as `project__<slug>_<digest>__<logical-name>` (at most 112 characters):
 

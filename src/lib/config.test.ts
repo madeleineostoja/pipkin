@@ -3,6 +3,7 @@ import {
   getConfigPath,
   getProjectConfigPath,
   MAX_CONFIG_BYTES,
+  MAX_MCP_OAUTH_CLIENT_NAME_LENGTH,
   MAX_MCP_SERVER_NAME_LENGTH,
   MAX_MCP_SERVER_URL_LENGTH,
   MAX_SANDBOX_WRITABLE_ENTRIES,
@@ -127,7 +128,10 @@ describe("Pipkin config", () => {
         models,
         implement: { workerConcurrency: 2 },
         mcp: {
-          docs: { url: "https://mcp.example.test/v1" },
+          docs: {
+            url: "https://mcp.example.test/v1",
+            oauth: { clientName: "  Approved Client  " },
+          },
           local: { url: "http://127.0.0.1:7777/mcp" },
           broken: { url: "ftp://example.test", extra: true },
         },
@@ -135,7 +139,10 @@ describe("Pipkin config", () => {
     );
 
     expect(snapshot.config.mcp).toEqual({
-      docs: { url: "https://mcp.example.test/v1" },
+      docs: {
+        url: "https://mcp.example.test/v1",
+        oauth: { clientName: "Approved Client" },
+      },
       local: { url: "http://127.0.0.1:7777/mcp" },
     });
     expect(snapshot.config.implement.workerConcurrency).toBe(2);
@@ -143,6 +150,54 @@ describe("Pipkin config", () => {
       expect.arrayContaining(["mcp.broken.url", "mcp.broken.extra"]),
     );
     expect(Object.isFrozen(snapshot.config.mcp)).toBe(true);
+    expect(Object.isFrozen(snapshot.config.mcp?.docs?.oauth)).toBe(true);
+  });
+
+  it("rejects malformed MCP OAuth client metadata while retaining valid siblings", () => {
+    const snapshot = parsePipkinConfig(
+      JSON.stringify({
+        mcp: {
+          valid: { url: "https://valid.test/mcp" },
+          malformed: { url: "https://invalid.test/mcp", oauth: false },
+          empty: {
+            url: "https://invalid.test/mcp",
+            oauth: { clientName: "   " },
+          },
+          control: {
+            url: "https://invalid.test/mcp",
+            oauth: { clientName: "bad\nname" },
+          },
+          oversized: {
+            url: "https://invalid.test/mcp",
+            oauth: {
+              clientName: "x".repeat(MAX_MCP_OAUTH_CLIENT_NAME_LENGTH + 1),
+            },
+          },
+          interpolated: {
+            url: "https://invalid.test/mcp",
+            oauth: { clientName: "${MCP_CLIENT_NAME}" },
+          },
+          unsupported: {
+            url: "https://invalid.test/mcp",
+            oauth: { clientName: "Client", clientId: "not-supported" },
+          },
+        },
+      }),
+    );
+
+    expect(snapshot.config.mcp).toEqual({
+      valid: { url: "https://valid.test/mcp" },
+    });
+    expect(snapshot.issues.map((issue) => issue.path)).toEqual(
+      expect.arrayContaining([
+        "mcp.malformed.oauth",
+        "mcp.empty.oauth.clientName",
+        "mcp.control.oauth.clientName",
+        "mcp.oversized.oauth.clientName",
+        "mcp.interpolated.oauth.clientName",
+        "mcp.unsupported.oauth.clientId",
+      ]),
+    );
   });
 
   it("rejects malformed bounded MCP names and URLs without adding MCP config", () => {
@@ -178,7 +233,10 @@ describe("Pipkin config", () => {
       JSON.stringify({
         sandbox: { writable: ["build"] },
         mcp: {
-          project: { url: "https://project.test/mcp" },
+          project: {
+            url: "https://project.test/mcp",
+            oauth: { clientName: "Project Client" },
+          },
           project__reserved: { url: "https://not-used.test" },
           broken: { url: "ftp://not-used.test" },
         },
@@ -186,7 +244,10 @@ describe("Pipkin config", () => {
     );
 
     expect(project.config.mcp).toEqual({
-      project: { url: "https://project.test/mcp" },
+      project: {
+        url: "https://project.test/mcp",
+        oauth: { clientName: "Project Client" },
+      },
     });
     expect(project.issues).toEqual(
       expect.arrayContaining([

@@ -3,20 +3,21 @@ import { basename } from "node:path";
 import type { McpConfig, McpServerConfig } from "#lib/config";
 
 export type McpServerOrigin = "global" | "project";
-export type EffectiveMcpServers = Readonly<
-  Record<string, Readonly<{ url: string; origin: McpServerOrigin }>>
+type EffectiveMcpServer = Readonly<
+  McpServerConfig & { origin: McpServerOrigin }
 >;
+export type EffectiveMcpServers = Readonly<Record<string, EffectiveMcpServer>>;
 
 export function mergeMcpServers(
   global: McpConfig | undefined,
   project: McpConfig | undefined,
 ): EffectiveMcpServers {
-  const servers: Record<string, { url: string; origin: McpServerOrigin }> = {};
+  const servers: Record<string, EffectiveMcpServer> = {};
   for (const [name, server] of Object.entries(global ?? {})) {
-    servers[name] = Object.freeze({ ...server, origin: "global" });
+    servers[name] = effectiveServer(server, "global");
   }
   for (const [name, server] of Object.entries(project ?? {})) {
-    servers[name] = Object.freeze({ ...server, origin: "project" });
+    servers[name] = effectiveServer(server, "project");
   }
   return Object.freeze(servers);
 }
@@ -31,9 +32,25 @@ export function adapterMcpServers(
       server.origin === "project" && projectRoot
         ? projectAdapterName(projectRoot, name)
         : name
-    ] = Object.freeze({ url: server.url });
+    ] = serverConfig(server);
   }
   return Object.freeze(configured);
+}
+
+function effectiveServer(
+  server: McpServerConfig,
+  origin: McpServerOrigin,
+): EffectiveMcpServer {
+  return Object.freeze({ ...serverConfig(server), origin });
+}
+
+function serverConfig(server: McpServerConfig): McpServerConfig {
+  return Object.freeze({
+    url: server.url,
+    ...(server.oauth
+      ? { oauth: Object.freeze({ clientName: server.oauth.clientName }) }
+      : {}),
+  });
 }
 
 export function projectAdapterName(root: string, logicalName: string): string {

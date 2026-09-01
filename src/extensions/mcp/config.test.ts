@@ -10,7 +10,10 @@ describe("translateMcpConfig", () => {
   it("translates every configured HTTP(S) server into the contained adapter policy", () => {
     expect(
       translateMcpConfig({
-        docs: { url: "https://mcp.example.test" },
+        docs: {
+          url: "https://mcp.example.test",
+          oauth: { clientName: "Approved Client" },
+        },
         local: { url: "http://127.0.0.1:7777/mcp" },
       }),
     ).toEqual({
@@ -18,6 +21,7 @@ describe("translateMcpConfig", () => {
         mcpServers: {
           docs: {
             url: "https://mcp.example.test",
+            oauth: { clientName: "Approved Client" },
             lifecycle: "lazy",
             protocolVersion: "auto",
             directTools: false,

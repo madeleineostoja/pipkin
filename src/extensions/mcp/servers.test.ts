@@ -12,15 +12,30 @@ describe("MCP server identities", () => {
     const root = "/checkouts/My Project!";
     const effective = mergeMcpServers(
       {
-        docs: { url: "https://global.test" },
+        docs: {
+          url: "https://global.test",
+          oauth: { clientName: "Global Client" },
+        },
         shared: { url: "https://shared.test" },
       },
-      { docs: { url: "https://project.test" } },
+      {
+        docs: {
+          url: "https://project.test",
+          oauth: { clientName: "Project Client" },
+        },
+      },
     );
-    expect(adapterMcpServers(effective, root)).toEqual({
-      [projectAdapterName(root, "docs")]: { url: "https://project.test" },
+    const adapter = adapterMcpServers(effective, root);
+    const projectName = projectAdapterName(root, "docs");
+    expect(adapter).toEqual({
+      [projectName]: {
+        url: "https://project.test",
+        oauth: { clientName: "Project Client" },
+      },
       shared: { url: "https://shared.test" },
     });
+    expect(Object.isFrozen(effective.docs?.oauth)).toBe(true);
+    expect(Object.isFrozen(adapter[projectName]?.oauth)).toBe(true);
   });
 
   it("retains a global server when an invalid project override is omitted", () => {

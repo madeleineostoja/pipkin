@@ -59,7 +59,7 @@ UI owns generic presentation, not producer state, cleanup, or terminal delivery.
 
 ## MCP containment
 
-MCP owns the pinned `pi-mcp-adapter@2.31.0` dependency and translates Pipkin's endpoint-only global configuration into the adapter's complete in-memory snapshot. Its registration facade permits only Pipkin's public proxy tools and commands, rejects adapter flag exposure, and applies a process-lifetime `MCP_DIRECT_TOOLS=__none__` override for configured sessions.
+MCP owns the pinned `pi-mcp-adapter@2.31.0` dependency and translates Pipkin's strict endpoint and non-secret OAuth client-name configuration into the adapter's complete in-memory snapshot. Its registration facade permits only Pipkin's public proxy tools and commands, rejects adapter flag exposure, and applies a process-lifetime `MCP_DIRECT_TOOLS=__none__` override for configured sessions.
 
 The adapter owns configured-server connection, authentication, and shutdown lifecycle. Pipkin owns the facade around registration: it records every adapter listener attached to the shared Pi event bus and removes those listeners on session shutdown, while the adapter's own lifecycle handlers run through the normal session lifecycle. MCP has no second footer owner and no MCP-specific child-agent machinery; child agents inherit the active generic MCP proxy tools through Subagents' ordinary tool policy.
 

@@ -12,6 +12,7 @@ export function translateMcpConfig(
   for (const [name, server] of Object.entries(config)) {
     mcpServers[name] = {
       url: server.url,
+      ...(server.oauth ? { oauth: { ...server.oauth } } : {}),
       lifecycle: "lazy",
       protocolVersion: "auto",
       directTools: false,
