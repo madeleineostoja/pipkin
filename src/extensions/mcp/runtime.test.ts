@@ -87,7 +87,7 @@ describe("registerConfiguredMcpAdapter", () => {
       registerConfiguredMcpAdapter({
         pi: pi as never,
         agentDir,
-        config: { servers: { inert: { url: "http://127.0.0.1:9/mcp" } } },
+        config: { inert: { url: "http://127.0.0.1:9/mcp" } },
         createAdapter: factory as never,
       });
 

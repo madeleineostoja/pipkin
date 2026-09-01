@@ -4,12 +4,12 @@ import type { McpConfig } from "#lib/config";
 export function translateMcpConfig(
   config: McpConfig | undefined,
 ): McpAdapterOptions | undefined {
-  if (!config || Object.keys(config.servers).length === 0) {
+  if (!config || Object.keys(config).length === 0) {
     return undefined;
   }
 
   const mcpServers: Record<string, ServerEntry> = {};
-  for (const [name, server] of Object.entries(config.servers)) {
+  for (const [name, server] of Object.entries(config)) {
     mcpServers[name] = {
       url: server.url,
       lifecycle: "lazy",

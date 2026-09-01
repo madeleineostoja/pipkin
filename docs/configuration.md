@@ -27,15 +27,13 @@ Configuration is snapshotted when each consuming extension is constructed. Run P
 
 ## MCP servers
 
-MCP is optional and global-only. Add `mcp.servers.<name>.url` to `<getAgentDir()>/pipkin/config.json`; project configuration rejects `mcp`. An empty `servers` map is valid and disables the MCP extension surface.
+MCP is optional and global-only. Add `mcp.<name>.url` to `<getAgentDir()>/pipkin/config.json`; project configuration rejects `mcp`. An empty `mcp` map is valid and disables the MCP extension surface.
 
 ```json
 {
   "mcp": {
-    "servers": {
-      "research": {
-        "url": "https://mcp.example.test/v1"
-      }
+    "research": {
+      "url": "https://mcp.example.test/v1"
     }
   }
 }
@@ -43,14 +41,13 @@ MCP is optional and global-only. Add `mcp.servers.<name>.url` to `<getAgentDir()
 
 This is an endpoint-only, strict schema:
 
-| Path                     | Required                  | Exact contract                                                                           |
-| ------------------------ | ------------------------- | ---------------------------------------------------------------------------------------- |
-| `mcp`                    | No                        | Object with only `servers`                                                               |
-| `mcp.servers`            | Yes when `mcp` is present | Object map of server definitions                                                         |
-| `mcp.servers.<name>`     | Yes for each entry        | Object with only `url`; `<name>` matches `[a-z][a-z0-9_-]*` and is at most 64 characters |
-| `mcp.servers.<name>.url` | Yes                       | HTTP(S) URL string at most 2,000 characters                                              |
+| Path             | Required           | Exact contract                                                                           |
+| ---------------- | ------------------ | ---------------------------------------------------------------------------------------- |
+| `mcp`            | No                 | Object map of server definitions                                                         |
+| `mcp.<name>`     | Yes for each entry | Object with only `url`; `<name>` matches `[a-z][a-z0-9_-]*` and is at most 64 characters |
+| `mcp.<name>.url` | Yes                | HTTP(S) URL string at most 2,000 characters                                              |
 
-Pipkin performs no endpoint reachability check while parsing configuration. Each server definition is validated independently: an invalid name, malformed definition, unsupported field, or invalid URL omits only that entry while valid siblings remain available. Invalid `mcp` or `servers` objects are rejected, and all unsupported fields in these strict objects are reported as configuration issues.
+Pipkin performs no endpoint reachability check while parsing configuration. Each server definition is validated independently: an invalid name, malformed definition, unsupported field, or invalid URL omits only that entry while valid siblings remain available. Invalid `mcp` values are rejected, and all unsupported fields in strict server definitions are reported as configuration issues.
 
 No credential, authentication, transport, lifecycle, or provider-specific setting belongs in this schema. Do not put secrets in configuration or URLs; adapter-owned credentials are separate from Pipkin configuration.
 

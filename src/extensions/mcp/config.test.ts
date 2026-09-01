@@ -4,16 +4,14 @@ import { translateMcpConfig } from "./config.ts";
 describe("translateMcpConfig", () => {
   it("leaves absent and empty server maps disabled", () => {
     expect(translateMcpConfig(undefined)).toBeUndefined();
-    expect(translateMcpConfig({ servers: {} })).toBeUndefined();
+    expect(translateMcpConfig({})).toBeUndefined();
   });
 
   it("translates every configured HTTP(S) server into the contained adapter policy", () => {
     expect(
       translateMcpConfig({
-        servers: {
-          docs: { url: "https://mcp.example.test" },
-          local: { url: "http://127.0.0.1:7777/mcp" },
-        },
+        docs: { url: "https://mcp.example.test" },
+        local: { url: "http://127.0.0.1:7777/mcp" },
       }),
     ).toEqual({
       config: {

@@ -186,9 +186,9 @@ function restoreGlobalSymbols(states: readonly GlobalSymbolState[]): void {
   }
 }
 
-async function loadBundle(mcp?: {
-  servers: Record<string, { url: string }>;
-}): Promise<BundleFixture> {
+async function loadBundle(
+  mcp?: Record<string, { url: string }>,
+): Promise<BundleFixture> {
   const agentDir = mkdtempSync(join(tmpdir(), "pipkin-bundle-"));
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   const exitListeners = new Set(process.listeners("exit"));
@@ -516,7 +516,7 @@ describe("Pipkin bundle", () => {
 
     try {
       const fixture = await loadBundle({
-        servers: { inert: { url: `http://127.0.0.1:${address.port}/mcp` } },
+        inert: { url: `http://127.0.0.1:${address.port}/mcp` },
       });
       const mcp = fixture.result.extensions.find(
         (extension) =>

@@ -30,9 +30,7 @@ export type ConfigIssue = Readonly<{
 }>;
 export type SandboxConfig = Readonly<{ writable: readonly string[] }>;
 export type McpServerConfig = Readonly<{ url: string }>;
-export type McpConfig = Readonly<{
-  servers: Readonly<Record<string, McpServerConfig>>;
-}>;
+export type McpConfig = Readonly<Record<string, McpServerConfig>>;
 export type PipkinConfig = Readonly<{
   models: Readonly<Partial<Record<ModelPresetName, ModelPreset>>>;
   implement: Readonly<{ workerConcurrency: number }>;
@@ -365,22 +363,13 @@ function parseMcp(value: unknown, issue: Issue): McpConfig | undefined {
     return undefined;
   }
   if (!isRecord(value)) {
-    issue("mcp", "must be an object with servers");
-    return undefined;
-  }
-  for (const key of Object.keys(value)) {
-    if (key !== "servers") {
-      issue(`mcp.${key}`, "is not supported");
-    }
-  }
-  if (!isRecord(value.servers)) {
-    issue("mcp.servers", "must be an object of server definitions");
+    issue("mcp", "must be an object of server definitions");
     return undefined;
   }
 
   const servers: Record<string, McpServerConfig> = {};
-  for (const [name, definition] of Object.entries(value.servers)) {
-    const field = `mcp.servers.${name}`;
+  for (const [name, definition] of Object.entries(value)) {
+    const field = `mcp.${name}`;
     if (
       name.length > MAX_MCP_SERVER_NAME_LENGTH ||
       !/^[a-z][a-z0-9_-]*$/.test(name)
@@ -427,7 +416,7 @@ function parseMcp(value: unknown, issue: Issue): McpConfig | undefined {
       servers[name] = { url: definition.url as string };
     }
   }
-  return freeze({ servers });
+  return freeze(servers);
 }
 
 function parseNickname(value: unknown, issue: Issue): string | undefined {

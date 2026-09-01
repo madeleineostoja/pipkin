@@ -127,28 +127,22 @@ describe("Pipkin config", () => {
         models,
         implement: { workerConcurrency: 2 },
         mcp: {
-          servers: {
-            docs: { url: "https://mcp.example.test/v1" },
-            local: { url: "http://127.0.0.1:7777/mcp" },
-            broken: { url: "ftp://example.test", extra: true },
-          },
+          docs: { url: "https://mcp.example.test/v1" },
+          local: { url: "http://127.0.0.1:7777/mcp" },
+          broken: { url: "ftp://example.test", extra: true },
         },
       }),
     );
 
-    expect(snapshot.config.mcp?.servers).toEqual({
+    expect(snapshot.config.mcp).toEqual({
       docs: { url: "https://mcp.example.test/v1" },
       local: { url: "http://127.0.0.1:7777/mcp" },
     });
     expect(snapshot.config.implement.workerConcurrency).toBe(2);
     expect(snapshot.issues.map((issue) => issue.path)).toEqual(
-      expect.arrayContaining([
-        "mcp.servers.broken.url",
-        "mcp.servers.broken.extra",
-      ]),
+      expect.arrayContaining(["mcp.broken.url", "mcp.broken.extra"]),
     );
     expect(Object.isFrozen(snapshot.config.mcp)).toBe(true);
-    expect(Object.isFrozen(snapshot.config.mcp?.servers)).toBe(true);
   });
 
   it("rejects malformed bounded MCP names and URLs without adding MCP config", () => {
@@ -156,27 +150,25 @@ describe("Pipkin config", () => {
       JSON.stringify({
         models,
         mcp: {
-          servers: {
-            Bad: { url: "https://mcp.example.test" },
-            ["a".repeat(MAX_MCP_SERVER_NAME_LENGTH + 1)]: {
-              url: "https://mcp.example.test",
-            },
-            malformed: { url: "not a url" },
-            oversized: {
-              url: `https://example.test/${"x".repeat(MAX_MCP_SERVER_URL_LENGTH)}`,
-            },
+          Bad: { url: "https://mcp.example.test" },
+          ["a".repeat(MAX_MCP_SERVER_NAME_LENGTH + 1)]: {
+            url: "https://mcp.example.test",
+          },
+          malformed: { url: "not a url" },
+          oversized: {
+            url: `https://example.test/${"x".repeat(MAX_MCP_SERVER_URL_LENGTH)}`,
           },
         },
       }),
     );
 
-    expect(snapshot.config.mcp?.servers).toEqual({});
+    expect(snapshot.config.mcp).toEqual({});
     expect(snapshot.issues.map((issue) => issue.path)).toEqual(
       expect.arrayContaining([
-        "mcp.servers.Bad",
-        `mcp.servers.${"a".repeat(MAX_MCP_SERVER_NAME_LENGTH + 1)}`,
-        "mcp.servers.malformed.url",
-        "mcp.servers.oversized.url",
+        "mcp.Bad",
+        `mcp.${"a".repeat(MAX_MCP_SERVER_NAME_LENGTH + 1)}`,
+        "mcp.malformed.url",
+        "mcp.oversized.url",
       ]),
     );
   });
@@ -185,7 +177,7 @@ describe("Pipkin config", () => {
     const project = parseProjectPipkinConfig(
       JSON.stringify({
         sandbox: { writable: ["build"] },
-        mcp: { servers: { project: { url: "https://not-used.test" } } },
+        mcp: { project: { url: "https://not-used.test" } },
       }),
     );
 
