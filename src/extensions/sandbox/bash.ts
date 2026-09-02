@@ -49,9 +49,13 @@ type PreparedBashLaunch = Readonly<{
 }>;
 
 function protectedEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return env.GIT_OPTIONAL_LOCKS === undefined
-    ? { ...env, GIT_OPTIONAL_LOCKS: "0" }
-    : env;
+  return {
+    ...env,
+    ...(env.GIT_OPTIONAL_LOCKS === undefined
+      ? { GIT_OPTIONAL_LOCKS: "0" }
+      : {}),
+    PYTHONDONTWRITEBYTECODE: "1",
+  };
 }
 
 function executionEnvironment(

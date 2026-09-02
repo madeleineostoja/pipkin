@@ -163,6 +163,44 @@ describe("Sandbox Bash runtime", () => {
     expect(localOutput.join("")).toBe("unset");
   });
 
+  it("disables Python bytecode writes only for protected launches", async () => {
+    const { executable, policy, workspace } = fixture();
+    const inheritedEnv = executionEnv();
+    delete inheritedEnv.PYTHONDONTWRITEBYTECODE;
+    const protectedRuntime = createSandboxBashRuntime({
+      policy,
+      enabled: () => true,
+      supportedMac: true,
+      sandboxExecutable: executable,
+    });
+    const protectedOutput: string[] = [];
+    await protectedRuntime.operations.exec(
+      'printf "%s" "${PYTHONDONTWRITEBYTECODE-unset}"',
+      workspace,
+      {
+        onData: (data) => protectedOutput.push(data.toString()),
+        env: inheritedEnv,
+      },
+    );
+    expect(protectedOutput.join("")).toBe("1");
+
+    const localRuntime = createSandboxBashRuntime({
+      policy,
+      enabled: () => false,
+      supportedMac: true,
+    });
+    const localOutput: string[] = [];
+    await localRuntime.operations.exec(
+      'printf "%s" "${PYTHONDONTWRITEBYTECODE-unset}"',
+      workspace,
+      {
+        onData: (data) => localOutput.push(data.toString()),
+        env: inheritedEnv,
+      },
+    );
+    expect(localOutput.join("")).toBe("unset");
+  });
+
   it("appends an active kernel denial to native Bash output", async () => {
     const { executable, policy, workspace } = fixture();
     const observer: SandboxDenialObserver = {
