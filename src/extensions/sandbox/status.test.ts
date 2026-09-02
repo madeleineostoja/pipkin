@@ -44,7 +44,7 @@ describe("Sandbox status", () => {
     expect(sandboxStatus(state, true)).toBe("off");
     expect(sandboxStatusLabel("off")).toBe("sandbox off");
     expect(sandboxStatus(state, false)).toBe("unavailable");
-    expect(sandboxStatusLabel("unavailable")).toBe("sandbox unavailable");
+    expect(sandboxStatusLabel("unavailable")).toBe("sandbox n/a");
   });
 
   it("uses the Sandbox footer key and expected tones", () => {

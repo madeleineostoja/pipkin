@@ -24,7 +24,7 @@ export function sandboxStatusLabel(status: SandboxStatus, denials = 0): string {
   const label = {
     on: "sandbox",
     off: "sandbox off",
-    unavailable: "sandbox unavailable",
+    unavailable: "sandbox n/a",
   }[status];
   return denials > 0 ? `${label} (${denials})` : label;
 }
