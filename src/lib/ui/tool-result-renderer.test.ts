@@ -79,6 +79,27 @@ describe("toolResultRenderer", () => {
     );
   });
 
+  it("supports an explicit semantic tone without changing settlement state", () => {
+    const render = toolResultRenderer({
+      summary: () => "Falling back.",
+      tone: () => "warning",
+    });
+    const styledTheme = {
+      ...theme,
+      fg: (color: string, text: string) => `[${color}]${text}`,
+    } as Theme;
+
+    expect(
+      render(
+        { content: [] },
+        { expanded: false, isPartial: false },
+        styledTheme,
+      )
+        .render(200)
+        .map((line) => line.trimEnd()),
+    ).toEqual(["[warning]Falling back."]);
+  });
+
   it("distinguishes partial and error summaries while preserving complete expanded error text", () => {
     const render = toolResultRenderer({
       summary: () => "Completed.",

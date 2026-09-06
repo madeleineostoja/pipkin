@@ -281,6 +281,10 @@ describe("Codex OAuth adapter", () => {
     });
     const providerSecret = "provider-response-secret";
     const result = await compact(createCodexOAuthAdapter({ fetch }), {
+      auth: {
+        ...auth,
+        headers: { "x-codex-beta-features": "existing_feature" },
+      },
       sessionId: "session-fixture",
       payload: {
         model: model.id,
@@ -302,6 +306,10 @@ describe("Codex OAuth adapter", () => {
     ]);
     expect(JSON.stringify(result.details)).not.toContain("do-not-persist");
     expect(JSON.stringify(result.details)).not.toContain(providerSecret);
+    expect(JSON.stringify(result.details)).not.toContain("existing_feature");
+    expect(JSON.stringify(result.details)).not.toContain(
+      "remote_compaction_v2",
+    );
     expect(result.usage).toMatchObject({
       input: 15,
       cacheRead: 3,
@@ -317,6 +325,9 @@ describe("Codex OAuth adapter", () => {
     expect(headers.get("chatgpt-account-id")).toBe(account);
     expect(headers.get("originator")).toBe("pi");
     expect(headers.get("openai-beta")).toBe("responses=experimental");
+    expect(headers.get("x-codex-beta-features")).toBe(
+      "existing_feature, remote_compaction_v2",
+    );
     expect(headers.get("accept")).toBe("text/event-stream");
     expect(headers.get("content-type")).toBe("application/json");
     expect(headers.get("user-agent")).toMatch(/^pi \(/);

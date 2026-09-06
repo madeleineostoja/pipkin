@@ -512,6 +512,7 @@ async function requestCompaction(input: {
   headers.set("originator", "pi");
   headers.set("user-agent", `pi (${platform()} ${release()}; ${arch()})`);
   headers.set("openai-beta", "responses=experimental");
+  appendHeaderToken(headers, "x-codex-beta-features", "remote_compaction_v2");
   headers.set("accept", "text/event-stream");
   headers.set("content-type", "application/json");
   if (input.sessionId && boundedString(input.sessionId)) {
@@ -577,6 +578,22 @@ async function requestCompaction(input: {
       throw new CodexAdapterError("transport", "Codex stream failed");
     }
   }
+}
+
+function appendHeaderToken(
+  headers: Headers,
+  name: string,
+  requiredToken: string,
+): void {
+  const tokens = (headers.get(name) ?? "")
+    .split(",")
+    .map((token) => token.trim())
+    .filter(Boolean);
+  const normalizedRequired = requiredToken.toLowerCase();
+  if (!tokens.some((token) => token.toLowerCase() === normalizedRequired)) {
+    tokens.push(requiredToken);
+  }
+  headers.set(name, tokens.join(", "));
 }
 
 async function parseCompactionSse(

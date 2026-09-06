@@ -18,6 +18,7 @@ type RenderContext = {
   state?: { hasToolOutput?: boolean };
 };
 type Summary = string | readonly string[] | undefined;
+type ResultTone = "error" | "warning" | "toolOutput";
 
 type CallRendererOptions<Arguments> = {
   name: string;
@@ -36,6 +37,7 @@ type RendererOptions = {
     context: RenderContext,
   ) => Summary;
   expandedContent?: (result: ResultLike, context: RenderContext) => unknown;
+  tone?: (result: ResultLike, context: RenderContext) => ResultTone;
 };
 
 /** Renders a compact call identity and a transient state before output exists. */
@@ -103,7 +105,11 @@ export function toolResultRenderer(options: RendererOptions) {
     );
     if (!renderOptions.expanded) {
       return new Text(
-        theme.fg(tone(renderContext, renderOptions), lines.join("\n")),
+        theme.fg(
+          options.tone?.(result, renderContext) ??
+            defaultTone(renderContext, renderOptions),
+          lines.join("\n"),
+        ),
         0,
         0,
       );
@@ -113,7 +119,11 @@ export function toolResultRenderer(options: RendererOptions) {
     if (lines.length > 0) {
       view.addChild(
         new Text(
-          theme.fg(tone(renderContext, renderOptions), lines.join("\n")),
+          theme.fg(
+            options.tone?.(result, renderContext) ??
+              defaultTone(renderContext, renderOptions),
+            lines.join("\n"),
+          ),
           0,
           0,
         ),
@@ -209,10 +219,10 @@ function textBlocks(content: unknown): TextBlock[] {
     : [];
 }
 
-function tone(
+function defaultTone(
   context: RenderContext,
   options: RenderOptions,
-): "error" | "warning" | "toolOutput" {
+): ResultTone {
   return context.isError
     ? "error"
     : options.isPartial

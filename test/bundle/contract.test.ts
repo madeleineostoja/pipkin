@@ -110,6 +110,7 @@ const expectedMessageRenderers = {
   btw: "src/extensions/btw/index.ts",
 };
 const expectedEntryRenderers = {
+  "pipkin.context.compaction-failure.v1": "src/extensions/context/index.ts",
   "pipkin.context.epoch.v1": "src/extensions/context/index.ts",
   "pipkin.implement.terminal-handoff": "src/extensions/implement/index.ts",
 };

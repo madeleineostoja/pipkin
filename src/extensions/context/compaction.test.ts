@@ -5,7 +5,10 @@ import type {
 import type { Model } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import { createCompactionCoordinator } from "./compaction.ts";
-import { createNativeCheckpoint } from "./codex-oauth-adapter.ts";
+import {
+  CodexAdapterError,
+  createNativeCheckpoint,
+} from "./codex-oauth-adapter.ts";
 
 const model = {
   id: "low-model",
@@ -194,6 +197,136 @@ describe("CompactionCoordinator textual route", () => {
       expect.stringContaining("using Pi's current model compaction"),
       "warning",
     );
+  });
+
+  it("falls back after eligible native failures and reports only bounded allowlisted reasons", async () => {
+    const nativeModel = {
+      ...model,
+      id: "gpt-5-codex",
+      provider: "openai-codex",
+      api: "openai-codex-responses",
+      baseUrl: "https://chatgpt.com/backend-api",
+    } as Model<"openai-codex-responses">;
+    const unsafe = `Bearer secret-account\n${"payload".repeat(100)}`;
+    const compact = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new CodexAdapterError("http", "Codex request failed (503)"),
+      )
+      .mockRejectedValueOnce(new CodexAdapterError("protocol", unsafe))
+      .mockRejectedValueOnce(new Error(unsafe))
+      .mockRejectedValueOnce(
+        new CodexAdapterError("aborted", "request aborted"),
+      );
+    const complete = vi.fn(async () => assistant("text fallback"));
+    const reportNativeFailure = vi.fn();
+    const isUsingOAuth = vi.fn(() => false);
+    const notify = vi.fn();
+    const ctx = {
+      model: nativeModel,
+      thinkingLevel: "high",
+      modelRegistry: {
+        getApiKeyAndHeaders: vi.fn(async () => ({
+          ok: true,
+          apiKey: "token",
+        })),
+        isUsingOAuth,
+        find: vi.fn(() => model),
+        complete,
+      },
+      ui: { notify },
+      sessionManager: {
+        getBranch: () => [],
+        getLeafId: () => null,
+        getSessionId: () => "session",
+      },
+      getSystemPrompt: () => "system",
+    } as unknown as ExtensionContext;
+    const coordinator = createCompactionCoordinator({
+      low: { model: "test/low-model", thinking: "low" },
+      configPath: "config.json",
+      reportNativeFailure,
+      adapter: {
+        supports: (_model: unknown, _auth: unknown, oauth: boolean) =>
+          oauth
+            ? {
+                provider: "openai-codex",
+                api: "openai-codex-responses",
+                model: nativeModel.id,
+                endpoint: "https://chatgpt.com/backend-api/codex/responses",
+                authMode: "oauth",
+                accountFingerprint: "a".repeat(64),
+                protocol: "pipkin-codex-compaction-trigger-v1",
+              }
+            : undefined,
+        capture: vi.fn(async () => ({ input: [] })),
+        compact,
+      } as never,
+    });
+    const kept = {
+      type: "message" as const,
+      id: "kept",
+      parentId: null,
+      timestamp: new Date(1).toISOString(),
+      message: { role: "user" as const, content: "kept", timestamp: 1 },
+    };
+    const nativeEvent = event({ branchEntries: [kept] });
+
+    await expect(coordinator.beforeCompact(nativeEvent, ctx)).resolves.toEqual(
+      expect.objectContaining({ compaction: expect.anything() }),
+    );
+    expect(reportNativeFailure).not.toHaveBeenCalled();
+    isUsingOAuth.mockReturnValue(true);
+    complete.mockClear();
+
+    await expect(coordinator.beforeCompact(nativeEvent, ctx)).resolves.toEqual(
+      expect.objectContaining({ compaction: expect.anything() }),
+    );
+    await expect(coordinator.beforeCompact(nativeEvent, ctx)).resolves.toEqual(
+      expect.objectContaining({ compaction: expect.anything() }),
+    );
+    await expect(coordinator.beforeCompact(nativeEvent, ctx)).resolves.toEqual(
+      expect.objectContaining({ compaction: expect.anything() }),
+    );
+    await expect(coordinator.beforeCompact(nativeEvent, ctx)).resolves.toEqual({
+      cancel: true,
+    });
+
+    expect(reportNativeFailure.mock.calls).toEqual([
+      ["request failed (503)", "models-low"],
+      ["provider response was invalid", "models-low"],
+      ["internal adapter failure", "models-low"],
+    ]);
+    expect(JSON.stringify(reportNativeFailure.mock.calls)).not.toContain(
+      "secret-account",
+    );
+
+    compact.mockRejectedValueOnce(
+      new CodexAdapterError("transport", "Codex transport failed"),
+    );
+    reportNativeFailure.mockImplementationOnce(() => {
+      throw new Error("session persistence failed");
+    });
+    await expect(coordinator.beforeCompact(nativeEvent, ctx)).resolves.toEqual(
+      expect.objectContaining({ compaction: expect.anything() }),
+    );
+    expect(notify).toHaveBeenCalledWith(
+      expect.stringContaining("transport failed"),
+      "warning",
+    );
+
+    compact.mockRejectedValueOnce(
+      new CodexAdapterError("timeout", "Codex request timed out"),
+    );
+    complete.mockRejectedValueOnce(new Error("low model unavailable"));
+    await expect(
+      coordinator.beforeCompact(nativeEvent, ctx),
+    ).resolves.toBeUndefined();
+    expect(reportNativeFailure).toHaveBeenLastCalledWith(
+      "request timed out",
+      "pi",
+    );
+    expect(complete).toHaveBeenCalledTimes(5);
   });
 
   it("converts prior Pi compaction summaries before native serializer capture", async () => {

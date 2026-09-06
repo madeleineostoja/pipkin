@@ -21,6 +21,7 @@ import {
 import type { ModelPreset } from "#lib/config";
 import { parseModelRef } from "#lib/model-ref";
 import {
+  CodexAdapterError,
   createCodexOAuthAdapter,
   type CaptureInput,
 } from "./codex-oauth-adapter.ts";
@@ -36,6 +37,13 @@ type CompactionHookResult =
   | { compaction: Awaited<ReturnType<typeof compact>> }
   | { cancel: true }
   | undefined;
+type NativeCompactionOutcome =
+  | { kind: "complete"; compaction: Awaited<ReturnType<typeof compact>> }
+  | { kind: "unavailable" }
+  | { kind: "cancelled" }
+  | { kind: "failed"; reason: string };
+
+export type NativeFailureOutcome = "models-low" | "pi" | "cancelled";
 
 type CoordinatorOptions = {
   low: ModelPreset | undefined;
@@ -43,6 +51,7 @@ type CoordinatorOptions = {
   configPath: string;
   adapter?: NativeAdapter;
   tools?: () => Context["tools"];
+  reportNativeFailure?: (reason: string, outcome: NativeFailureOutcome) => void;
 };
 
 /** Coordinates Pi's summary algorithm and the provider-specific opaque route. */
@@ -81,27 +90,41 @@ export class CompactionCoordinator {
         return { cancel: true };
       }
       const native = await this.nativeCompaction(event, ctx, active.entry);
-      if (native) {
-        return { compaction: native };
+      if (native.kind === "complete") {
+        return { compaction: native.compaction };
       }
-      this.warn(
+      if (native.kind === "cancelled") {
+        return { cancel: true };
+      }
+      this.reportNativeFailure(
         ctx,
-        "native-continue",
-        "Context: the active Codex checkpoint could not be continued. Return to its original compatible Codex model/account.",
+        native.kind === "failed"
+          ? native.reason
+          : "compatible Codex OAuth route is unavailable",
+        "cancelled",
       );
       return { cancel: true };
     }
 
     if (!event.customInstructions && ctx.model && isCodexSurface(ctx.model)) {
       const native = await this.nativeCompaction(event, ctx);
-      if (native) {
-        return { compaction: native };
+      if (native.kind === "complete") {
+        return { compaction: native.compaction };
       }
-      this.warn(
-        ctx,
-        "native-create",
-        "Context: Codex native compaction was unavailable; using the configured low model summary.",
-      );
+      if (native.kind === "cancelled") {
+        return { cancel: true };
+      }
+      if (native.kind === "failed") {
+        const fallback = await this.textualCompaction(event, ctx);
+        const outcome =
+          fallback && "compaction" in fallback
+            ? "models-low"
+            : event.signal.aborted
+              ? "cancelled"
+              : "pi";
+        this.reportNativeFailure(ctx, native.reason, outcome);
+        return fallback;
+      }
     }
     return this.textualCompaction(event, ctx);
   }
@@ -245,26 +268,29 @@ export class CompactionCoordinator {
     event: SessionBeforeCompactEvent,
     ctx: ExtensionContext,
     existing?: CompactionEntry,
-  ): Promise<Awaited<ReturnType<typeof compact>> | undefined> {
-    if (!ctx.model || event.signal.aborted) {
-      return undefined;
+  ): Promise<NativeCompactionOutcome> {
+    if (!ctx.model) {
+      return { kind: "unavailable" };
+    }
+    if (event.signal.aborted) {
+      return { kind: "cancelled" };
     }
     const model = ctx.model as Model<"openai-codex-responses">;
-    const resolvedAuth = await resolveCodexAuth(ctx, model);
-    if (!resolvedAuth) {
-      return undefined;
-    }
-    const identity = this.adapter.supports(
-      model,
-      resolvedAuth,
-      ctx.modelRegistry.isUsingOAuth(model),
-    );
-    if (!identity) {
-      return undefined;
-    }
     try {
+      const resolvedAuth = await resolveCodexAuth(ctx, model);
+      if (!resolvedAuth) {
+        return { kind: "unavailable" };
+      }
+      const identity = this.adapter.supports(
+        model,
+        resolvedAuth,
+        ctx.modelRegistry.isUsingOAuth(model),
+      );
+      if (!identity) {
+        return { kind: "unavailable" };
+      }
       if (existing && !matchesLineage(existing, event.branchEntries)) {
-        return undefined;
+        throw new CodexAdapterError("validation", "checkpoint lineage changed");
       }
       const current = await this.capture(
         model,
@@ -298,7 +324,7 @@ export class CompactionCoordinator {
           creation,
         );
         if (!replayed) {
-          return undefined;
+          throw new CodexAdapterError("validation", "checkpoint replay failed");
         }
         Object.assign(current, replayed);
       }
@@ -322,14 +348,23 @@ export class CompactionCoordinator {
         signal: event.signal,
       });
       return {
-        summary: checkpoint.summary,
-        details: checkpoint.details,
-        usage: checkpoint.usage,
-        firstKeptEntryId: event.preparation.firstKeptEntryId,
-        tokensBefore: event.preparation.tokensBefore,
+        kind: "complete",
+        compaction: {
+          summary: checkpoint.summary,
+          details: checkpoint.details,
+          usage: checkpoint.usage,
+          firstKeptEntryId: event.preparation.firstKeptEntryId,
+          tokensBefore: event.preparation.tokensBefore,
+        },
       };
-    } catch {
-      return undefined;
+    } catch (error) {
+      if (
+        event.signal.aborted ||
+        (error instanceof CodexAdapterError && error.code === "aborted")
+      ) {
+        return { kind: "cancelled" };
+      }
+      return { kind: "failed", reason: nativeFailureReason(error) };
     }
   }
 
@@ -488,14 +523,42 @@ export class CompactionCoordinator {
     });
   }
 
+  private reportNativeFailure(
+    ctx: ExtensionContext,
+    reason: string,
+    outcome: NativeFailureOutcome,
+  ): void {
+    try {
+      if (this.options.reportNativeFailure) {
+        this.options.reportNativeFailure(reason, outcome);
+        return;
+      }
+    } catch {
+      // Reporting must not change the selected compaction path.
+    }
+    try {
+      ctx.ui.notify(
+        `Context: Codex native compaction failed: ${reason}. ${nativeFailureOutcomeText(outcome)}`,
+        outcome === "cancelled" ? "error" : "warning",
+      );
+    } catch {
+      // The selected compaction path remains authoritative without a diagnostic.
+    }
+  }
+
   private warn(
     ctx: ExtensionContext,
     condition: string,
     message: string,
   ): void {
-    if (!this.warned.has(condition)) {
-      this.warned.add(condition);
+    if (this.warned.has(condition)) {
+      return;
+    }
+    this.warned.add(condition);
+    try {
       ctx.ui.notify(message, "warning");
+    } catch {
+      // Diagnostics must not change the coordinator's compaction decision.
     }
   }
 }
@@ -663,6 +726,41 @@ function validateNative(details: unknown): boolean {
 
 function isNativeCandidate(value: unknown): value is { kind: string } {
   return isJsonObject(value) && value.kind === NATIVE_KIND;
+}
+
+function nativeFailureOutcomeText(outcome: NativeFailureOutcome): string {
+  switch (outcome) {
+    case "models-low":
+      return "Using the models.low textual fallback.";
+    case "pi":
+      return "Falling back to Pi's active-model compaction.";
+    case "cancelled":
+      return "Compaction was cancelled.";
+  }
+}
+
+function nativeFailureReason(error: unknown): string {
+  if (!(error instanceof CodexAdapterError)) {
+    return "internal adapter failure";
+  }
+  switch (error.code) {
+    case "aborted":
+      return "request aborted";
+    case "auth":
+      return "authentication failed";
+    case "timeout":
+      return "request timed out";
+    case "transport":
+      return "transport failed";
+    case "http": {
+      const status = /\(([1-5]\d{2})\)$/.exec(error.message)?.[1];
+      return status ? `request failed (${status})` : "request failed";
+    }
+    case "protocol":
+      return "provider response was invalid";
+    case "validation":
+      return "checkpoint validation failed";
+  }
 }
 
 function isCodexSurface(model: Model<Api>): boolean {

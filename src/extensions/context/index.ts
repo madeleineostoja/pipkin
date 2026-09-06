@@ -4,6 +4,10 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { loadPipkinConfig, presetIssue } from "#lib/config";
 import { registerBashOutcomeTool } from "./bash-outcome.ts";
+import {
+  COMPACTION_FAILURE_ENTRY_TYPE,
+  renderCompactionFailureEntry,
+} from "./compaction-failure-renderer.ts";
 import { renderEpochEntry } from "./epoch-renderer.ts";
 import { EPOCH_TYPE } from "./policy.ts";
 import { createCompactionCoordinator } from "./compaction.ts";
@@ -28,9 +32,16 @@ export default function (pi: ExtensionAPI): void {
           parameters,
         }));
     },
+    reportNativeFailure: (reason, outcome) => {
+      pi.appendEntry(COMPACTION_FAILURE_ENTRY_TYPE, { reason, outcome });
+    },
   });
 
   pi.registerEntryRenderer(EPOCH_TYPE, renderEpochEntry);
+  pi.registerEntryRenderer(
+    COMPACTION_FAILURE_ENTRY_TYPE,
+    renderCompactionFailureEntry,
+  );
   pi.on("session_start", (_event, ctx) => {
     compaction.sessionStart();
     pruning.sessionStart(ctx);
