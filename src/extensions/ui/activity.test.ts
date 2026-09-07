@@ -274,7 +274,7 @@ describe("Activity", () => {
     dispose();
   });
 
-  it("keeps the activity background active after truncated text resets ANSI styles", () => {
+  it("keeps the activity background active and separated from the editor", () => {
     const store = new ActivityStore();
     store.accept({
       version: 1,
@@ -331,9 +331,11 @@ describe("Activity", () => {
     for (const suffix of rendered.split(reset).slice(1)) {
       expect(suffix.startsWith(backgroundStart)).toBe(true);
     }
-    expect(
-      component.render(32).every((line) => visibleWidth(line) === 32),
-    ).toBe(true);
+    const lines = component.render(32);
+    expect(lines.at(-1)).toBe("");
+    expect(lines.slice(0, -1).every((line) => visibleWidth(line) === 32)).toBe(
+      true,
+    );
     dispose();
   });
 
@@ -377,9 +379,9 @@ describe("Activity", () => {
       bg: (_tone: string, text: string) => text,
     });
 
-    expect(widget.render(80)).toHaveLength(10);
+    expect(widget.render(80)).toHaveLength(11);
     tui.mode = "fullscreen";
-    expect(widget.render(80)).toHaveLength(10);
+    expect(widget.render(80)).toHaveLength(11);
     dispose();
   });
 

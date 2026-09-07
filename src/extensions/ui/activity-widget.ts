@@ -48,19 +48,23 @@ class ActivityWidget implements Component {
     if (records.length === 0) {
       return [];
     }
+    // Pi embeds its working status in the editor border, so leave a row between it and the panel.
     if (width < 3) {
-      return renderActivity(
-        records,
-        Math.max(1, width),
-        this.theme,
-        Date.now(),
-        ACTIVITY_BODY_LINE_LIMIT,
-      ).map((line) =>
-        activityBackground(
-          truncateToWidth(line, Math.max(1, width), "", true),
+      return [
+        ...renderActivity(
+          records,
+          Math.max(1, width),
           this.theme,
+          Date.now(),
+          ACTIVITY_BODY_LINE_LIMIT,
+        ).map((line) =>
+          activityBackground(
+            truncateToWidth(line, Math.max(1, width), "", true),
+            this.theme,
+          ),
         ),
-      );
+        "",
+      ];
     }
     const box = new Box(1, 1, (text) => activityBackground(text, this.theme));
     box.addChild({
@@ -74,7 +78,7 @@ class ActivityWidget implements Component {
         ),
       invalidate() {},
     });
-    return box.render(width);
+    return [...box.render(width), ""];
   }
 }
 
