@@ -555,9 +555,6 @@ function refreshHealth(record: RuntimeRecord): void {
   let lastActivity: string | undefined;
   let lastAssistantText: string | undefined;
   for (const message of session.messages) {
-    if (!isObject(message)) {
-      continue;
-    }
     if (typeof message.timestamp === "number") {
       lastActivity = latestTimestamp(
         lastActivity,

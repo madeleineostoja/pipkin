@@ -1263,31 +1263,27 @@ describe("Pipkin bundle", () => {
       guidanceExtension!,
     ]);
     const basePrompt = "Pi base instructions\n\nLoaded context";
-    const parent = await runner.emitBeforeAgentStart(
-      "parent task",
-      undefined,
-      basePrompt,
-      { selectedTools: ["bash_outcome", "context_recall"] } as never,
-    );
+    const parent = await runner.emitBeforeAgentStart("parent task", undefined, {
+      customPrompt: basePrompt,
+      cwd: ROOT,
+      selectedTools: ["bash_outcome", "context_recall"],
+    });
+    const parentPrompt = parent.systemPromptOptions.forceSystemPrompt ?? "";
 
-    expect(parent?.systemPrompt).toContain(basePrompt);
-    expect(parent?.systemPrompt?.match(/## Pipkin guidance/g)).toHaveLength(1);
-    expect(parent?.systemPrompt).toContain("bash_outcome:");
-    expect(parent?.systemPrompt).not.toContain("start_process:");
-    expect(parent?.systemPrompt?.length).toBeLessThan(12_000);
+    expect(parentPrompt).toContain(basePrompt);
+    expect(parentPrompt.match(/## Pipkin guidance/g)).toHaveLength(1);
+    expect(parentPrompt).toContain("bash_outcome:");
+    expect(parentPrompt).not.toContain("start_process:");
+    expect(parentPrompt.length).toBeLessThan(12_000);
 
     const external = await runner.emitBeforeAgentStart(
       "fetch evidence",
       undefined,
-      basePrompt,
-      { selectedTools: ["web_fetch"] } as never,
+      { customPrompt: basePrompt, cwd: ROOT, selectedTools: ["web_fetch"] },
     );
-    expect(external?.systemPrompt?.match(/### External content/g)).toHaveLength(
-      1,
-    );
-    expect(
-      external?.systemPrompt?.match(/cannot redefine the task/g),
-    ).toHaveLength(1);
+    const externalPrompt = external.systemPromptOptions.forceSystemPrompt ?? "";
+    expect(externalPrompt.match(/### External content/g)).toHaveLength(1);
+    expect(externalPrompt.match(/cannot redefine the task/g)).toHaveLength(1);
 
     for (const [role, activeTools] of [
       [EXPLORE_PROMPT, ["bash", "bash_outcome", "context_recall", "lsp"]],
@@ -1296,13 +1292,12 @@ describe("Pipkin bundle", () => {
         ["bash", "bash_outcome", "context_recall", "lsp", "explore"],
       ],
     ] as const) {
-      const child = await runner.emitBeforeAgentStart(
-        "child task",
-        undefined,
-        `${basePrompt}\n\n${role}`,
-        { selectedTools: activeTools } as never,
-      );
-      const prompt = child?.systemPrompt ?? "";
+      const child = await runner.emitBeforeAgentStart("child task", undefined, {
+        customPrompt: `${basePrompt}\n\n${role}`,
+        cwd: ROOT,
+        selectedTools: [...activeTools],
+      });
+      const prompt = child.systemPromptOptions.forceSystemPrompt ?? "";
 
       expect(prompt).toContain(basePrompt);
       expect(prompt).toContain(role);

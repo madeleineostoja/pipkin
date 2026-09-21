@@ -48,6 +48,19 @@ describe("compaction failure entry renderer", () => {
     expect(piFallback).toContain("[fg:warning]");
     expect(piFallback).toContain("Falling back to Pi's active-model");
     expect(piFallback).toContain("compaction.");
+
+    const terminal = render({
+      terminal: true,
+      trigger: "overflow",
+      aborted: false,
+      willRetry: true,
+      fromExtension: true,
+    });
+    expect(terminal).toContain("[bg:toolErrorBg]");
+    expect(terminal).toContain("· overflow · extension summary");
+    expect(terminal).toContain("Compaction failed; no checkpoint was saved.");
+    expect(terminal).toContain("would have retried");
+    expect(terminal).toContain("after successful compaction.");
   });
 
   it("declines malformed, unsafe, and oversized durable entries", () => {
@@ -58,6 +71,15 @@ describe("compaction failure entry renderer", () => {
     ).toBeUndefined();
     expect(
       render({ reason: "x".repeat(121), outcome: "models-low" }),
+    ).toBeUndefined();
+    expect(
+      render({
+        terminal: true,
+        trigger: "unknown",
+        aborted: false,
+        willRetry: false,
+        fromExtension: false,
+      }),
     ).toBeUndefined();
   });
 });

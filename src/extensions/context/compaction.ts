@@ -11,13 +11,7 @@ import {
   type SessionBeforeCompactEvent,
   type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
-import {
-  createAssistantMessageEventStream,
-  type Api,
-  type Context,
-  type Model,
-  type SimpleStreamOptions,
-} from "@earendil-works/pi-ai";
+import type { Api, Context, Model } from "@earendil-works/pi-ai";
 import type { ModelPreset } from "#lib/config";
 import { parseModelRef } from "#lib/model-ref";
 import {
@@ -599,30 +593,8 @@ async function resolveCodexAuth(
 }
 
 function registryStream(ctx: ExtensionContext) {
-  return (
-    model: Model<Api>,
-    context: Context,
-    options?: SimpleStreamOptions,
-  ) => {
-    const stream = createAssistantMessageEventStream();
-    void ctx.modelRegistry
-      .complete(model, context, options)
-      .then((message) => stream.end(message))
-      .catch((error: unknown) => {
-        stream.end({
-          role: "assistant",
-          content: [],
-          api: model.api,
-          provider: model.provider,
-          model: model.id,
-          usage: emptyUsage(),
-          stopReason: "error",
-          errorMessage: error instanceof Error ? error.message : String(error),
-          timestamp: Date.now(),
-        });
-      });
-    return stream;
-  };
+  return (model: Model<Api>, context: Context, options = {}) =>
+    ctx.modelRegistry.streamSimple(model, context, options);
 }
 
 function currentContext(
@@ -630,13 +602,13 @@ function currentContext(
   ctx: ExtensionContext,
   tools: Context["tools"],
 ): Context {
-  return {
-    systemPrompt: ctx.getSystemPrompt(),
-    messages: convertToLlm(
+  return contextWithSystemFallback(
+    convertToLlm(
       projectPersistedPruning(entries, buildSessionContext(entries).messages),
     ),
+    ctx,
     tools,
-  };
+  );
 }
 
 function checkpointSegment(
@@ -667,16 +639,26 @@ function contextForSegment(
   ctx: ExtensionContext,
   tools: Context["tools"],
 ): Context {
-  return {
-    systemPrompt: ctx.getSystemPrompt(),
-    messages: convertToLlm(
+  return contextWithSystemFallback(
+    convertToLlm(
       projectPersistedPruning(
         pruningEntries,
         entries.flatMap(sessionEntryToContextMessages),
       ),
     ),
+    ctx,
     tools,
-  };
+  );
+}
+
+function contextWithSystemFallback(
+  messages: Context["messages"],
+  ctx: ExtensionContext,
+  tools: Context["tools"],
+): Context {
+  return messages[0]?.role === "system"
+    ? { messages }
+    : { systemPrompt: ctx.getSystemPrompt(), messages, tools };
 }
 
 function markerEntry(firstKeptEntryId: string): CompactionEntry {
@@ -788,15 +770,4 @@ function isJson(value: unknown): value is Json {
     return value.every(isJson);
   }
   return isJsonObject(value) && Object.values(value).every(isJson);
-}
-
-function emptyUsage() {
-  return {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-    totalTokens: 0,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-  };
 }

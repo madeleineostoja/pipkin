@@ -222,6 +222,10 @@ describe("Codex OAuth adapter", () => {
         tools: expect.any(Array),
       }),
     );
+    expect(payload.instructions).toContain("be precise");
+    expect(payload.tools).toEqual([
+      expect.objectContaining({ name: "inspect" }),
+    ]);
     expect(JSON.stringify(payload)).toContain("signature");
 
     const serializer = (() => {
@@ -230,6 +234,53 @@ describe("Codex OAuth adapter", () => {
     await expect(
       createCodexOAuthAdapter({ serializer }).capture({ model, context, auth }),
     ).rejects.toThrow("serializer failed");
+  });
+
+  it("normalizes persisted prompt and tool transitions before Codex serialization", async () => {
+    const inspect = {
+      name: "inspect",
+      description: "inspect",
+      parameters: Type.Object({ path: Type.String() }),
+    };
+    const lookup = {
+      name: "lookup",
+      description: "lookup",
+      parameters: Type.Object({ query: Type.String() }),
+    };
+    const payload = await createCodexOAuthAdapter().capture({
+      model,
+      context: {
+        messages: [
+          {
+            role: "system",
+            content: "base prompt",
+            sections: { mode: "old mode" },
+            toolsAdded: [inspect],
+            timestamp: 1,
+          },
+          { role: "user", content: "first turn", timestamp: 2 },
+          {
+            role: "system",
+            content: "",
+            sections: { mode: "new mode" },
+            toolsRemoved: [{ name: "inspect" }],
+            toolsAdded: [lookup],
+            timestamp: 3,
+          },
+          { role: "user", content: "resumed turn", timestamp: 4 },
+        ],
+      },
+      auth,
+      sessionId: "resumed-session",
+    });
+
+    expect(payload.instructions).toContain("base prompt");
+    expect(payload.instructions).toContain("new mode");
+    expect(payload.instructions).not.toContain("old mode");
+    expect(payload.tools).toEqual([
+      expect.objectContaining({ name: "lookup" }),
+    ]);
+    expect(JSON.stringify(payload)).not.toContain("inspect");
   });
 
   it("persists user continuation emitted by the Codex serializer", async () => {

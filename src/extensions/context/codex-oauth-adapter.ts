@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { arch, platform, release } from "node:os";
-import { calculateCost } from "@earendil-works/pi-ai";
+import { calculateCost, normalizeContext } from "@earendil-works/pi-ai";
 import { openAICodexResponsesApi } from "@earendil-works/pi-ai/compat";
 import type {
   AssistantMessageEventStream,
   Context,
   Model,
   SimpleStreamOptions,
+  TranscriptContext,
   Usage,
 } from "@earendil-works/pi-ai";
 
@@ -94,7 +95,7 @@ export type CodexAdapterDependencies = {
 
 type CodexSerializer = (
   model: Model<"openai-codex-responses">,
-  context: Context,
+  context: TranscriptContext,
   options: SimpleStreamOptions,
 ) => AssistantMessageEventStream;
 
@@ -404,7 +405,7 @@ export function createCodexOAuthAdapter(
       const stop = new CaptureStop();
       const stream = (serializer ?? openAICodexResponsesApi().streamSimple)(
         input.model,
-        input.context,
+        normalizeContext(input.context),
         {
           apiKey: input.auth.apiKey,
           headers: input.auth.headers,
@@ -860,7 +861,13 @@ function isValidArtifact(artifact: Json[]): boolean {
 }
 
 function cloneJsonObject(value: unknown): JsonObject {
-  const json = ensureJson(value);
+  let cloned: unknown;
+  try {
+    cloned = JSON.parse(JSON.stringify(value));
+  } catch {
+    throw new CodexAdapterError("validation", "expected JSON object");
+  }
+  const json = ensureJson(cloned);
   if (!isObject(json)) {
     throw new CodexAdapterError("validation", "expected JSON object");
   }

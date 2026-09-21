@@ -9,25 +9,39 @@ import type { NativeFailureOutcome } from "./compaction.ts";
 export const COMPACTION_FAILURE_ENTRY_TYPE =
   "pipkin.context.compaction-failure.v1";
 
-export type CompactionFailureEntry = {
+export type NativeCompactionFailureEntry = {
   reason: string;
   outcome: NativeFailureOutcome;
 };
 
+export type TerminalCompactionFailureEntry = {
+  terminal: true;
+  trigger: "manual" | "threshold" | "overflow";
+  aborted: boolean;
+  willRetry: boolean;
+  fromExtension: boolean;
+};
+
+export type CompactionFailureEntry =
+  | NativeCompactionFailureEntry
+  | TerminalCompactionFailureEntry;
+
 const renderCompactionCall = toolCallRenderer<CompactionFailureEntry>({
   name: "Context compaction",
-  detail: () => "· OpenAI Codex",
+  detail: (data) =>
+    isTerminalFailure(data)
+      ? `· ${data.trigger} · ${data.fromExtension ? "extension summary" : "Pi summary"}`
+      : "· OpenAI Codex",
 });
 
 const renderCompactionResult = toolResultRenderer({
-  summary: (result) => {
-    const data = result.details as CompactionFailureEntry;
-    return `Native compaction failed: ${data.reason}. ${outcomeText(data.outcome)}`;
-  },
+  summary: (result) => failureSummary(result.details as CompactionFailureEntry),
   tone: (result) =>
-    (result.details as CompactionFailureEntry).outcome === "cancelled"
+    isTerminalFailure(result.details)
       ? "error"
-      : "warning",
+      : (result.details as NativeCompactionFailureEntry).outcome === "cancelled"
+        ? "error"
+        : "warning",
 });
 
 export const renderCompactionFailureEntry: EntryRenderer<
@@ -36,9 +50,11 @@ export const renderCompactionFailureEntry: EntryRenderer<
   if (!isCompactionFailureEntry(entry.data)) {
     return undefined;
   }
-  const background =
-    entry.data.outcome === "cancelled" ? "toolErrorBg" : "toolPendingBg";
-  const box = new Box(1, 1, (text) => theme.bg(background, text));
+  const isError =
+    isTerminalFailure(entry.data) || entry.data.outcome === "cancelled";
+  const box = new Box(1, 1, (text) =>
+    theme.bg(isError ? "toolErrorBg" : "toolPendingBg", text),
+  );
   box.addChild(
     renderCompactionCall(entry.data, theme, {
       isPartial: false,
@@ -58,19 +74,52 @@ export const renderCompactionFailureEntry: EntryRenderer<
 function isCompactionFailureEntry(
   value: unknown,
 ): value is CompactionFailureEntry {
+  return isTerminalFailure(value) || isNativeFailure(value);
+}
+
+function isNativeFailure(
+  value: unknown,
+): value is NativeCompactionFailureEntry {
   if (!value || typeof value !== "object") {
     return false;
   }
-  const reason = (value as Partial<CompactionFailureEntry>).reason;
+  const reason = (value as Partial<NativeCompactionFailureEntry>).reason;
   return (
     typeof reason === "string" &&
     reason.length > 0 &&
     reason.length <= 120 &&
     !/\p{C}/u.test(reason) &&
     ["models-low", "pi", "cancelled"].includes(
-      (value as Partial<CompactionFailureEntry>).outcome ?? "",
+      (value as Partial<NativeCompactionFailureEntry>).outcome ?? "",
     )
   );
+}
+
+function isTerminalFailure(
+  value: unknown,
+): value is TerminalCompactionFailureEntry {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const data = value as Partial<TerminalCompactionFailureEntry>;
+  return (
+    data.terminal === true &&
+    ["manual", "threshold", "overflow"].includes(data.trigger ?? "") &&
+    typeof data.aborted === "boolean" &&
+    typeof data.willRetry === "boolean" &&
+    typeof data.fromExtension === "boolean"
+  );
+}
+
+function failureSummary(data: CompactionFailureEntry): string {
+  if (isTerminalFailure(data)) {
+    const status = data.aborted ? "aborted" : "failed";
+    const retry = data.willRetry
+      ? " The interrupted turn would have retried after successful compaction."
+      : "";
+    return `Compaction ${status}; no checkpoint was saved.${retry}`;
+  }
+  return `Native compaction failed: ${data.reason}. ${outcomeText(data.outcome)}`;
 }
 
 function outcomeText(outcome: NativeFailureOutcome): string {

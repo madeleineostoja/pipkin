@@ -36,6 +36,58 @@ function user(content: string, timestamp: number) {
 }
 
 describe("post-compaction pruning", () => {
+  it("records terminal compaction failures outside model context", async () => {
+    const harness = await createManagedSessionHarness([], {
+      extensionFactories: [context],
+    });
+    const { session } = await harness.createSession({ cwd: MANAGED_TEST_CWD });
+
+    try {
+      await session.bindExtensions({ mode: "json", uiContext: {} as never });
+      const manager = session.sessionManager;
+      manager.appendMessage(user("old request ".repeat(10_000), 1));
+      manager.appendMessage(
+        fauxAssistantMessage("old response ".repeat(10_000)),
+      );
+      for (let index = 0; index < 4; index++) {
+        manager.appendMessage(user(`later ${index}`, 3 + index));
+      }
+      session.agent.state.messages = manager.buildSessionContext().messages;
+
+      await expect(session.compact()).rejects.toThrow();
+
+      expect(
+        manager
+          .getBranch()
+          .filter(
+            (entry) =>
+              entry.type === "custom" &&
+              entry.customType === "pipkin.context.compaction-failure.v1",
+          ),
+      ).toEqual([
+        expect.objectContaining({
+          data: {
+            terminal: true,
+            trigger: "manual",
+            aborted: false,
+            willRetry: false,
+            fromExtension: false,
+          },
+        }),
+      ]);
+      expect(manager.buildSessionContext().messages).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ terminal: true })]),
+      );
+    } finally {
+      await (
+        session as unknown as {
+          _extensionRunner: { emit: (event: unknown) => Promise<unknown> };
+        }
+      )._extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+      session.dispose();
+    }
+  });
+
   it("persists a known-cold epoch before the first provider request after Pi compaction", async () => {
     const events: string[] = [];
     const harness = await createManagedSessionHarness(

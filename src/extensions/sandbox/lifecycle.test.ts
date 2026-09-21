@@ -133,7 +133,7 @@ describe("Sandbox lifecycle", () => {
     expect(state.policy()).toBeUndefined();
     expect(state.unavailableReason()).toContain("Git failed");
     expect(ctx.statuses.get("pipkin:status:0200:sandbox")).toContain(
-      "unavailable",
+      "sandbox n/a",
     );
     expect(state.enabled()).toBe(true);
     await session.sessionShutdown(ctx as never);
@@ -250,7 +250,7 @@ describe("Sandbox lifecycle", () => {
     expect(state.policy()).toBeUndefined();
     expect(createDenialObserver).not.toHaveBeenCalled();
     expect(ctx.statuses.get("pipkin:status:0200:sandbox")).toContain(
-      "unavailable",
+      "sandbox n/a",
     );
     await session.sessionShutdown(ctx as never);
   });

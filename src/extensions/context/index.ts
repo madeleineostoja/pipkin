@@ -49,6 +49,15 @@ export default function (pi: ExtensionAPI): void {
   pi.on("session_before_compact", (event, ctx) =>
     compaction.beforeCompact(event, ctx),
   );
+  pi.on("session_compact_failed", (event) => {
+    pi.appendEntry(COMPACTION_FAILURE_ENTRY_TYPE, {
+      terminal: true,
+      trigger: event.reason,
+      aborted: event.aborted,
+      willRetry: event.willRetry,
+      fromExtension: event.fromExtension,
+    });
+  });
   pi.on("context", pruning.context);
   pi.on("before_provider_request", (event, ctx) =>
     compaction.beforeProviderRequest(event.payload, ctx),

@@ -1,8 +1,13 @@
-import type {
-  ExtensionContext,
-  SessionBeforeCompactEvent,
+import {
+  SessionManager,
+  type ExtensionContext,
+  type SessionBeforeCompactEvent,
 } from "@earendil-works/pi-coding-agent";
-import type { Model } from "@earendil-works/pi-ai";
+import {
+  createAssistantMessageEventStream,
+  type AssistantMessage,
+  type Model,
+} from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import { createCompactionCoordinator } from "./compaction.ts";
 import {
@@ -60,23 +65,39 @@ function event(
   };
 }
 
-function context(complete = vi.fn(async () => assistant("summary"))) {
+function context(response = vi.fn(async () => assistant("summary"))) {
   const notify = vi.fn();
+  const streamSimple = vi.fn(() => assistantStream(() => response()));
   return {
-    complete,
+    response,
+    streamSimple,
     notify,
     ctx: {
       model,
       thinkingLevel: "high",
       modelRegistry: {
         find: vi.fn(() => model),
-        complete,
+        streamSimple,
       },
       ui: { notify },
       sessionManager: { getBranch: () => [], getSessionId: () => "session" },
       getSystemPrompt: () => "system",
     } as unknown as ExtensionContext,
   };
+}
+
+function assistantStream(response: () => Promise<AssistantMessage>) {
+  const stream = createAssistantMessageEventStream();
+  void response().then(
+    (message) => stream.end(message),
+    (error: unknown) =>
+      stream.end({
+        ...assistant(""),
+        stopReason: "error",
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }),
+  );
+  return stream;
 }
 
 function assistant(text: string) {
@@ -114,10 +135,10 @@ describe("CompactionCoordinator textual route", () => {
         }),
       }),
     );
-    expect(fixture.complete).toHaveBeenCalledWith(
+    expect(fixture.streamSimple).toHaveBeenCalledWith(
       model,
       expect.objectContaining({
-        messages: [
+        messages: expect.arrayContaining([
           expect.objectContaining({
             content: [
               expect.objectContaining({
@@ -125,7 +146,7 @@ describe("CompactionCoordinator textual route", () => {
               }),
             ],
           }),
-        ],
+        ]),
       }),
       expect.objectContaining({ reasoning: "high", cacheRetention: "none" }),
     );
@@ -160,8 +181,8 @@ describe("CompactionCoordinator textual route", () => {
 
     const result = await coordinator.beforeCompact(split, fixture.ctx);
 
-    expect(fixture.complete).toHaveBeenCalledTimes(2);
-    expect(fixture.complete.mock.calls).toEqual(
+    expect(fixture.streamSimple).toHaveBeenCalledTimes(2);
+    expect(fixture.streamSimple.mock.calls).toEqual(
       expect.arrayContaining([
         expect.arrayContaining([
           model,
@@ -218,7 +239,8 @@ describe("CompactionCoordinator textual route", () => {
       .mockRejectedValueOnce(
         new CodexAdapterError("aborted", "request aborted"),
       );
-    const complete = vi.fn(async () => assistant("text fallback"));
+    const response = vi.fn(async () => assistant("text fallback"));
+    const streamSimple = vi.fn(() => assistantStream(() => response()));
     const reportNativeFailure = vi.fn();
     const isUsingOAuth = vi.fn(() => false);
     const notify = vi.fn();
@@ -232,7 +254,7 @@ describe("CompactionCoordinator textual route", () => {
         })),
         isUsingOAuth,
         find: vi.fn(() => model),
-        complete,
+        streamSimple,
       },
       ui: { notify },
       sessionManager: {
@@ -277,7 +299,7 @@ describe("CompactionCoordinator textual route", () => {
     );
     expect(reportNativeFailure).not.toHaveBeenCalled();
     isUsingOAuth.mockReturnValue(true);
-    complete.mockClear();
+    streamSimple.mockClear();
 
     await expect(coordinator.beforeCompact(nativeEvent, ctx)).resolves.toEqual(
       expect.objectContaining({ compaction: expect.anything() }),
@@ -318,7 +340,7 @@ describe("CompactionCoordinator textual route", () => {
     compact.mockRejectedValueOnce(
       new CodexAdapterError("timeout", "Codex request timed out"),
     );
-    complete.mockRejectedValueOnce(new Error("low model unavailable"));
+    response.mockRejectedValueOnce(new Error("low model unavailable"));
     await expect(
       coordinator.beforeCompact(nativeEvent, ctx),
     ).resolves.toBeUndefined();
@@ -326,7 +348,7 @@ describe("CompactionCoordinator textual route", () => {
       "request timed out",
       "pi",
     );
-    expect(complete).toHaveBeenCalledTimes(5);
+    expect(streamSimple).toHaveBeenCalledTimes(5);
   });
 
   it("converts prior Pi compaction summaries before native serializer capture", async () => {
@@ -374,6 +396,18 @@ describe("CompactionCoordinator textual route", () => {
         summary: "prior textual summary",
         firstKeptEntryId: "kept",
         tokensBefore: 10,
+        systemMessage: {
+          role: "system" as const,
+          content: "persisted prompt",
+          toolsAdded: [
+            {
+              name: "persisted_tool",
+              description: "persisted tool",
+              parameters: { type: "object" },
+            },
+          ],
+          timestamp: 3,
+        },
       },
     ];
     const notify = vi.fn();
@@ -413,6 +447,17 @@ describe("CompactionCoordinator textual route", () => {
       expect.objectContaining({ compaction: expect.anything() }),
     );
 
+    const current = capture.mock.calls[0]?.[0].context as {
+      systemPrompt?: string;
+      tools?: unknown[];
+      messages: Array<{ role: string; content: unknown }>;
+    };
+    expect(current.systemPrompt).toBeUndefined();
+    expect(current.tools).toBeUndefined();
+    expect(current.messages[0]).toEqual(
+      expect.objectContaining({ role: "system", content: "persisted prompt" }),
+    );
+
     const captured = capture.mock.calls.flatMap(
       ([input]) =>
         input.context.messages as Array<{ role: string; content: unknown }>,
@@ -431,7 +476,7 @@ describe("CompactionCoordinator textual route", () => {
     );
   });
 
-  it("replays only the checkpoint boundary and preserves every later turn", async () => {
+  it("restores checkpoint replay on resume and containing forks but not forks before it", async () => {
     const nativeModel = {
       ...model,
       id: "gpt-5-codex",
@@ -498,26 +543,56 @@ describe("CompactionCoordinator textual route", () => {
         replay,
       } as never,
     });
-    const ctx = {
-      model: nativeModel,
-      modelRegistry: {
-        getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "token" })),
-        isUsingOAuth: vi.fn(() => true),
-      },
-      ui: { notify: vi.fn() },
-      sessionManager: {
-        getBranch: () => entries,
-        getSessionId: () => "session",
-      },
-      getSystemPrompt: () => "system",
-    } as unknown as ExtensionContext;
+    const restoredEntries = () => JSON.parse(JSON.stringify(entries)) as never;
+    const resumed = SessionManager.inMemory(
+      "/resumed",
+      undefined,
+      restoredEntries(),
+    );
+    const containingFork = SessionManager.inMemory(
+      "/fork-containing-checkpoint",
+      undefined,
+      restoredEntries(),
+    );
+    containingFork.branch("native");
+    const forkBeforeCheckpoint = SessionManager.inMemory(
+      "/fork-before-checkpoint",
+      undefined,
+      restoredEntries(),
+    );
+    forkBeforeCheckpoint.branch("kept");
+    const contextFor = (sessionManager: SessionManager) =>
+      ({
+        model: nativeModel,
+        modelRegistry: {
+          getApiKeyAndHeaders: vi.fn(async () => ({
+            ok: true,
+            apiKey: "token",
+          })),
+          isUsingOAuth: vi.fn(() => true),
+        },
+        ui: { notify: vi.fn() },
+        sessionManager,
+        getSystemPrompt: () => "system",
+      }) as unknown as ExtensionContext;
     const payload = {
       input: [{ type: "marker" }, { type: "kept" }, { type: "later" }],
     };
 
-    await expect(coordinator.beforeProviderRequest(payload, ctx)).resolves.toBe(
-      payload,
-    );
+    await expect(
+      coordinator.beforeProviderRequest(payload, contextFor(resumed)),
+    ).resolves.toBe(payload);
+    await expect(
+      coordinator.beforeProviderRequest(payload, contextFor(containingFork)),
+    ).resolves.toBe(payload);
+    await expect(
+      coordinator.beforeProviderRequest(
+        payload,
+        contextFor(forkBeforeCheckpoint),
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(replay).toHaveBeenCalledTimes(2);
     const expectedItems = replay.mock.calls[0]?.[1] ?? [];
     expect(JSON.stringify(expectedItems)).toContain(checkpoint.summary);
     expect(JSON.stringify(expectedItems)).toContain("kept");

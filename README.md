@@ -55,7 +55,7 @@ Implement coordinates trusted workers in disposable Git worktrees, publishes thr
 
 - **Sandbox** contains model Bash and direct `write`/`edit` calls on macOS. Inspection children can protect source and Git while retaining disposable dependency runtime writes; Linux remains instruction-only.
 - **Readonly** independently asks for confirmation before resolved `edit` and `write` calls.
-- **Context** prunes stale or superseded tool output, routes textual compaction through `models.low`, uses server checkpoints for eligible Codex OAuth sessions with visible fallback diagnostics, and preserves original results for `context_recall`.
+- **Context** prunes stale or superseded tool output, routes textual compaction through `models.low`, uses server checkpoints for eligible Codex OAuth sessions with visible fallback and terminal-failure diagnostics, and preserves original results for `context_recall`.
 - **Processes** runs foreground non-interactive commands while the main agent continues independent work.
 
 [Safety →](docs/features/safety.md) · [Context →](docs/features/context.md)
