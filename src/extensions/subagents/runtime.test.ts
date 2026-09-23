@@ -57,9 +57,11 @@ function makeSession(result = "done") {
     emit: vi.fn(async () => undefined),
   } as never;
   return asAgentSession({
+    agent: { shouldStopAfterTurn: undefined },
     bindExtensions: vi.fn(async () => undefined),
     prompt: vi.fn(async (): Promise<void> => undefined),
     steer: vi.fn(async () => undefined),
+    clearQueue: vi.fn(() => ({ steering: [], followUp: [] })),
     abort: vi.fn(async () => undefined),
     dispose: vi.fn(),
     getLastAssistantText: vi.fn(() => result),
@@ -631,6 +633,143 @@ describe("SubagentRuntime", () => {
         }),
       ]),
     );
+    runtime.stop(started.id);
+    promptDone.resolve();
+  });
+
+  it("discards guidance queued while the final result is streaming", async () => {
+    const { pi } = fakePi();
+    const responseStarted = deferred<void>();
+    const releaseResponse = deferred<void>();
+    const { createSession, faux, model, modelRegistry, sessions } =
+      await createRealSessionHarness([
+        async () => {
+          responseStarted.resolve();
+          await releaseResponse.promise;
+          return fauxAssistantMessage("original result");
+        },
+        fauxAssistantMessage("stale guidance response"),
+      ]);
+    const runtime = new SubagentRuntime(pi as never, { createSession });
+    const started = await runtime.runManagedAgent({
+      type: "General",
+      prompt: "work",
+      cwd: TEST_CWD,
+      ctx: realContext(model, modelRegistry),
+      mode: "background",
+    });
+
+    await responseStarted.promise;
+    await runtime.steer(started.id, "wrap it up");
+    releaseResponse.resolve();
+
+    await expect(runtime.wait(started.id)).resolves.toMatchObject({
+      status: "completed",
+      result: "original result",
+    });
+    expect(faux.state.callCount).toBe(1);
+    expect(sessions[0]?.getSteeringMessages()).toEqual([]);
+    expect(runtime.inspect(started.id)?.activity).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "steering",
+          status: "discarded",
+          text: "wrap it up",
+        }),
+      ]),
+    );
+  });
+
+  it("clears guidance that finishes queueing across the final-turn boundary", async () => {
+    const { pi } = fakePi();
+    const responseStarted = deferred<void>();
+    const releaseResponse = deferred<void>();
+    const steeringStarted = deferred<void>();
+    const releaseSteering = deferred<void>();
+    const { createSession, faux, model, modelRegistry } =
+      await createManagedSessionHarness(
+        [
+          async () => {
+            responseStarted.resolve();
+            await releaseResponse.promise;
+            return fauxAssistantMessage("original result");
+          },
+          fauxAssistantMessage("stale guidance response"),
+        ],
+        {
+          extensionFactories: [
+            (childPi) => {
+              childPi.on("input", async (event) => {
+                if (event.streamingBehavior !== "steer") {
+                  return { action: "continue" };
+                }
+                steeringStarted.resolve();
+                await releaseSteering.promise;
+                return { action: "continue" };
+              });
+            },
+          ],
+        },
+      );
+    const runtime = new SubagentRuntime(pi as never, { createSession });
+    const started = await runtime.runManagedAgent({
+      type: "General",
+      prompt: "work",
+      cwd: TEST_CWD,
+      ctx: realContext(model, modelRegistry),
+      mode: "background",
+    });
+
+    await responseStarted.promise;
+    const steering = runtime.steer(started.id, "wrap it up");
+    await steeringStarted.promise;
+    releaseResponse.resolve();
+    await vi.waitFor(() =>
+      expect(runtime.snapshot(started.id)?.canSteer).toBe(false),
+    );
+    releaseSteering.resolve();
+    await steering;
+
+    await expect(runtime.wait(started.id)).resolves.toMatchObject({
+      status: "completed",
+      result: "original result",
+    });
+    expect(faux.state.callCount).toBe(1);
+  });
+
+  it("keeps recoverable truncated turns steerable", async () => {
+    const { pi } = fakePi();
+    const promptDone = deferred<void>();
+    const session = makeSession();
+    session.prompt = vi.fn(() => promptDone.promise);
+    const runtime = new SubagentRuntime(pi as never, {
+      createSession: vi.fn(async () => ({ session })),
+    });
+    const started = await runtime.runManagedAgent({
+      type: "General",
+      prompt: "work",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+      mode: "background",
+    });
+    await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
+
+    const boundary = (session as AgentSession).agent.shouldStopAfterTurn;
+    if (!boundary) {
+      throw new Error("Expected the runtime to install a completion boundary.");
+    }
+    await expect(
+      boundary(
+        {
+          message: fauxAssistantMessage("truncated", {
+            stopReason: "length",
+          }),
+        } as never,
+        new AbortController().signal,
+      ),
+    ).resolves.toBe(false);
+    expect(runtime.snapshot(started.id)?.canSteer).toBe(true);
+
     runtime.stop(started.id);
     promptDone.resolve();
   });

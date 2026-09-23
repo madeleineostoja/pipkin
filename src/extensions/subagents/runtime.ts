@@ -1418,6 +1418,7 @@ export class SubagentRuntime {
         }
         record.session = session;
         record.effectiveThinking = session.thinkingLevel as ThinkingLevel;
+        this.#installTurnCompletionBoundary(record, session);
         record.unsubscribeSession = session.subscribe((event) => {
           if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
             return;
@@ -1761,6 +1762,7 @@ export class SubagentRuntime {
             continue;
           }
           if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
+            this.#clearSessionQueue(record.session);
             this.#discardDelivery(record, delivery);
             continue;
           }
@@ -1799,6 +1801,41 @@ export class SubagentRuntime {
       }
     });
     return record.steeringDraining;
+  }
+
+  #installTurnCompletionBoundary(
+    record: RuntimeRecord,
+    session: AgentSession,
+  ): void {
+    const inheritedBoundary = session.agent.shouldStopAfterTurn;
+    session.agent.shouldStopAfterTurn = async (context, signal) => {
+      const hasToolCalls = context.message.content.some(
+        (content) => content.type === "toolCall",
+      );
+      const isFinalResult =
+        !hasToolCalls && context.message.stopReason === "stop";
+      const inheritedStop =
+        (await inheritedBoundary?.(context, signal)) === true;
+      if (!isFinalResult) {
+        return inheritedStop;
+      }
+
+      // A completed tool-free assistant turn is the subagent's committed result.
+      // Close ingress and drain accepted sends before clearing Pi's queue so
+      // guidance cannot arrive between the clear and Pi's post-run queue check.
+      record.canSteer = false;
+      await record.steeringDraining;
+      this.#clearSessionQueue(session);
+      return true;
+    };
+  }
+
+  #clearSessionQueue(session: AgentSession | undefined): void {
+    try {
+      session?.clearQueue();
+    } catch {
+      // Queue cleanup must not prevent terminal settlement.
+    }
   }
 
   #discardSteering(record: RuntimeRecord): void {
@@ -1938,6 +1975,7 @@ export class SubagentRuntime {
           activity.timestamp = now();
         }
       }
+      this.#clearSessionQueue(activeSession);
       try {
         await activeSession?.abort();
       } catch {
