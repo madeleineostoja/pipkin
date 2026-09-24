@@ -100,6 +100,33 @@ describe("BrowserOwner invocation lane", () => {
     } satisfies Partial<BrowserError>);
   });
 
+  it("uses a valid locale for every page in the browser context", async () => {
+    let locale: string | undefined;
+    const page = { isClosed: () => false, on: () => {} };
+    const context = {
+      setDefaultTimeout: () => {},
+      setDefaultNavigationTimeout: () => {},
+      on: () => {},
+      newPage: async () => page,
+      close: async () => {},
+    };
+    const browser = {
+      isConnected: () => true,
+      on: () => {},
+      newContext: async (options: { locale?: string }) => {
+        locale = options.locale;
+        return context;
+      },
+      close: async () => {},
+    };
+    const owner = new BrowserOwner({ launch: async () => browser } as never);
+
+    await owner.page();
+    expect(locale).toBe("en-US");
+    expect(() => new Intl.DateTimeFormat(locale)).not.toThrow();
+    await owner.shutdown();
+  });
+
   it("reports recreated-context state loss once", async () => {
     const page = {
       isClosed: () => false,

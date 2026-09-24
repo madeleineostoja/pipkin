@@ -392,6 +392,7 @@ export class BrowserOwner {
       });
       context = await browser.newContext({
         viewport: LIMITS.defaultViewport,
+        locale: "en-US",
         deviceScaleFactor: 1,
         acceptDownloads: false,
       });

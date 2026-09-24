@@ -65,7 +65,7 @@ Implement coordinates trusted workers in disposable Git worktrees, publishes thr
 - **Explore** maps unfamiliar code; **Review** independently assesses a concrete artifact. Both run through `Agent` and remain visible through `/agents`.
 - **Reference** searches bounded library documentation, package ecosystems, and credential-visible GitHub source.
 - **Web Fetch** retrieves readable content from direct public URLs without authentication or page JavaScript.
-- **Browser** lazily opens an isolated rendered browser for local applications, page state, visual evidence, and navigation.
+- **Browser** lazily opens an isolated rendered browser with a valid locale for local applications, page state, visual evidence, and navigation.
 - **LSP** provides read-only definitions, references, symbols, types, hover information, and diagnostics for supported languages.
 
 [Agents →](docs/features/agents.md) · [Reference →](docs/features/reference.md) · [Web Fetch →](docs/features/web-fetch.md) · [Browser →](docs/features/browser.md) · [Workflow tools →](docs/features/workflow-tools.md)

@@ -8,7 +8,7 @@ Pipkin declares `playwright-core` and `@playwright/browser-chromium` as runtime 
 
 If the expected executable is missing (for example, lifecycle scripts were skipped or the cache was removed), the first call fails as `installation`, names the installed Playwright version, and tells the operator to repair the normal Pipkin install with `npm install` or `npm rebuild`. Do not install a global Playwright CLI.
 
-Extension loading and `session_start` do not launch Chromium. The first call to either Browser tool coalesces startup into one headless browser, one ephemeral context, and one blank `1440×900` page. Calls are serialized; queued cancellation never starts a browser operation, and executing cancellation or shutdown closes/invalidate the active runtime before another call can use it. `session_start` defensively resets stale state and `session_shutdown` is idempotent.
+Extension loading and `session_start` do not launch Chromium. The first call to either Browser tool coalesces startup into one headless browser, one ephemeral context with the `en-US` locale, and one blank `1440×900` page. This gives pages a valid `navigator.language` for `Intl` APIs regardless of the host locale. Calls are serialized; queued cancellation never starts a browser operation, and executing cancellation or shutdown closes/invalidate the active runtime before another call can use it. `session_start` defensively resets stale state and `session_shutdown` is idempotent.
 
 A disconnect, reset, or context recreation loses all tabs, refs, and diagnostics. Results identify fresh-context state loss. Browser uses no existing profile, persistent storage directory, downloads, uploads, proxy, permission, executable, or filesystem-path option.
 
