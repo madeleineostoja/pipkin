@@ -3,7 +3,8 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { promptForPermission } from "#lib/permission-prompt";
-import type { PapercutFile, PapercutRecord, PapercutStatus } from "./store.js";
+import { formatPapercutDetail, sortedPapercuts } from "./inspection.js";
+import type { PapercutFile, PapercutStatus } from "./store.js";
 import { createPapercutStatusController } from "./status.js";
 
 const SUMMARY_LIMIT = 16_384;
@@ -12,21 +13,8 @@ type PapercutStatusController = ReturnType<
   typeof createPapercutStatusController
 >;
 
-function sortedRecords(
-  file: PapercutFile,
-  status?: PapercutStatus,
-): PapercutRecord[] {
-  return file.records
-    .filter((record) => status === undefined || record.status === status)
-    .sort(
-      (a, b) =>
-        (a.status === b.status ? 0 : a.status === "open" ? -1 : 1) ||
-        a.key.localeCompare(b.key),
-    );
-}
-
 export function formatPapercutSummary(file: PapercutFile): string {
-  const records = sortedRecords(file);
+  const records = sortedPapercuts(file);
   const lines = [
     `open (${records.filter((record) => record.status === "open").length})`,
     `closed (${records.filter((record) => record.status === "closed").length})`,
@@ -59,43 +47,14 @@ export function formatPapercutSummary(file: PapercutFile): string {
   ].join("\n");
 }
 
-function detail(record: PapercutRecord): string {
-  return [
-    `Title: ${record.title}`,
-    `Key: ${record.key}`,
-    "",
-    `Assigned task: ${record.task}`,
-    "",
-    `Incident: ${record.incident}`,
-    "",
-    `Evidence: ${record.evidence}`,
-    "",
-    "Exercised workarounds:",
-    ...record.workarounds.map(
-      (workaround, index) => `${index + 1}. ${workaround}`,
-    ),
-    "",
-    `Task outcome: ${record.taskOutcome}`,
-    ...(record.guardrailCandidate
-      ? ["", `Guardrail candidate: ${record.guardrailCandidate}`]
-      : []),
-    ...(record.suggestedDestination
-      ? [`Suggested destination: ${record.suggestedDestination}`]
-      : []),
-    "",
-    `Occurrences: ${record.occurrences}`,
-    `First seen: ${record.firstSeenAt}`,
-    `Last seen: ${record.lastSeenAt}`,
-  ].join("\n");
-}
-
 async function browseStatus(
   ctx: ExtensionContext,
   status: PapercutStatus,
   controller: PapercutStatusController,
-): Promise<void> {
+  pi: ExtensionAPI,
+): Promise<boolean> {
   while (true) {
-    const records = sortedRecords(
+    const records = sortedPapercuts(
       await (await controller.storeFor(ctx)).load(),
       status,
     );
@@ -109,7 +68,7 @@ async function browseStatus(
       ],
     );
     if (!selected || selected === "Back") {
-      return;
+      return false;
     }
     if (selected === deleteClosed) {
       const confirmed = await ctx.ui.confirm(
@@ -125,7 +84,7 @@ async function browseStatus(
           `Deleted ${deleted} closed finding${deleted === 1 ? "" : "s"}.`,
           "info",
         );
-        return;
+        return false;
       } catch {
         ctx.ui.notify("Papercut cleanup failed.", "error");
         continue;
@@ -140,17 +99,24 @@ async function browseStatus(
     const action = await promptForPermission({
       ui: ctx.ui,
       title: record.title,
-      detail: detail(record),
-      choices:
-        status === "open"
-          ? [
-              { value: "close", label: "Close Finding" },
-              { value: "back", label: "Back" },
-            ]
-          : [{ value: "back", label: "Back" }],
+      detail: formatPapercutDetail(record),
+      choices: [
+        ...(status === "open"
+          ? [{ value: "close", label: "Close Finding" }]
+          : []),
+        { value: "back", label: "Back" },
+        { value: "discuss", label: "Discuss with agent" },
+      ],
     });
     if (action.kind !== "selected" || action.value === "back") {
       continue;
+    }
+    if (action.value === "discuss") {
+      pi.sendUserMessage(
+        `Inspect papercut ${JSON.stringify(record.key)} and discuss possible fixes with me. Do not implement changes until I approve.`,
+        { deliverAs: "followUp" },
+      );
+      return true;
     }
     try {
       await (await controller.storeFor(ctx)).close(record.key);
@@ -192,11 +158,16 @@ export function registerPapercutsBrowser(
           if (!choice || choice === "Back") {
             return;
           }
-          await browseStatus(
-            ctx,
-            choice.startsWith("Open") ? "open" : "closed",
-            status,
-          );
+          if (
+            await browseStatus(
+              ctx,
+              choice.startsWith("Open") ? "open" : "closed",
+              status,
+              pi,
+            )
+          ) {
+            return;
+          }
         }
       } catch {
         ctx.ui.notify("Papercuts unavailable.", "error");

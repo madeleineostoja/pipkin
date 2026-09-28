@@ -98,7 +98,7 @@ When globally or trusted-project configured with endpoints and optional non-secr
 | `/implement …`        | Start, inspect, stop, restart, or clean Implement runs                    |
 | `/mcp`                | Inspect configured MCP servers, or show unconfigured-session recovery     |
 | `/mcp-auth <server>`  | Authenticate one configured external MCP server (when configured)         |
-| `/papercuts`          | Browse, close, and clean up recorded Papercut findings                    |
+| `/papercuts`          | Browse, discuss one finding with the agent, close, and clean up Papercuts |
 | `/btw <question>`     | Ask an ephemeral side question; press `s` to promote a completed exchange |
 
 ### Keyboard shortcut
@@ -132,6 +132,7 @@ These tools are called by the agent rather than typed as slash commands.
 | `browser_act`           | Navigate, interact, scroll, wait, and manage isolated browser tabs                                 |
 | `mcp`                   | Use configured external MCP capabilities through one bounded operation at a time (when configured) |
 | `mcpScript`             | Compose multiple configured MCP operations in one trusted JavaScript request (when configured)     |
+| `inspect_papercuts`     | Read findings on request or check for duplicates before recording                                  |
 | `record_papercut`       | Record qualifying incidental friction after an exercised workaround                                |
 
 ## Important safety boundaries

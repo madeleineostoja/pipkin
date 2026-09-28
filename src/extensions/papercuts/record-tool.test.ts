@@ -134,6 +134,9 @@ describe("record_papercut", () => {
     expect(tool.description).toContain("No outage");
     expect(tool.description).toContain("undocumented validation convention");
     expect(tool.description).toContain("manual worktree setup");
+    expect(tool.description).toContain("inspect_papercuts");
+    expect(tool.description).toContain("open and closed");
+    expect(tool.description).toContain("reuse the existing key");
   });
 
   it("enforces every public observation bound, shape, and trim rule", () => {

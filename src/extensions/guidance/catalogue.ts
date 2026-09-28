@@ -98,6 +98,11 @@ export const PUBLIC_TOOL_CATALOGUE: readonly GuidanceTool[] = [
       "Compose multiple configured MCP operations in one trusted JavaScript request.",
   },
   {
+    name: "inspect_papercuts",
+    summary:
+      "Read findings at the user's request or check for equivalent findings before recording incidental friction; never use them as a work queue.",
+  },
+  {
     name: "record_papercut",
     summary:
       "Record avoidable incidental friction from another assigned task only after an exercised workaround and completion or safe continuation.",

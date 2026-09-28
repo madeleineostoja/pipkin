@@ -53,10 +53,11 @@ const theme = {
 };
 const keybindings = {
   matches: (data: string, binding: string) =>
-    data === "\r" && binding === "tui.select.confirm",
+    (data === "\r" && binding === "tui.select.confirm") ||
+    (data === "\u001b[B" && binding === "tui.select.down"),
 };
 
-function browserHarness(selections: string[]) {
+function browserHarness(selections: string[], actionSteps = 0) {
   initTheme("dark");
   let command:
     | { handler: (args: string, ctx: unknown) => Promise<void> }
@@ -71,6 +72,9 @@ function browserHarness(selections: string[]) {
       done,
     );
     components.push(component);
+    for (let index = 0; index < actionSteps; index++) {
+      component.handleInput("\u001b[B");
+    }
     component.handleInput("\r");
     return Promise.resolve(done.mock.calls[0]?.[0]);
   });
@@ -82,6 +86,7 @@ function browserHarness(selections: string[]) {
     setStatus: vi.fn(),
   };
   const pi = {
+    sendUserMessage: vi.fn(),
     registerCommand: (_name: string, next: typeof command) => {
       command = next;
     },
@@ -93,7 +98,7 @@ function browserHarness(selections: string[]) {
     actionLabels: () =>
       components.map((component) => {
         const rendered = component.render(48);
-        return ["Close Finding", "Back"].filter((label) =>
+        return ["Close Finding", "Back", "Discuss with agent"].filter((label) =>
           rendered.some((line) => line.includes(label)),
         );
       }),
@@ -171,7 +176,9 @@ describe("papercuts browser", () => {
     expect(detail).toContain("Occurrences: 1");
     expect(detail).toContain("First seen:");
     expect(detail).toContain("Last seen:");
-    expect(harness.actionLabels()).toEqual([["Close Finding", "Back"]]);
+    expect(harness.actionLabels()).toEqual([
+      ["Close Finding", "Back", "Discuss with agent"],
+    ]);
     expect(
       rendered.findIndex((line) => line.includes("Close Finding")),
     ).toBeGreaterThan(
@@ -191,7 +198,38 @@ describe("papercuts browser", () => {
       "pipkin:status:0300:papercuts",
       undefined,
     );
+    expect(harness.pi.sendUserMessage).not.toHaveBeenCalled();
   });
+
+  it.each(["open", "closed"] as const)(
+    "hands off one selected %s finding for discussion without closing it",
+    async (findingStatus) => {
+      const root = repo();
+      const status = createPapercutStatusController();
+      const store = await status.storeFor({ cwd: root } as never);
+      await store.record(observation);
+      if (findingStatus === "closed") {
+        await store.close("finding");
+      }
+      const harness = browserHarness(
+        [
+          `${findingStatus === "open" ? "Open" : "Closed"} (1)`,
+          "finding — A finding",
+        ],
+        findingStatus === "open" ? 2 : 1,
+      );
+      const ctx = { cwd: root, mode: "tui", hasUI: true, ui: harness.ui };
+      registerPapercutsBrowser(harness.pi as never, status);
+      await harness.command().handler("", ctx as never);
+
+      expect(harness.pi.sendUserMessage).toHaveBeenCalledExactlyOnceWith(
+        'Inspect papercut "finding" and discuss possible fixes with me. Do not implement changes until I approve.',
+        { deliverAs: "followUp" },
+      );
+      expect((await store.load()).records[0].status).toBe(findingStatus);
+      expect(harness.ui.select).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it("deletes all closed findings after confirmation", async () => {
     const root = repo();
@@ -256,7 +294,7 @@ describe("papercuts browser", () => {
     ]);
   });
 
-  it("shows closed detail with Back as its only action", async () => {
+  it("shows closed detail with Back and Discuss actions", async () => {
     const root = repo();
     const status = createPapercutStatusController();
     const ctx = {
@@ -280,8 +318,9 @@ describe("papercuts browser", () => {
 
     const detail = harness.renders()[0].join("\n");
     expect(detail).toContain("Exercised workarounds:");
-    expect(harness.actionLabels()).toEqual([["Back"]]);
+    expect(harness.actionLabels()).toEqual([["Back", "Discuss with agent"]]);
     expect(detail).not.toContain("Close Finding");
+    expect(harness.pi.sendUserMessage).not.toHaveBeenCalled();
     expect((await store.load()).records[0]).toMatchObject({
       status: "closed",
       occurrences: 1,

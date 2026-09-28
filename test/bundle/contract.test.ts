@@ -85,6 +85,7 @@ const expectedTools = {
   batch_web_fetch: "src/extensions/web/index.ts",
   browser_observe: "src/extensions/browser/index.ts",
   browser_act: "src/extensions/browser/index.ts",
+  inspect_papercuts: "src/extensions/papercuts/index.ts",
   record_papercut: "src/extensions/papercuts/index.ts",
 };
 

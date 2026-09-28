@@ -31,6 +31,7 @@ describe("Guidance catalogue", () => {
       "browser_act",
       "mcp",
       "mcpScript",
+      "inspect_papercuts",
       "record_papercut",
     ]);
     expect(PUBLIC_TOOL_EXCEPTIONS.bash).toContain("native Bash");
