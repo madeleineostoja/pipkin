@@ -11,7 +11,12 @@ import {
   type SessionBeforeCompactEvent,
   type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
-import type { Api, Context, Model } from "@earendil-works/pi-ai";
+import {
+  getCurrentSystemMessage,
+  type Api,
+  type Context,
+  type Model,
+} from "@earendil-works/pi-ai";
 import type { ModelPreset } from "#lib/config";
 import { parseModelRef } from "#lib/model-ref";
 import {
@@ -25,6 +30,9 @@ const NATIVE_KIND = "pipkin-native-compaction";
 
 type ModelSelectEvent = Extract<ExtensionEvent, { type: "model_select" }>;
 type NativeAdapter = ReturnType<typeof createCodexOAuthAdapter>;
+type NativeEntry = CompactionEntry & {
+  details: NonNullable<ReturnType<NativeAdapter["validate"]>>;
+};
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type JsonObject = { [key: string]: Json };
 type CompactionHookResult =
@@ -137,6 +145,7 @@ export class CompactionCoordinator {
         "native-invalid",
         "Context: native checkpoint is invalid and was not sent to the provider.",
       );
+      ctx.abort();
       return undefined;
     }
     let result: unknown | undefined;
@@ -149,8 +158,9 @@ export class CompactionCoordinator {
       this.warn(
         ctx,
         "native-replay",
-        "Context: native checkpoint could not be safely replayed; the original request was left unchanged.",
+        "Context: native checkpoint could not be safely replayed; the request was aborted to preserve its context.",
       );
+      ctx.abort();
     }
     return result;
   }
@@ -261,7 +271,7 @@ export class CompactionCoordinator {
   private async nativeCompaction(
     event: SessionBeforeCompactEvent,
     ctx: ExtensionContext,
-    existing?: CompactionEntry,
+    existing?: NativeEntry,
   ): Promise<NativeCompactionOutcome> {
     if (!ctx.model) {
       return { kind: "unavailable" };
@@ -302,38 +312,22 @@ export class CompactionCoordinator {
           ctx,
           event.signal,
         );
-        const creation = await this.captureCreationItems(
-          existing,
-          event.branchEntries,
-          model,
-          resolvedAuth,
-          ctx,
-          event.signal,
-        );
         const replayed = this.adapter.replay(
           current,
           expected,
           existing.details,
           identity,
-          creation,
         );
         if (!replayed) {
           throw new CodexAdapterError("validation", "checkpoint replay failed");
         }
         Object.assign(current, replayed);
       }
-      const replacedItems = await this.newBoundaryItems(
-        event,
-        model,
-        resolvedAuth,
-        ctx,
-      );
       const checkpoint = await this.adapter.compact({
         identity,
         model,
         auth: resolvedAuth,
         payload: current,
-        replacedItems,
         lineage: {
           firstKeptEntryId: event.preparation.firstKeptEntryId,
           leafId: ctx.sessionManager.getLeafId(),
@@ -363,7 +357,7 @@ export class CompactionCoordinator {
   }
 
   private async replay(
-    entry: CompactionEntry,
+    entry: NativeEntry,
     payload: unknown,
     ctx: ExtensionContext,
   ): Promise<unknown | undefined> {
@@ -395,51 +389,7 @@ export class CompactionCoordinator {
       ctx,
       ctx.signal,
     );
-    const creation = await this.captureCreationItems(
-      entry,
-      entries,
-      model,
-      resolvedAuth,
-      ctx,
-      ctx.signal,
-    );
-    return this.adapter.replay(
-      payload,
-      expected,
-      entry.details,
-      identity,
-      creation,
-    );
-  }
-
-  private async newBoundaryItems(
-    event: SessionBeforeCompactEvent,
-    model: Model<"openai-codex-responses">,
-    auth: CaptureInput["auth"],
-    ctx: ExtensionContext,
-  ): Promise<Json[]> {
-    const entries = buildContextEntries(event.branchEntries);
-    const start = entries.findIndex(
-      (entry) => entry.id === event.preparation.firstKeptEntryId,
-    );
-    if (start < 0) {
-      throw new Error("missing compaction boundary");
-    }
-    return this.itemsFromContext(
-      model,
-      auth,
-      contextForSegment(
-        [
-          markerEntry(event.preparation.firstKeptEntryId),
-          ...entries.slice(start),
-        ],
-        event.branchEntries,
-        ctx,
-        this.options.tools?.(),
-      ),
-      ctx,
-      event.signal,
-    );
+    return this.adapter.replay(payload, expected, entry.details, identity);
   }
 
   private async captureItems(
@@ -459,33 +409,6 @@ export class CompactionCoordinator {
     );
   }
 
-  private async captureCreationItems(
-    entry: CompactionEntry,
-    entries: SessionEntry[],
-    model: Model<"openai-codex-responses">,
-    auth: CaptureInput["auth"],
-    ctx: ExtensionContext,
-    signal: AbortSignal | undefined,
-  ): Promise<Json[]> {
-    const index = entries.findIndex((item) => item.id === entry.id);
-    if (index < 0) {
-      throw new Error("native checkpoint is not on the active branch");
-    }
-    return this.itemsFromContext(
-      model,
-      auth,
-      checkpointSegment(
-        entry,
-        entries,
-        entries.slice(0, index + 1),
-        ctx,
-        this.options.tools?.(),
-      ),
-      ctx,
-      signal,
-    );
-  }
-
   private async itemsFromContext(
     model: Model<"openai-codex-responses">,
     auth: CaptureInput["auth"],
@@ -494,10 +417,7 @@ export class CompactionCoordinator {
     signal: AbortSignal | undefined,
   ): Promise<Json[]> {
     const payload = await this.capture(model, auth, context, ctx, signal);
-    if (!Array.isArray(payload.input) || !payload.input.every(isJson)) {
-      throw new Error("invalid Codex canonical input");
-    }
-    return payload.input;
+    return payload.input as Json[];
   }
 
   private capture(
@@ -602,7 +522,7 @@ function currentContext(
   ctx: ExtensionContext,
   tools: Context["tools"],
 ): Context {
-  return contextWithSystemFallback(
+  return contextWithCurrentSystem(
     convertToLlm(
       projectPersistedPruning(entries, buildSessionContext(entries).messages),
     ),
@@ -639,7 +559,7 @@ function contextForSegment(
   ctx: ExtensionContext,
   tools: Context["tools"],
 ): Context {
-  return contextWithSystemFallback(
+  return contextWithCurrentSystem(
     convertToLlm(
       projectPersistedPruning(
         pruningEntries,
@@ -651,36 +571,23 @@ function contextForSegment(
   );
 }
 
-function contextWithSystemFallback(
+function contextWithCurrentSystem(
   messages: Context["messages"],
   ctx: ExtensionContext,
   tools: Context["tools"],
 ): Context {
-  return messages[0]?.role === "system"
-    ? { messages }
-    : { systemPrompt: ctx.getSystemPrompt(), messages, tools };
-}
-
-function markerEntry(firstKeptEntryId: string): CompactionEntry {
+  // Pi's current prompt can be a forced projection not persisted in the branch.
+  // Codex collapses system transitions; use the same current prompt/tool state.
   return {
-    type: "compaction",
-    id: "pipkin-native-marker",
-    parentId: null,
-    timestamp: new Date(0).toISOString(),
-    summary:
-      "[Context compacted by OpenAI Codex. The authoritative prior context is an opaque provider checkpoint and is not portable to another model or provider.]",
-    firstKeptEntryId,
-    tokensBefore: 0,
+    systemPrompt: ctx.getSystemPrompt(),
+    messages: messages.filter((message) => message.role !== "system"),
+    tools: tools ?? getCurrentSystemMessage(messages)?.toolsAdded,
   };
 }
 
-function matchesLineage(
-  entry: CompactionEntry,
-  entries: SessionEntry[],
-): boolean {
-  const details = createCodexOAuthAdapter().validate(entry.details);
+function matchesLineage(entry: NativeEntry, entries: SessionEntry[]): boolean {
+  const details = entry.details;
   return (
-    !!details &&
     details.lineage.firstKeptEntryId === entry.firstKeptEntryId &&
     details.lineage.leafId === entry.parentId &&
     entries.some((item) => item.id === entry.id)
@@ -692,18 +599,15 @@ function latestNative(
 ):
   | { kind: "none" }
   | { kind: "candidate"; entry: CompactionEntry }
-  | { kind: "valid"; entry: CompactionEntry } {
+  | { kind: "valid"; entry: NativeEntry } {
   const entry = getLatestCompactionEntry(entries);
   if (!entry || !isNativeCandidate(entry.details)) {
     return { kind: "none" };
   }
-  return validateNative(entry.details)
-    ? { kind: "valid", entry }
+  const details = createCodexOAuthAdapter().validate(entry.details);
+  return details
+    ? { kind: "valid", entry: { ...entry, details } }
     : { kind: "candidate", entry };
-}
-
-function validateNative(details: unknown): boolean {
-  return createCodexOAuthAdapter().validate(details) !== undefined;
 }
 
 function isNativeCandidate(value: unknown): value is { kind: string } {
@@ -730,8 +634,8 @@ function nativeFailureReason(error: unknown): string {
       return "request aborted";
     case "auth":
       return "authentication failed";
-    case "timeout":
-      return "request timed out";
+    case "capture":
+      return "provider payload capture failed";
     case "transport":
       return "transport failed";
     case "http": {
@@ -753,21 +657,4 @@ function isCodexSurface(model: Model<Api>): boolean {
 
 function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isJson(value: unknown): value is Json {
-  if (
-    value === null ||
-    typeof value === "boolean" ||
-    typeof value === "string"
-  ) {
-    return true;
-  }
-  if (typeof value === "number") {
-    return Number.isFinite(value);
-  }
-  if (Array.isArray(value)) {
-    return value.every(isJson);
-  }
-  return isJsonObject(value) && Object.values(value).every(isJson);
 }

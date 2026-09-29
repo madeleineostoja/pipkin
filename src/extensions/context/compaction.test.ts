@@ -1,5 +1,6 @@
 import {
   SessionManager,
+  convertToLlm,
   type ExtensionContext,
   type SessionBeforeCompactEvent,
 } from "@earendil-works/pi-coding-agent";
@@ -13,6 +14,8 @@ import { createCompactionCoordinator } from "./compaction.ts";
 import {
   CodexAdapterError,
   createNativeCheckpoint,
+  createCodexOAuthAdapter,
+  createCodexIdentity,
 } from "./codex-oauth-adapter.ts";
 
 const model = {
@@ -338,20 +341,20 @@ describe("CompactionCoordinator textual route", () => {
     );
 
     compact.mockRejectedValueOnce(
-      new CodexAdapterError("timeout", "Codex request timed out"),
+      new CodexAdapterError("capture", "payload capture failed"),
     );
     response.mockRejectedValueOnce(new Error("low model unavailable"));
     await expect(
       coordinator.beforeCompact(nativeEvent, ctx),
     ).resolves.toBeUndefined();
     expect(reportNativeFailure).toHaveBeenLastCalledWith(
-      "request timed out",
+      "provider payload capture failed",
       "pi",
     );
     expect(streamSimple).toHaveBeenCalledTimes(5);
   });
 
-  it("converts prior Pi compaction summaries before native serializer capture", async () => {
+  it("uses Pi's current prompt while converting prior compaction summaries", async () => {
     const nativeModel = {
       ...model,
       id: "gpt-5-codex",
@@ -452,10 +455,12 @@ describe("CompactionCoordinator textual route", () => {
       tools?: unknown[];
       messages: Array<{ role: string; content: unknown }>;
     };
-    expect(current.systemPrompt).toBeUndefined();
-    expect(current.tools).toBeUndefined();
-    expect(current.messages[0]).toEqual(
-      expect.objectContaining({ role: "system", content: "persisted prompt" }),
+    expect(current.systemPrompt).toBe("system");
+    expect(current.tools).toEqual([
+      expect.objectContaining({ name: "persisted_tool" }),
+    ]);
+    expect(current.messages.some((message) => message.role === "system")).toBe(
+      false,
     );
 
     const captured = capture.mock.calls.flatMap(
@@ -476,7 +481,7 @@ describe("CompactionCoordinator textual route", () => {
     );
   });
 
-  it("restores checkpoint replay on resume and containing forks but not forks before it", async () => {
+  it("replays persisted checkpoints across forks, resume, and another native compaction", async () => {
     const nativeModel = {
       ...model,
       id: "gpt-5-codex",
@@ -484,18 +489,34 @@ describe("CompactionCoordinator textual route", () => {
       api: "openai-codex-responses",
       baseUrl: "https://chatgpt.com/backend-api",
     } as Model<"openai-codex-responses">;
+    const apiKey = `header.${Buffer.from(
+      JSON.stringify({
+        "https://api.openai.com/auth": { chatgpt_account_id: "account" },
+      }),
+    ).toString("base64url")}.signature`;
+    const auth = { ok: true as const, apiKey };
+    const fetch = vi.fn(
+      async (_url: URL | RequestInfo, _init?: RequestInit) =>
+        new Response(
+          [
+            {
+              type: "response.output_item.done",
+              item: {
+                type: "compaction",
+                id: "cmp-next",
+                encrypted_content: "next opaque",
+              },
+            },
+            { type: "response.completed", response: { status: "completed" } },
+          ]
+            .map((item) => `data: ${JSON.stringify(item)}\n\n`)
+            .join(""),
+        ),
+    );
+    const adapter = createCodexOAuthAdapter({ fetch });
     const checkpoint = createNativeCheckpoint({
-      identity: {
-        provider: "openai-codex",
-        api: "openai-codex-responses",
-        model: nativeModel.id,
-        endpoint: "https://chatgpt.com/backend-api/codex/responses",
-        authMode: "oauth",
-        accountFingerprint: "a".repeat(64),
-        protocol: "pipkin-codex-compaction-trigger-v1",
-      },
+      identity: createCodexIdentity(nativeModel, auth, true)!,
       artifact: [{ type: "compaction", encrypted_content: "opaque" }],
-      replacedItems: [{ type: "message", role: "user", content: "kept" }],
       lineage: { firstKeptEntryId: "kept", leafId: "kept" },
       usage,
     });
@@ -528,20 +549,10 @@ describe("CompactionCoordinator textual route", () => {
         message: { role: "user" as const, content: "later", timestamp: 3 },
       },
     ];
-    const capture = vi.fn(
-      async ({ context }: { context: { messages: unknown[] } }) => ({
-        input: context.messages,
-      }),
-    );
-    const replay = vi.fn((payload: unknown, _expected: unknown[]) => payload);
     const coordinator = createCompactionCoordinator({
       low: { model: "test/low-model", thinking: "low" },
       configPath: "config.json",
-      adapter: {
-        supports: () => checkpoint.details.identity,
-        capture,
-        replay,
-      } as never,
+      adapter,
     });
     const restoredEntries = () => JSON.parse(JSON.stringify(entries)) as never;
     const resumed = SessionManager.inMemory(
@@ -565,38 +576,80 @@ describe("CompactionCoordinator textual route", () => {
       ({
         model: nativeModel,
         modelRegistry: {
-          getApiKeyAndHeaders: vi.fn(async () => ({
-            ok: true,
-            apiKey: "token",
-          })),
+          getApiKeyAndHeaders: vi.fn(async () => auth),
           isUsingOAuth: vi.fn(() => true),
         },
+        abort: vi.fn(),
         ui: { notify: vi.fn() },
         sessionManager,
-        getSystemPrompt: () => "system",
+        getSystemPrompt: () => "current forced prompt ".repeat(2_000),
       }) as unknown as ExtensionContext;
-    const payload = {
-      input: [{ type: "marker" }, { type: "kept" }, { type: "later" }],
-    };
-
-    await expect(
-      coordinator.beforeProviderRequest(payload, contextFor(resumed)),
-    ).resolves.toBe(payload);
-    await expect(
-      coordinator.beforeProviderRequest(payload, contextFor(containingFork)),
-    ).resolves.toBe(payload);
+    const payloadFor = (sessionManager: SessionManager) =>
+      adapter.capture({
+        model: nativeModel,
+        auth,
+        context: {
+          systemPrompt: contextFor(sessionManager).getSystemPrompt(),
+          messages: convertToLlm(
+            sessionManager.buildSessionContext().messages,
+          ).filter((message) => message.role !== "system"),
+        },
+      });
+    const payload = await payloadFor(resumed);
+    const replayed = (await coordinator.beforeProviderRequest(
+      payload,
+      contextFor(resumed),
+    )) as typeof payload;
+    expect(replayed.input).toEqual([
+      ...checkpoint.details.checkpoint.artifact,
+      { role: "user", content: [{ type: "input_text", text: "later" }] },
+    ]);
+    expect(replayed.instructions).toBe(payload.instructions);
+    const forkPayload = await payloadFor(containingFork);
+    const forkReplayed = (await coordinator.beforeProviderRequest(
+      forkPayload,
+      contextFor(containingFork),
+    )) as typeof payload;
+    expect(forkReplayed.input).toEqual(checkpoint.details.checkpoint.artifact);
     await expect(
       coordinator.beforeProviderRequest(
-        payload,
+        await payloadFor(forkBeforeCheckpoint),
         contextFor(forkBeforeCheckpoint),
       ),
     ).resolves.toBeUndefined();
 
-    expect(replay).toHaveBeenCalledTimes(2);
-    const expectedItems = replay.mock.calls[0]?.[1] ?? [];
-    expect(JSON.stringify(expectedItems)).toContain(checkpoint.summary);
-    expect(JSON.stringify(expectedItems)).toContain("kept");
-    expect(JSON.stringify(expectedItems)).not.toContain("later");
+    const compacted = await coordinator.beforeCompact(
+      event({
+        branchEntries: resumed.getBranch(),
+        preparation: { ...event().preparation, firstKeptEntryId: "later" },
+      }),
+      contextFor(resumed),
+    );
+    expect(compacted).toHaveProperty("compaction");
+    if (!compacted || !("compaction" in compacted)) {
+      throw new Error("expected native compaction");
+    }
+    const sent = JSON.parse(fetch.mock.calls[0]?.[1]?.body as string);
+    expect(sent.input).toEqual([
+      ...checkpoint.details.checkpoint.artifact,
+      { role: "user", content: [{ type: "input_text", text: "later" }] },
+      { type: "compaction_trigger" },
+    ]);
+    const next = compacted.compaction;
+    resumed.appendCompaction(
+      next.summary,
+      next.firstKeptEntryId,
+      next.tokensBefore,
+      next.details,
+    );
+    const nextReplayed = (await coordinator.beforeProviderRequest(
+      await payloadFor(resumed),
+      contextFor(resumed),
+    )) as typeof payload;
+    expect(nextReplayed.input).toEqual([
+      { role: "user", content: [{ type: "input_text", text: "later" }] },
+      { type: "compaction", id: "cmp-next", encrypted_content: "next opaque" },
+    ]);
   });
 
   it("does not replay a checkpoint whose persisted lineage differs from its entry", async () => {
@@ -618,7 +671,6 @@ describe("CompactionCoordinator textual route", () => {
         protocol: "pipkin-codex-compaction-trigger-v1",
       },
       artifact: [{ type: "compaction", encrypted_content: "opaque" }],
-      replacedItems: [{ type: "message", role: "user", content: "old" }],
       lineage: { firstKeptEntryId: "tampered", leafId: "kept" },
       usage,
     });
@@ -654,7 +706,9 @@ describe("CompactionCoordinator textual route", () => {
         replay,
       } as never,
     });
+    const abort = vi.fn();
     const ctx = {
+      abort,
       model: nativeModel,
       modelRegistry: {
         getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "token" })),
@@ -668,6 +722,7 @@ describe("CompactionCoordinator textual route", () => {
       coordinator.beforeProviderRequest({ input: [] }, ctx),
     ).resolves.toBeUndefined();
     expect(replay).not.toHaveBeenCalled();
+    expect(abort).toHaveBeenCalledOnce();
     expect(notify).toHaveBeenCalledWith(
       expect.stringContaining("could not be safely replayed"),
       "warning",

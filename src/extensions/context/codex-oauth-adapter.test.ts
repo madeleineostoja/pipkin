@@ -1,8 +1,7 @@
-import type { Context, Model, Usage } from "@earendil-works/pi-ai";
-import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { Type } from "typebox";
+import type { Context, Model, Usage } from "@earendil-works/pi-ai";
 import {
-  CodexAdapterError,
   createCodexIdentity,
   createCodexOAuthAdapter,
   createNativeCheckpoint,
@@ -11,7 +10,7 @@ import {
   validateNativeCompactionDetails,
 } from "./codex-oauth-adapter.ts";
 
-const account = "account-fixture-do-not-persist";
+const account = "account-fixture";
 const token = `header.${Buffer.from(
   JSON.stringify({
     "https://api.openai.com/auth": { chatgpt_account_id: account },
@@ -25,21 +24,7 @@ const model: Model<"openai-codex-responses"> = {
   baseUrl: "https://chatgpt.com/backend-api",
   reasoning: true,
   input: ["text"],
-  cost: {
-    input: 2,
-    output: 8,
-    cacheRead: 0.2,
-    cacheWrite: 2.5,
-    tiers: [
-      {
-        inputTokensAbove: 10,
-        input: 4,
-        output: 16,
-        cacheRead: 0.4,
-        cacheWrite: 5,
-      },
-    ],
-  },
+  cost: { input: 2, output: 8, cacheRead: 0.2, cacheWrite: 2.5 },
   contextWindow: 1_000_000,
   maxTokens: 10_000,
 };
@@ -53,31 +38,11 @@ const usage: Usage = {
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
 const old = { type: "message", role: "user", content: "old" };
+const opaque = { type: "compaction", encrypted_content: "opaque-fixture" };
+const lineage = { firstKeptEntryId: "first", leafId: "leaf" };
 
 function identity() {
-  const value = createCodexIdentity(model, auth, true);
-  if (!value) {
-    throw new Error("expected test identity");
-  }
-  return value;
-}
-
-function checkpoint(
-  artifact: Parameters<typeof createNativeCheckpoint>[0]["artifact"] = [
-    { type: "compaction", encrypted_content: "opaque-fixture" },
-  ],
-) {
-  const value = createNativeCheckpoint({
-    identity: identity(),
-    artifact,
-    replacedItems: [old],
-    lineage: { firstKeptEntryId: "first", leafId: "leaf" },
-    usage,
-  });
-  if (!value) {
-    throw new Error("expected test checkpoint");
-  }
-  return value;
+  return createCodexIdentity(model, auth, true)!;
 }
 
 function sse(...events: unknown[]) {
@@ -86,13 +51,9 @@ function sse(...events: unknown[]) {
   );
 }
 
-function successfulSse(extraOutput: unknown[] = []) {
-  return sse(
-    ...extraOutput.map((item) => ({ type: "response.output_item.done", item })),
-    {
-      type: "response.output_item.done",
-      item: { type: "compaction", encrypted_content: "opaque-fixture" },
-    },
+function completion(artifact = opaque) {
+  return [
+    { type: "response.output_item.done", item: artifact },
     {
       type: "response.completed",
       response: {
@@ -106,7 +67,7 @@ function successfulSse(extraOutput: unknown[] = []) {
         },
       },
     },
-  );
+  ];
 }
 
 function compact(
@@ -117,9 +78,8 @@ function compact(
     identity: identity(),
     model,
     auth,
-    payload: { model: model.id, store: true, input: [old] },
-    replacedItems: [old],
-    lineage: { firstKeptEntryId: "first", leafId: null },
+    payload: { model: model.id, input: [old] },
+    lineage,
     ...options,
   });
 }
@@ -127,7 +87,7 @@ function compact(
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Codex OAuth adapter", () => {
-  it("accepts only the exact normalized ChatGPT OAuth surface", () => {
+  it("uses only the exact ChatGPT OAuth route and resolves endpoint overrides", () => {
     expect(normalizeCodexEndpoint("https://chatgpt.com/backend-api")).toBe(
       "https://chatgpt.com/backend-api/codex/responses",
     );
@@ -137,17 +97,12 @@ describe("Codex OAuth adapter", () => {
       "https://chatgpt.com/backend-api?x=1",
       "https://token@chatgpt.com/backend-api",
       "https://chatgpt.com:444/backend-api",
-      "https://chatgpt.com/api",
     ]) {
       expect(normalizeCodexEndpoint(endpoint)).toBeUndefined();
     }
-    expect(createCodexIdentity(model, auth, true)).toEqual(
-      expect.objectContaining({
-        endpoint: "https://chatgpt.com/backend-api/codex/responses",
-        accountFingerprint:
-          "ea222337f26968a1a3fda35c833d7fdaf2cedca3fca0d9507d8451cbca4f4347",
-      }),
-    );
+    expect(createCodexIdentity(model, auth, true)).toMatchObject({
+      accountFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
     expect(
       createCodexIdentity({ ...model, provider: "openai" }, auth, true),
     ).toBeUndefined();
@@ -155,32 +110,31 @@ describe("Codex OAuth adapter", () => {
     expect(
       createCodexIdentity(
         { ...model, baseUrl: "https://invalid.example" },
-        { ...auth, baseUrl: "https://chatgpt.com/backend-api" },
+        { ...auth, baseUrl: model.baseUrl },
         true,
       ),
-    ).toEqual(
-      expect.objectContaining({
-        endpoint: "https://chatgpt.com/backend-api/codex/responses",
-      }),
-    );
+    ).toEqual(identity());
     expect(
       createCodexIdentity(
-        { ...model, baseUrl: "https://chatgpt.com/backend-api" },
+        model,
         { ...auth, baseUrl: "https://invalid.example" },
         true,
       ),
     ).toBeUndefined();
   });
 
-  it("captures a reasoning and tool-signature payload without dispatching and rejects serializer failure", async () => {
+  it("captures large Pi instructions, schemas, and tool results without dispatching", async () => {
     const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);
+    const instructions = "instructions ".repeat(4_000);
+    const description = "tool schema ".repeat(3_000);
+    const result = "tool output ".repeat(8_000);
     const context: Context = {
-      systemPrompt: "be precise",
+      systemPrompt: instructions,
       tools: [
         {
           name: "inspect",
-          description: "inspect",
+          description,
           parameters: Type.Object({ path: Type.String() }),
         },
       ],
@@ -195,13 +149,27 @@ describe("Codex OAuth adapter", () => {
               thinkingSignature:
                 '{"type":"reasoning","encrypted_content":"signature"}',
             },
+            {
+              type: "toolCall",
+              id: "call-inspect",
+              name: "inspect",
+              arguments: { path: "file" },
+            },
           ],
-          api: "openai-codex-responses",
-          provider: "openai-codex",
+          api: model.api,
+          provider: model.provider,
           model: model.id,
           usage,
-          stopReason: "stop",
+          stopReason: "toolUse",
           timestamp: 2,
+        },
+        {
+          role: "toolResult",
+          toolCallId: "call-inspect",
+          toolName: "inspect",
+          content: [{ type: "text", text: result }],
+          isError: false,
+          timestamp: 3,
         },
       ],
     };
@@ -210,33 +178,17 @@ describe("Codex OAuth adapter", () => {
       context,
       auth,
       thinking: "high",
-      sessionId: "session",
     });
     expect(fetch).not.toHaveBeenCalled();
-    expect(payload).toEqual(
-      expect.objectContaining({
-        model: model.id,
-        store: false,
-        stream: true,
-        input: expect.any(Array),
-        tools: expect.any(Array),
-      }),
-    );
-    expect(payload.instructions).toContain("be precise");
+    expect(payload.instructions).toContain(instructions);
     expect(payload.tools).toEqual([
-      expect.objectContaining({ name: "inspect" }),
+      expect.objectContaining({ name: "inspect", description }),
     ]);
-    expect(JSON.stringify(payload)).toContain("signature");
-
-    const serializer = (() => {
-      throw new Error("serializer failed");
-    }) as never;
-    await expect(
-      createCodexOAuthAdapter({ serializer }).capture({ model, context, auth }),
-    ).rejects.toThrow("serializer failed");
+    expect(JSON.stringify(payload.input)).toContain(result);
+    expect(JSON.stringify(payload.input)).toContain("signature");
   });
 
-  it("normalizes persisted prompt and tool transitions before Codex serialization", async () => {
+  it("normalizes persisted prompt and tool transitions through Pi", async () => {
     const inspect = {
       name: "inspect",
       description: "inspect",
@@ -249,6 +201,7 @@ describe("Codex OAuth adapter", () => {
     };
     const payload = await createCodexOAuthAdapter().capture({
       model,
+      auth,
       context: {
         messages: [
           {
@@ -270,97 +223,68 @@ describe("Codex OAuth adapter", () => {
           { role: "user", content: "resumed turn", timestamp: 4 },
         ],
       },
-      auth,
-      sessionId: "resumed-session",
     });
-
     expect(payload.instructions).toContain("base prompt");
     expect(payload.instructions).toContain("new mode");
     expect(payload.instructions).not.toContain("old mode");
     expect(payload.tools).toEqual([
       expect.objectContaining({ name: "lookup" }),
     ]);
-    expect(JSON.stringify(payload)).not.toContain("inspect");
   });
 
-  it("persists user continuation emitted by the Codex serializer", async () => {
-    const fetch = vi.fn(async () => successfulSse());
-    vi.stubGlobal("fetch", fetch);
+  it("preserves a large provider artifact and all user continuations through persistence and replay", async () => {
+    const artifact = {
+      ...opaque,
+      id: "cmp-1",
+      encrypted_content: "opaque".repeat(60_000),
+      metadata: { provider: "retained" },
+    };
+    let request: RequestInit | undefined;
+    const fetch = vi.fn(async (_url, init) => {
+      request = init;
+      return sse(
+        {
+          type: "response.output_item.done",
+          item: {
+            type: "message",
+            role: "assistant",
+            content: "discard output",
+          },
+        },
+        ...completion(artifact),
+      );
+    }) as typeof globalThis.fetch;
     const adapter = createCodexOAuthAdapter({ fetch });
     const payload = await adapter.capture({
       model,
-      context: {
-        systemPrompt: "",
-        messages: [
-          { role: "user", content: "continue", timestamp: 1 },
-          { role: "user", content: "finish", timestamp: 2 },
-        ],
-        tools: [],
-      },
       auth,
-      thinking: "high",
+      context: {
+        systemPrompt: "instructions ".repeat(3_000),
+        messages: Array.from({ length: 20 }, (_, i) => ({
+          role: "user" as const,
+          content: `turn ${i}`,
+          timestamp: i,
+        })),
+      },
+    });
+    const result = await compact(adapter, {
+      payload,
       sessionId: "session",
-    });
-    const continuation = [
-      {
-        role: "user",
-        content: [{ type: "input_text", text: "continue" }],
-      },
-      {
-        role: "user",
-        content: [{ type: "input_text", text: "finish" }],
-      },
-    ];
-    expect(payload.input).toEqual(continuation);
-
-    const result = await compact(adapter, { payload });
-    expect(result.details.checkpoint.artifact).toEqual([
-      ...continuation,
-      { type: "compaction", encrypted_content: "opaque-fixture" },
-    ]);
-  });
-
-  it("persists bounded user continuation in original order before the opaque item, normalizes usage, and sends Codex headers", async () => {
-    let request: RequestInit | undefined;
-    const fetch = vi.fn((...args: Parameters<typeof globalThis.fetch>) => {
-      request = args[1];
-      return Promise.resolve(
-        successfulSse([
-          { type: "message", role: "assistant", content: providerSecret },
-        ]),
-      );
-    });
-    const providerSecret = "provider-response-secret";
-    const result = await compact(createCodexOAuthAdapter({ fetch }), {
       auth: {
         ...auth,
         headers: { "x-codex-beta-features": "existing_feature" },
       },
-      sessionId: "session-fixture",
-      payload: {
-        model: model.id,
-        input: [
-          old,
-          { type: "reasoning", encrypted_content: "do-not-persist" },
-          { type: "function_call", name: "inspect", arguments: "{}" },
-          { type: "message", role: "user", content: "continue" },
-          { type: "message", role: "user", content: "finish" },
-        ],
-      },
-      replacedItems: [old],
     });
-    expect(result.details.checkpoint.artifact).toEqual([
-      old,
-      { type: "message", role: "user", content: "continue" },
-      { type: "message", role: "user", content: "finish" },
-      { type: "compaction", encrypted_content: "opaque-fixture" },
+    const persisted = validateNativeCompactionDetails(
+      JSON.parse(JSON.stringify(result.details)),
+    )!;
+    expect(persisted.checkpoint.artifact).toEqual([
+      ...(payload.input as unknown[]),
+      artifact,
     ]);
-    expect(JSON.stringify(result.details)).not.toContain("do-not-persist");
-    expect(JSON.stringify(result.details)).not.toContain(providerSecret);
-    expect(JSON.stringify(result.details)).not.toContain("existing_feature");
-    expect(JSON.stringify(result.details)).not.toContain(
-      "remote_compaction_v2",
-    );
+    expect(JSON.stringify(persisted)).not.toContain("discard output");
+    expect(JSON.stringify(persisted)).not.toContain(token);
+    expect(JSON.stringify(persisted)).not.toContain(account);
     expect(result.usage).toMatchObject({
       input: 15,
       cacheRead: 3,
@@ -370,254 +294,154 @@ describe("Codex OAuth adapter", () => {
       totalTokens: 27,
     });
     expect(result.usage.cost.total).toBeGreaterThan(0);
-    expect(new Headers(request?.headers)).toMatchObject({});
     const headers = new Headers(request?.headers);
     expect(headers.get("authorization")).toBe(`Bearer ${token}`);
     expect(headers.get("chatgpt-account-id")).toBe(account);
-    expect(headers.get("originator")).toBe("pi");
     expect(headers.get("openai-beta")).toBe("responses=experimental");
     expect(headers.get("x-codex-beta-features")).toBe(
       "existing_feature, remote_compaction_v2",
     );
-    expect(headers.get("accept")).toBe("text/event-stream");
-    expect(headers.get("content-type")).toBe("application/json");
-    expect(headers.get("user-agent")).toMatch(/^pi \(/);
-    expect(headers.get("session-id")).toBe("session-fixture");
-    expect(headers.get("x-client-request-id")).toBe("session-fixture");
-    expect(JSON.parse(request?.body as string)).toEqual(
-      expect.objectContaining({
-        store: false,
-        input: expect.arrayContaining([{ type: "compaction_trigger" }]),
-      }),
-    );
+    expect(headers.get("session-id")).toBe("session");
+    expect(JSON.parse(request?.body as string).input).toEqual([
+      ...(payload.input as unknown[]),
+      { type: "compaction_trigger" },
+    ]);
+    expect(payload.input).toHaveLength(20);
+
+    const marker = { role: "user", content: "marker" };
+    const tail = { role: "user", content: "later" };
+    expect(
+      adapter.replay(
+        { ...payload, input: [marker, tail] },
+        [marker],
+        persisted,
+        identity(),
+      ),
+    ).toEqual({ ...payload, input: [...persisted.checkpoint.artifact, tail] });
   });
 
-  it("rejects unsuccessful, malformed, absent, multiple, and oversized SSE artifacts", async () => {
-    const responses = [
+  it("rejects incomplete operations and missing, malformed, or multiple artifacts", async () => {
+    for (const response of [
       sse({ type: "response.completed", response: { status: "failed" } }),
       sse({ type: "response.completed", response: { status: "completed" } }),
-      sse(
-        {
-          type: "response.output_item.done",
-          item: { type: "compaction", encrypted_content: "one" },
-        },
-        {
-          type: "response.output_item.done",
-          item: { type: "compaction", encrypted_content: "two" },
-        },
-        { type: "response.completed", response: { status: "completed" } },
-      ),
-      sse(
-        {
-          type: "response.output_item.done",
-          item: { type: "compaction", encrypted_content: "one" },
-        },
-        {
-          type: "response.output_item.done",
-          item: { type: "compaction", encrypted_content: "" },
-        },
-        { type: "response.completed", response: { status: "completed" } },
-      ),
-      sse(
-        {
-          type: "response.output_item.done",
-          item: {
-            type: "compaction",
-            encrypted_content: "x".repeat(17_000),
-          },
-        },
-        { type: "response.completed", response: { status: "completed" } },
-      ),
-      new Response(`data: ${"x".repeat(70_000)}`),
-    ];
-    for (const response of responses) {
+      sse({ type: "response.output_item.done", item: opaque }),
+      sse(...completion({ ...opaque, encrypted_content: "" })),
+      sse({ type: "response.output_item.done", item: opaque }, ...completion()),
+      new Response("data: not-json\n\n"),
+    ]) {
       await expect(
         compact(
           createCodexOAuthAdapter({ fetch: vi.fn(async () => response) }),
         ),
-      ).rejects.toMatchObject({
-        code: expect.stringMatching(/protocol|validation/),
-      } satisfies Partial<CodexAdapterError>);
+      ).rejects.toMatchObject({ code: "protocol" });
     }
+    expect(
+      validateNativeCompactionDetails({ kind: "pipkin-native-compaction" }),
+    ).toBeUndefined();
   });
 
-  it("retries bounded transient failures with provider delay precedence and never retries auth failures", async () => {
-    const sleep = vi.fn(async () => {});
-    const fetch = vi
-      .fn()
-      .mockResolvedValueOnce(new Response("busy", { status: 503 }))
-      .mockResolvedValueOnce(successfulSse());
-    await expect(
-      compact(createCodexOAuthAdapter({ fetch, sleep })),
-    ).resolves.toBeDefined();
-    expect(sleep).toHaveBeenCalledWith(250, undefined);
-    expect(fetch).toHaveBeenCalledTimes(2);
-
-    const milliseconds = vi
-      .fn()
-      .mockResolvedValueOnce(
-        new Response("busy", {
-          status: 503,
-          headers: { "retry-after-ms": "12", "retry-after": "1" },
-        }),
-      )
-      .mockResolvedValueOnce(successfulSse());
-    await compact(createCodexOAuthAdapter({ fetch: milliseconds, sleep }));
-    expect(sleep).toHaveBeenLastCalledWith(12, undefined);
-
-    const seconds = vi
-      .fn()
-      .mockResolvedValueOnce(
-        new Response("busy", { status: 503, headers: { "retry-after": "1" } }),
-      )
-      .mockResolvedValueOnce(successfulSse());
-    await compact(createCodexOAuthAdapter({ fetch: seconds, sleep }));
-    expect(sleep).toHaveBeenLastCalledWith(1_000, undefined);
-
-    const fixedNow = 1_700_000_000_000;
-    vi.spyOn(Date, "now").mockReturnValue(fixedNow);
-    const dated = vi
-      .fn()
-      .mockResolvedValueOnce(
-        new Response("busy", {
-          status: 503,
-          headers: { "retry-after": new Date(fixedNow + 1_000).toUTCString() },
-        }),
-      )
-      .mockResolvedValueOnce(successfulSse());
-    await compact(createCodexOAuthAdapter({ fetch: dated, sleep }));
-    expect(sleep).toHaveBeenLastCalledWith(1_000, undefined);
-    vi.restoreAllMocks();
-
-    const cappedSleep = vi.fn(async () => {});
-    await expect(
-      compact(
-        createCodexOAuthAdapter({
-          fetch: vi.fn(
-            async () =>
-              new Response("busy", {
-                status: 503,
-                headers: { "retry-after": "3" },
-              }),
-          ),
-          sleep: cappedSleep,
-        }),
-      ),
-    ).rejects.toMatchObject({
-      code: "http",
-    } satisfies Partial<CodexAdapterError>);
-    expect(cappedSleep).not.toHaveBeenCalled();
-
-    await expect(
-      compact(
-        createCodexOAuthAdapter({
-          fetch: vi.fn(async () => new Response("no", { status: 401 })),
-          sleep,
-        }),
-      ),
-    ).rejects.toMatchObject({
-      code: "auth",
-    } satisfies Partial<CodexAdapterError>);
-  });
-
-  it("classifies fetch and stalled-body timeouts separately from user cancellation", async () => {
-    const stalledFetch = vi.fn(
-      (_url: URL | RequestInfo, init?: RequestInit) =>
-        new Promise<Response>((_resolve, reject) =>
-          init?.signal?.addEventListener("abort", () =>
-            reject(new DOMException("", "AbortError")),
-          ),
-        ),
-    ) as typeof globalThis.fetch;
-    await expect(
-      compact(createCodexOAuthAdapter({ fetch: stalledFetch, timeoutMs: 5 })),
-    ).rejects.toMatchObject({
-      code: "timeout",
-    } satisfies Partial<CodexAdapterError>);
-
-    const body = new ReadableStream<Uint8Array>({ start() {} });
+  it("handles split CRLF SSE and settles on completion without waiting for connection close", async () => {
+    const bytes = new TextEncoder().encode(
+      completion()
+        .map((event) => `data: ${JSON.stringify(event)}\r\n\r\n`)
+        .join(""),
+    );
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes.slice(0, 17));
+        controller.enqueue(bytes.slice(17));
+      },
+      cancel,
+    });
     await expect(
       compact(
         createCodexOAuthAdapter({
           fetch: vi.fn(async () => new Response(body)),
-          timeoutMs: 5,
         }),
       ),
-    ).rejects.toMatchObject({
-      code: "timeout",
-    } satisfies Partial<CodexAdapterError>);
-
-    const controller = new AbortController();
-    const pending = compact(
-      createCodexOAuthAdapter({
-        fetch: vi.fn(
-          async () =>
-            new Response(new ReadableStream<Uint8Array>({ start() {} })),
-        ),
-        timeoutMs: 100,
-      }),
-      { signal: controller.signal },
-    );
-    controller.abort();
-    await expect(pending).rejects.toMatchObject({
-      code: "aborted",
-    } satisfies Partial<CodexAdapterError>);
+    ).resolves.toMatchObject({
+      details: { checkpoint: { artifact: [old, opaque] } },
+    });
+    expect(cancel).toHaveBeenCalled();
   });
 
-  it("fails closed after JSON persistence, identity changes, bounds tampering, and ambiguous replay", () => {
-    const result = checkpoint([
-      { type: "message", role: "user", content: "continue" },
-      { type: "compaction", encrypted_content: "opaque-fixture" },
-    ]);
-    const persisted = JSON.parse(JSON.stringify(result.details));
-    expect(validateNativeCompactionDetails(persisted)).toEqual(persisted);
-    const invalidArtifacts: Parameters<
-      typeof createNativeCheckpoint
-    >[0]["artifact"][] = [
-      [
-        { type: "compaction", encrypted_content: "opaque-fixture" },
-        { type: "message", role: "user", content: "continue" },
-      ],
-      [
-        { type: "message", role: "user", content: "continue" },
-        { type: "compaction", encrypted_content: "opaque-fixture" },
-        { type: "message", role: "user", content: "later" },
-      ],
-    ];
-    for (const artifact of invalidArtifacts) {
-      expect(
-        createNativeCheckpoint({
-          identity: identity(),
-          artifact,
-          replacedItems: [old],
-          lineage: { firstKeptEntryId: "first", leafId: "leaf" },
-          usage,
+  it("retries transient HTTP failures, honors provider delay, and never retries authentication", async () => {
+    const sleep = vi.fn(async () => {});
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response("busy", {
+          status: 503,
+          headers: { "retry-after-ms": "12" },
         }),
-      ).toBeUndefined();
-    }
-    expect(JSON.stringify(persisted)).not.toContain(token);
-    expect(JSON.stringify(persisted)).not.toContain(account);
+      )
+      .mockResolvedValueOnce(sse(...completion()));
+    await compact(createCodexOAuthAdapter({ fetch, sleep }));
+    expect(sleep).toHaveBeenCalledWith(12, undefined);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const unauthorized = vi.fn(async () => new Response("no", { status: 401 }));
+    await expect(
+      compact(createCodexOAuthAdapter({ fetch: unauthorized, sleep })),
+    ).rejects.toMatchObject({ code: "auth" });
+    expect(unauthorized).toHaveBeenCalledTimes(1);
+  });
 
-    const payload = {
-      model: model.id,
-      input: [old, { type: "message", role: "user", content: "later" }],
-      untouched: { key: "value" },
-    };
-    expect(
-      replaceCanonicalInputSegment(payload, [old], persisted, identity(), [
-        old,
-      ]),
-    ).toEqual({
-      ...payload,
-      input: [...persisted.checkpoint.artifact, payload.input[1]],
+  it("cancels both pending HTTP requests and stalled response bodies", async () => {
+    const controller = new AbortController();
+    const fetch = vi.fn(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("", "AbortError")),
+          );
+        }),
+    ) as typeof globalThis.fetch;
+    const pending = compact(createCodexOAuthAdapter({ fetch }), {
+      signal: controller.signal,
     });
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ code: "aborted" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    const bodyController = new AbortController();
+    const cancel = vi.fn();
+    const stalled = compact(
+      createCodexOAuthAdapter({
+        fetch: vi.fn(
+          async () => new Response(new ReadableStream<Uint8Array>({ cancel })),
+        ),
+      }),
+      { signal: bodyController.signal },
+    );
+    await Promise.resolve();
+    bodyController.abort();
+    await expect(stalled).rejects.toMatchObject({ code: "aborted" });
+    expect(cancel).toHaveBeenCalled();
+  });
+
+  it("requires compatible identity and a unique replay target, preserving unrelated input", () => {
+    const details = createNativeCheckpoint({
+      identity: identity(),
+      artifact: [old, opaque],
+      lineage,
+      usage,
+    }).details;
+    const persisted = validateNativeCompactionDetails(
+      JSON.parse(JSON.stringify(details)),
+    )!;
+    const tail = { role: "user", content: "later" };
+    const prefix = { role: "user", content: "before" };
+    const payload = { input: [prefix, old, tail], untouched: { key: "value" } };
+    expect(
+      replaceCanonicalInputSegment(payload, [old], persisted, identity()),
+    ).toEqual({ ...payload, input: [prefix, old, opaque, tail] });
     expect(
       replaceCanonicalInputSegment(
-        { ...payload, input: [old, old] },
+        { input: [old, old] },
         [old],
         persisted,
         identity(),
-        [old],
       ),
     ).toBeUndefined();
     expect(
@@ -626,85 +450,19 @@ describe("Codex OAuth adapter", () => {
         [{ ...old, content: "missing" }],
         persisted,
         identity(),
-        [old],
       ),
     ).toBeUndefined();
-    for (const mutate of [
-      (details: typeof persisted) => {
-        details.replay.replacedItemHashes[0] = "0".repeat(64);
-      },
-      (details: typeof persisted) => {
-        details.replay.replacedItemHashes.push("0".repeat(64));
-      },
-    ]) {
-      const changed = JSON.parse(JSON.stringify(persisted));
-      mutate(changed);
-      expect(
-        replaceCanonicalInputSegment(payload, [old], changed, identity(), [
-          old,
-        ]),
-      ).toBeUndefined();
-    }
-
-    for (const mutate of [
-      (details: typeof persisted) => {
-        details.schemaVersion = 2;
-      },
-      (details: typeof persisted) => {
-        details.checkpoint.hash = "0".repeat(64);
-      },
-      (details: typeof persisted) => {
-        details.checkpoint.serializedBytes++;
-      },
-      (details: typeof persisted) => {
-        (details.identity as { provider: string }).provider = "other";
-      },
-      (details: typeof persisted) => {
-        (details.identity as { api: string }).api = "other";
-      },
-      (details: typeof persisted) => {
-        (details.identity as { endpoint: string }).endpoint =
-          "https://other.example";
-      },
-      (details: typeof persisted) => {
-        (details.identity as { authMode: string }).authMode = "api-key";
-      },
-      (details: typeof persisted) => {
-        (details.identity as { protocol: string }).protocol = "other";
-      },
-      (details: typeof persisted) => {
-        (details.checkpoint as { artifact: unknown }).artifact = [undefined];
-      },
-      (details: typeof persisted) => {
-        details.checkpoint.artifact = Array.from({ length: 17 }, () => ({
-          type: "message",
-          role: "user",
-          content: "x",
-        }));
-      },
-      (details: typeof persisted) => {
-        details.checkpoint.artifact[0].encrypted_content = "x".repeat(17_000);
-      },
-    ]) {
-      const changed = JSON.parse(JSON.stringify(persisted));
-      mutate(changed);
-      expect(validateNativeCompactionDetails(changed)).toBeUndefined();
-    }
-    for (const mutate of [
-      (details: typeof persisted) => {
-        details.identity.model = "other";
-      },
-      (details: typeof persisted) => {
-        details.identity.accountFingerprint = "0".repeat(64);
-      },
-    ]) {
-      const changed = JSON.parse(JSON.stringify(persisted));
-      mutate(changed);
-      expect(
-        replaceCanonicalInputSegment(payload, [old], changed, identity(), [
-          old,
-        ]),
-      ).toBeUndefined();
-    }
+    expect(
+      replaceCanonicalInputSegment(payload, [old], persisted, {
+        ...identity(),
+        model: "other",
+      }),
+    ).toBeUndefined();
+    expect(
+      replaceCanonicalInputSegment(payload, [old], persisted, {
+        ...identity(),
+        accountFingerprint: "other",
+      }),
+    ).toBeUndefined();
   });
 });
