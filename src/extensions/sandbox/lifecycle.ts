@@ -13,8 +13,8 @@ import {
   createSandboxBashDefinition,
   createSandboxBashRuntime,
 } from "./bash.js";
-import { bindSandboxBashExecutor } from "./bash-binding.js";
-import type { SandboxBashHost, SandboxBashRequest } from "./bash-capability.js";
+import { bindSandboxManagedExecutor } from "./bash-binding.js";
+import type { SandboxBashHost } from "./bash-capability.js";
 import {
   createSandboxDenialObserver,
   type SandboxDenialObserver,
@@ -153,20 +153,8 @@ export function createSandboxSessionController(options: {
         policy?.sessionCwd ?? ctx.cwd,
         bash,
       );
-      const execute = (request: SandboxBashRequest) =>
-        definition.execute(
-          request.toolCallId,
-          request.params,
-          request.signal,
-          request.onUpdate,
-          request.ctx,
-        );
-      bashBinding = bindSandboxBashExecutor(
-        options.host,
-        execute,
-        bash.startManaged,
-      );
-      return { definition, execute };
+      bashBinding = bindSandboxManagedExecutor(options.host, bash.startManaged);
+      return { definition, runtime: bash };
     },
     async sessionShutdown(ctx: ExtensionContext): Promise<void> {
       if (!shutdown) {

@@ -3,6 +3,7 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { estimateTokens } from "@earendil-works/pi-coding-agent";
+import { transcriptReference } from "./retained-output.ts";
 import { classifyBashOutput } from "./bash-classifier.ts";
 import { extractFilePath, normalizePath } from "./paths.ts";
 import {
@@ -39,7 +40,7 @@ const TAIL_DAMAGE = 2_000;
 
 export function formatStub(
   toolName: string,
-  toolCallId: string,
+  reference: string,
   reason: ElisionReason,
   details: { path?: string; keptUserTurn?: number; command?: string },
 ): string {
@@ -56,7 +57,7 @@ export function formatStub(
       : "";
     explanation = `low-risk bash output consumed by an assistant${command}`;
   }
-  return `[${toolName} result elided: ${explanation}. Call context_recall("${toolCallId}") to retrieve.]`;
+  return `[${toolName} result elided: ${explanation}. Call read_output({reference:"${reference}"}) to retrieve.]`;
 }
 
 function formatCommand(command: string): string {
@@ -97,7 +98,19 @@ export function makeContextHook(
 
     const baseline = event.messages.slice();
     applyPersistedDecisions(baseline, state.decisions);
-    const candidates = buildCandidates(baseline, state.decisions, ctx.cwd);
+    const entryIds = new Map(
+      entries.flatMap((entry) =>
+        entry.type === "message" && entry.message.role === "toolResult"
+          ? [[entry.message.toolCallId, transcriptReference(entry)] as const]
+          : [],
+      ),
+    );
+    const candidates = buildCandidates(
+      baseline,
+      state.decisions,
+      ctx.cwd,
+      entryIds,
+    );
     const epoch = selectEpoch(candidates, baseline, entries, ctx, state);
     if (!epoch) {
       return { messages: baseline };
@@ -217,6 +230,7 @@ function buildCandidates(
   messages: AgentMessage[],
   decisions: ReadonlyMap<string, EpochDecision>,
   cwd: string,
+  entryIds: ReadonlyMap<string, string>,
 ): Candidate[] {
   const toolCalls = collectToolCalls(messages);
   const mutations = collectMutations(messages, toolCalls, cwd);
@@ -269,13 +283,14 @@ function buildCandidates(
     ) {
       reason = "standard-stale";
     }
-    if (!reason) {
+    const reference = entryIds.get(message.toolCallId);
+    if (!reason || !reference) {
       continue;
     }
 
     const stub = formatStub(
       message.toolName ?? "tool",
-      message.toolCallId,
+      reference,
       reason,
       details,
     );

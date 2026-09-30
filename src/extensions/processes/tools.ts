@@ -1,452 +1,391 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type, type Static } from "typebox";
-import { retainResult, decodeRetainedResult } from "#context/retained-result";
+import { Type } from "typebox";
+import {
+  Presentation,
+  ErrorSchema,
+  PageParams,
+  PageFields,
+  RetentionFields,
+  boundedPreview,
+  metadataPreview,
+  type Retention,
+} from "#context/retained-output";
 import {
   toolCallRenderer,
   toolResultRenderer,
 } from "#lib/ui/tool-result-renderer";
 import {
   ProcessRuntime,
-  type ProcessProjection,
   type ProcessSnapshot,
+  type ProcessWaitOutcome,
 } from "./runtime.js";
-
-const ResultModeValues = [Type.Literal("output"), Type.Literal("outcome")];
-const StopResultMode = Type.Union(ResultModeValues, {
+const namespace = {
+  name: "execution",
   description:
-    "Defaults to output when final output affects the next decision. Choose outcome only for final status: it retains one point-in-time result for context_recall while failed process output stays directly visible.",
-});
-
+    "Run commands, manage session processes, and retrieve immutable authorized output.",
+};
 const StartParams = Type.Object(
   {
     command: Type.String({
       description: "Foreground non-interactive shell command to manage.",
     }),
     description: Type.String({
-      description: "Safe single-line description of the managed work.",
+      description:
+        "Safe single-line description normalized to 1..120 Unicode code points.",
     }),
   },
   { additionalProperties: false },
 );
-
-type StartInput = Static<typeof StartParams>;
-
-const OutputSelector = Type.Union(
-  [
-    Type.Object(
-      {
-        tailLines: Type.Integer({
-          minimum: 1,
-          maximum: 200,
-          description: "Newest retained output lines to inspect.",
-        }),
-      },
-      { additionalProperties: false },
-    ),
-    Type.Object(
-      {
-        find: Type.String({
-          description:
-            "Trimmed case-insensitive 1–256-byte literal output search.",
-        }),
-      },
-      { additionalProperties: false },
-    ),
-  ],
-  { description: "Optional mutually exclusive output selection." },
-);
-const ResultSelection = Type.Union(
-  [
-    Type.Object(
-      {
-        mode: Type.Literal("output", {
-          description: "Return bounded retained output directly.",
-        }),
-        selector: Type.Optional(OutputSelector),
-      },
-      { additionalProperties: false },
-    ),
-    Type.Object(
-      {
-        mode: Type.Literal("outcome", {
-          description:
-            "Retain a successful point-in-time result for context_recall and return concise status.",
-        }),
-      },
-      { additionalProperties: false },
-    ),
-  ],
+const OperationParams = {
+  id: Type.String({
+    description: "Session-owned process ID from process_start or process_list.",
+  }),
+  presentation: Type.Optional(Presentation),
+};
+const InspectParams = Type.Object(OperationParams, {
+  additionalProperties: false,
+});
+const WaitParams = Type.Object(
   {
-    description:
-      "Result delivery; omitted defaults to output without a selector. Failed output always remains directly visible.",
-  },
-);
-const ResultParams = Type.Object(
-  {
-    id: Type.String({
-      description: "Managed process id returned by start_process.",
-    }),
-    wait: Type.Boolean({
-      description:
-        "True waits for terminal settlement and is only for processes expected to terminate; false immediately snapshots status and retained output, including for servers and watchers.",
-    }),
+    ...OperationParams,
     timeoutSeconds: Type.Optional(
       Type.Number({
         description:
-          "Positive maximum wait in seconds; valid only with wait:true, and timeout leaves the process running.",
+          "Optional positive finite wait deadline in seconds, maximum 2147483.647. Omitted waits until settlement or caller cancellation; never kills the process.",
       }),
     ),
-    result: Type.Optional(ResultSelection),
   },
   { additionalProperties: false },
 );
-
-type ResultInput = Static<typeof ResultParams>;
-
-const StopParams = Type.Object(
+const ProcessSchema = Type.Object(
   {
-    id: Type.String({
-      description: "Managed process id returned by start_process.",
-    }),
-    resultMode: Type.Optional(StopResultMode),
+    id: Type.String(),
+    description: Type.String(),
+    state: Type.Union(
+      ["running", "completed", "failed", "stopped"].map((state) =>
+        Type.Literal(state),
+      ),
+    ),
+    startedAt: Type.String(),
+    endedAt: Type.Optional(Type.String()),
+    command: Type.Optional(Type.String()),
+    cwd: Type.Optional(Type.String()),
+    commandTruncated: Type.Optional(Type.Boolean()),
+    cwdTruncated: Type.Optional(Type.Boolean()),
+    exitCode: Type.Union([Type.Integer(), Type.Null()]),
+    signal: Type.Union([Type.String(), Type.Null()]),
+    outputComplete: Type.Boolean(),
+    droppedBytes: Type.Integer(),
   },
   { additionalProperties: false },
 );
-
-type StopInput = Static<typeof StopParams>;
-
-function truncateUtf8(text: string, maxBytes: number): string {
-  let bytes = 0;
-  let result = "";
-  for (const character of text) {
-    const length = Buffer.byteLength(character);
-    if (bytes + length > maxBytes) {
-      return `${result}…`;
-    }
-    result += character;
-    bytes += length;
-  }
-  return result;
-}
-
-function snapshotForResult(snapshot: ProcessSnapshot): ProcessSnapshot {
+const ResultSchema = Type.Object(
+  {
+    ok: Type.Boolean(),
+    error: Type.Optional(ErrorSchema),
+    process: Type.Optional(ProcessSchema),
+    waitOutcome: Type.Optional(
+      Type.Union(
+        ["snapshot", "terminal", "timed_out", "cancelled"].map((outcome) =>
+          Type.Literal(outcome),
+        ),
+      ),
+    ),
+    output: Type.Optional(Type.String()),
+    truncated: Type.Optional(Type.Boolean()),
+    retention: Type.Optional(RetentionFields.retention),
+    outputRef: RetentionFields.outputRef,
+  },
+  { additionalProperties: false },
+);
+const ListSchema = Type.Object(
+  {
+    ok: Type.Boolean(),
+    error: Type.Optional(ErrorSchema),
+    processes: Type.Array(
+      Type.Object(
+        {
+          id: Type.String(),
+          description: Type.String(),
+          state: Type.String(),
+          startedAt: Type.String(),
+          endedAt: Type.Optional(Type.String()),
+        },
+        { additionalProperties: false },
+      ),
+    ),
+    ...PageFields,
+  },
+  { additionalProperties: false },
+);
+function project(snapshot: ProcessSnapshot) {
+  const command = metadataPreview(snapshot.command),
+    cwd = metadataPreview(snapshot.cwd);
   return {
-    ...snapshot,
-    command: truncateUtf8(snapshot.command, 2_048),
-    cwd: truncateUtf8(snapshot.cwd, 2_048),
+    id: snapshot.id,
+    description: snapshot.description,
+    state: snapshot.status,
+    startedAt: snapshot.startedAt,
+    ...(snapshot.endedAt ? { endedAt: snapshot.endedAt } : {}),
+    command: command.text,
+    cwd: cwd.text,
+    commandTruncated: command.truncated,
+    cwdTruncated: cwd.truncated,
+    exitCode: snapshot.exitCode,
+    signal: snapshot.signal,
+    outputComplete: snapshot.outputComplete,
+    droppedBytes: snapshot.droppedBytes,
   };
 }
-
-type OrdinaryResult = {
-  content: [{ type: "text"; text: string }];
-  details: {
-    snapshot: ProcessSnapshot;
-    waitOutcome?: string;
-    selector?: ProcessProjection["selector"] & { find?: string };
-    resultMode: "output" | "outcome";
+export const renderProcessResult = toolResultRenderer({
+  summary: (result) => {
+    const details = result.details as
+      | { process?: { id: string; state: string }; count?: number }
+      | undefined;
+    return details?.process
+      ? `${details.process.id} · ${details.process.state}`
+      : `${details?.count ?? 0} session processes`;
+  },
+  error: () => "Process operation failed; inspect diagnostics.",
+});
+function failure(error: unknown) {
+  const message =
+    error instanceof Error ? error.message : "Process operation unavailable.";
+  const payload = {
+    ok: false,
+    error: {
+      code: /not found|unknown or evicted/.test(message)
+        ? "not_found"
+        : /unavailable|not active|shutting down|inactive/.test(message)
+          ? "unavailable"
+          : "invalid_arguments",
+      message: /not found|unknown or evicted/.test(message)
+        ? "Process not found."
+        : boundedPreview(metadataPreview(message).text, 512).text,
+    },
   };
-};
-
-function ordinaryResult(result: {
-  snapshot: ProcessSnapshot;
-  output: string;
-  waitOutcome?: string;
-  selector?: ProcessProjection["selector"];
-  find?: string;
-  resultMode?: "output" | "outcome";
-  started?: boolean;
-}): OrdinaryResult {
-  const snapshot = snapshotForResult(result.snapshot);
-  const selector =
-    result.selector === undefined
-      ? undefined
-      : {
-          ...result.selector,
-          ...(result.find === undefined ? {} : { find: result.find.trim() }),
-        };
+  return {
+    content: [{ type: "text" as const, text: payload.error.message }],
+    structuredContent: payload,
+    details: undefined,
+    isError: true,
+  };
+}
+function snapshotResult(
+  result: {
+    snapshot: ProcessSnapshot;
+    output: string;
+    selector: {
+      outputTruncated: boolean;
+      sourceLines: number;
+      requestedLines?: number;
+    };
+    retention: Retention;
+    waitOutcome?: ProcessWaitOutcome;
+    error?: { code: string; message: string };
+  },
+  presentation?: "output" | "status",
+) {
+  const process = project(result.snapshot);
+  const state = process.state;
+  const error =
+    result.retention.retention === "failed"
+      ? result.retention.error
+      : result.error
+        ? result.error
+        : result.waitOutcome === "cancelled"
+          ? {
+              code: "cancelled",
+              message: "Wait cancelled; process was not stopped.",
+            }
+          : state === "failed"
+            ? {
+                code: "execution_failed",
+                message: `Process failed (exit ${process.exitCode ?? "unknown"}).`,
+              }
+            : state === "stopped"
+              ? {
+                  code: "stopped",
+                  message:
+                    "Process intentionally stopped; not a successful verification.",
+                }
+              : undefined;
+  const output = presentation === "status" && !error ? "" : result.output;
+  const payload = {
+    ok: !error,
+    ...(error ? { error } : {}),
+    process,
+    waitOutcome:
+      result.waitOutcome ?? (state === "running" ? "snapshot" : "terminal"),
+    output,
+    truncated:
+      result.selector.outputTruncated ||
+      process.droppedBytes > 0 ||
+      result.selector.sourceLines >
+        (result.selector.requestedLines ?? result.selector.sourceLines),
+    ...result.retention,
+  };
   return {
     content: [
       {
-        type: "text",
-        text: [
-          result.started
-            ? `Started managed process ${snapshot.id}${snapshot.pid > 0 ? ` (pid ${snapshot.pid})` : ""}.`
-            : processStatus(snapshot),
-          ...(result.waitOutcome === undefined
-            ? []
-            : [waitStatus(result.waitOutcome, snapshot.status)]),
-          ...(selector === undefined ? [] : [selectorStatus(selector)]),
-          ...(result.selector === undefined ? [] : ["Output:", result.output]),
-        ].join("\n\n"),
+        type: "text" as const,
+        text: [JSON.stringify({ ...payload, output: undefined }), output]
+          .filter(Boolean)
+          .join("\n\n"),
       },
     ],
+    structuredContent: payload,
     details: {
-      snapshot,
-      ...(result.waitOutcome === undefined
-        ? {}
-        : { waitOutcome: result.waitOutcome }),
-      ...(selector === undefined ? {} : { selector }),
-      resultMode: result.resultMode ?? "output",
+      process: { id: process.id, state },
+      waitOutcome: payload.waitOutcome,
     },
+    isError: !payload.ok,
   };
 }
-
-function processStatus(snapshot: ProcessSnapshot): string {
-  const settlement =
-    snapshot.status === "running"
-      ? "is running"
-      : snapshot.status === "completed"
-        ? "completed"
-        : snapshot.status === "failed"
-          ? "failed"
-          : "was stopped";
-  return `Managed process ${snapshot.id} ${settlement}.`;
-}
-
-function waitStatus(
-  outcome: string,
-  status: ProcessSnapshot["status"],
-): string {
-  return (
-    {
-      snapshot: "Captured a current process snapshot.",
-      terminal: "The process reached terminal settlement.",
-      timed_out:
-        status === "running"
-          ? "The wait timed out; the process is still running."
-          : "The wait timed out as the process settled.",
-      cancelled: "The wait was cancelled.",
-    }[outcome] ?? `Wait outcome: ${outcome}.`
-  );
-}
-
-function selectorStatus(
-  selector: ProcessProjection["selector"] & { find?: string },
-): string {
-  if (selector.type === "tail") {
-    return `Showing the newest ${selector.requestedLines ?? "retained"} output lines from ${selector.sourceLines} retained source lines.`;
-  }
-  if (selector.totalMatches === 0) {
-    return `No retained output matched ${JSON.stringify(selector.find ?? "the requested literal")}.`;
-  }
-  return `Showing ${selector.selectedMatchAnchors ?? 0} selected matches from ${selector.totalMatches ?? 0} retained output matches${selector.find === undefined ? "" : ` for ${JSON.stringify(selector.find)}`}.`;
-}
-
-function outcomeSummary(result: {
-  snapshot: ProcessSnapshot;
-  waitOutcome?: string;
-}): string {
-  return `${processStatus(result.snapshot)}${result.waitOutcome ? ` ${waitStatus(result.waitOutcome, result.snapshot.status)}` : ""}`;
-}
-
-type ProcessResultDetails = {
-  snapshot: ProcessSnapshot;
-  waitOutcome?: string;
-  selector?: ProcessProjection["selector"] & { find?: string };
-};
-
-function processResultDetails(
-  value: unknown,
-): ProcessResultDetails | undefined {
-  const direct = detailsFrom(value);
-  const retained = detailsFrom(decodeRetainedResult(value)?.details);
-  const details = isProcessSnapshot(direct?.snapshot) ? direct : retained;
-  if (!details || !isProcessSnapshot(details.snapshot)) {
-    return undefined;
-  }
-  return {
-    snapshot: details.snapshot,
-    ...(typeof details.waitOutcome === "string"
-      ? { waitOutcome: details.waitOutcome }
-      : {}),
-    ...(isRecord(details.selector)
-      ? {
-          selector: details.selector as ProcessProjection["selector"] & {
-            find?: string;
-          },
-        }
-      : {}),
-  };
-}
-
-function detailsFrom(value: unknown): Record<string, unknown> | undefined {
-  return isRecord(value) ? value : undefined;
-}
-
-function isProcessSnapshot(value: unknown): value is ProcessSnapshot {
-  return (
-    isRecord(value) &&
-    typeof value.id === "string" &&
-    (value.status === "running" ||
-      value.status === "completed" ||
-      value.status === "failed" ||
-      value.status === "stopped")
-  );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-export const renderProcessResult = toolResultRenderer({
-  summary(result) {
-    const details = processResultDetails(result.details);
-    return details
-      ? [
-          compactProcessStatus(details.snapshot),
-          ...(details.waitOutcome === undefined
-            ? []
-            : [waitStatus(details.waitOutcome, details.snapshot.status)]),
-          ...(details.selector === undefined
-            ? []
-            : [selectorStatus(details.selector)]),
-        ]
-      : firstLine(result.content);
-  },
-  partial() {
-    return "Managing process…";
-  },
-  error(result) {
-    return firstLine(result.content) || "Managed process operation failed.";
-  },
-  expandedContent(result) {
-    return decodeRetainedResult(result.details)?.content ?? result.content;
-  },
-});
-
-function compactProcessStatus(snapshot: ProcessSnapshot): string {
-  const settlement =
-    snapshot.exitCode !== null
-      ? ` · exit ${snapshot.exitCode}`
-      : snapshot.signal
-        ? ` · signal ${snapshot.signal}`
-        : "";
-  return `${snapshot.id} · ${snapshot.status}${settlement}`;
-}
-
-function firstLine(content: unknown): string {
-  if (!Array.isArray(content)) {
-    return "Managed process operation completed.";
-  }
-  const block = content.find(
-    (item): item is { type: "text"; text: string } =>
-      typeof item === "object" &&
-      item !== null &&
-      (item as { type?: unknown }).type === "text" &&
-      typeof (item as { text?: unknown }).text === "string",
-  );
-  return (
-    block?.text.split("\n", 1)[0] ?? "Managed process operation completed."
-  );
-}
-
 export function registerProcessTools(
   pi: ExtensionAPI,
   runtime: () => ProcessRuntime,
 ): void {
   pi.registerTool({
-    name: "start_process",
+    name: "process_start",
+    label: "process_start",
     exposure: "deferred",
-    namespace: {
-      name: "execution",
-      description:
-        "Run commands, manage processes, and recall retained output.",
-    },
-    label: "start_process",
+    namespace,
     description:
-      "Start and manage a foreground non-interactive command. Returns an ID for later inspection, joining, or stopping.",
+      "Accept a session-owned foreground non-interactive command. Acceptance is not completion; recover lost handles with process_list. Terminal evidence is captured even without waiting.",
     parameters: StartParams,
+    outputSchema: ResultSchema,
     renderCall: toolCallRenderer({
-      name: "start_process",
-      detail: (args: StartInput) => args.description,
-      pending: "Starting managed process…",
+      name: "process_start",
+      pending: "Starting process…",
     }),
-    async execute(toolCallId, params, signal, _onUpdate, ctx) {
-      const snapshot = await runtime().start({
-        ...params,
-        cwd: ctx.cwd,
-        ctx,
-        signal,
-        toolCallId,
-      });
-      return ordinaryResult({ snapshot, output: "", started: true });
-    },
     renderResult: renderProcessResult,
+    async execute(toolCallId, params, signal, _update, ctx) {
+      try {
+        const snapshot = await runtime().start({
+          ...params,
+          cwd: ctx.cwd,
+          ctx,
+          signal,
+          toolCallId,
+        });
+        const process = project(snapshot);
+        const payload = { ok: true, process };
+        return {
+          content: [{ type: "text", text: JSON.stringify(payload) }],
+          structuredContent: payload,
+          details: { process: { id: process.id, state: process.state } },
+        };
+      } catch (error) {
+        return failure(error);
+      }
+    },
   });
   pi.registerTool({
-    name: "get_process_result",
+    name: "process_list",
+    label: "process_list",
     exposure: "deferred",
-    namespace: {
-      name: "execution",
-      description:
-        "Run commands, manage processes, and recall retained output.",
-    },
-    label: "get_process_result",
+    namespace,
+    annotations: { readOnlyHint: true, openWorldHint: false },
     description:
-      "Wait for a finite process to settle or immediately inspect any managed process. Use wait:false for servers, watchers, and other long-lived processes. Output includes retained process output; outcome retains a point-in-time status for context_recall.",
-    parameters: ResultParams,
+      "List this session's authorized process metadata, newest first. No commands or output; OS processes are not resumed after restart.",
+    parameters: PageParams,
+    outputSchema: ListSchema,
     renderCall: toolCallRenderer({
-      name: "get_process_result",
-      detail: (args: ResultInput) => args.id,
-      pending: (args: ResultInput) =>
-        args.wait ? "Waiting for process…" : "Reading process state…",
+      name: "process_list",
+      pending: "Listing processes…",
     }),
-    async execute(toolCallId, params, signal) {
-      const mode = params.result?.mode ?? "output";
-      const selector =
-        params.result?.mode === "output" ? params.result.selector : undefined;
-      const tailLines =
-        selector && "tailLines" in selector ? selector.tailLines : undefined;
-      const find = selector && "find" in selector ? selector.find : undefined;
-      const result = await runtime().result(
-        params.id,
-        params.wait,
-        params.timeoutSeconds,
-        signal,
-        { tailLines, find },
-      );
-      const ordinary = ordinaryResult({
-        ...result,
-        find,
-        resultMode: mode,
-      });
-      if (mode === "output" || result.snapshot.status === "failed") {
-        return ordinary;
-      }
-      return retainResult(ordinary, outcomeSummary(result), toolCallId, {
-        label: "managed process",
-      });
-    },
     renderResult: renderProcessResult,
+    async execute(_id, params, _signal, _update, ctx) {
+      try {
+        const offset = params.offset ?? 0,
+          limit = params.limit ?? 25;
+        if (
+          !Number.isSafeInteger(offset) ||
+          offset < 0 ||
+          !Number.isSafeInteger(limit) ||
+          limit < 1 ||
+          limit > 25
+        ) {
+          throw new Error("Invalid pagination");
+        }
+        const snapshots = [...runtime().authorizedSnapshots(ctx)].sort(
+          (a, b) =>
+            b.startedAt.localeCompare(a.startedAt) || a.id.localeCompare(b.id),
+        );
+        const payload = {
+          ok: true,
+          processes: snapshots
+            .slice(offset, offset + limit)
+            .map((snapshot) => ({
+              id: snapshot.id,
+              description: snapshot.description,
+              state: snapshot.status,
+              startedAt: snapshot.startedAt,
+              ...(snapshot.endedAt ? { endedAt: snapshot.endedAt } : {}),
+            })),
+          count: snapshots.length,
+          ...(offset + limit < snapshots.length
+            ? { nextOffset: offset + limit }
+            : {}),
+          truncated: false,
+        };
+        return {
+          content: [{ type: "text", text: JSON.stringify(payload) }],
+          structuredContent: payload,
+          details: { count: payload.processes.length },
+        };
+      } catch (error) {
+        const result = failure(error);
+        return {
+          ...result,
+          structuredContent: {
+            ...result.structuredContent,
+            processes: [],
+            count: 0,
+            truncated: false,
+          },
+        };
+      }
+    },
   });
-  pi.registerTool({
-    name: "stop_process",
-    exposure: "deferred",
-    namespace: {
-      name: "execution",
+  for (const operation of ["inspect", "wait", "stop"] as const) {
+    const name = `process_${operation}`;
+    pi.registerTool({
+      name,
+      label: name,
+      exposure: "deferred",
+      namespace,
       description:
-        "Run commands, manage processes, and recall retained output.",
-    },
-    label: "stop_process",
-    description:
-      "Stop a managed process and return its final output or a recallable point-in-time status.",
-    parameters: StopParams,
-    renderCall: toolCallRenderer({
-      name: "stop_process",
-      detail: (args: StopInput) => args.id,
-      pending: "Stopping process…",
-    }),
-    async execute(toolCallId, params) {
-      const mode = params.resultMode ?? "output";
-      const result = await runtime().stop(params.id);
-      const ordinary = ordinaryResult({ ...result, resultMode: mode });
-      if (mode === "output" || result.snapshot.status === "failed") {
-        return ordinary;
-      }
-      return retainResult(ordinary, outcomeSummary(result), toolCallId, {
-        label: "managed process",
-      });
-    },
-    renderResult: renderProcessResult,
-  });
+        operation === "inspect"
+          ? "Immediately snapshot process state and bounded output; read_output reads the immutable full retained tail."
+          : operation === "wait"
+            ? "Wait for terminal settlement, a deadline, or caller cancellation. Timeout/cancellation does not kill the process."
+            : "Stop using graceful escalation and report terminal cleanup only once achieved. Intentional stop is not successful verification.",
+      parameters: operation === "wait" ? WaitParams : InspectParams,
+      outputSchema: ResultSchema,
+      renderCall: toolCallRenderer({ name, pending: "Inspecting process…" }),
+      renderResult: renderProcessResult,
+      async execute(_id, params, signal, _update, ctx) {
+        try {
+          runtime().assertOwned(params.id, ctx);
+          const result =
+            operation === "stop"
+              ? await runtime().stop(params.id)
+              : await runtime().result(
+                  params.id,
+                  operation === "wait",
+                  "timeoutSeconds" in params &&
+                    typeof params.timeoutSeconds === "number"
+                    ? params.timeoutSeconds
+                    : undefined,
+                  signal,
+                );
+          return snapshotResult(result, params.presentation);
+        } catch (error) {
+          return failure(error);
+        }
+      },
+    });
+  }
 }

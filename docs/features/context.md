@@ -1,6 +1,6 @@
 # Context
 
-Long sessions accumulate tool output that is no longer useful verbatim. Context replaces eligible output with stable, reasoned stubs while preserving the original result for `context_recall`.
+Long sessions accumulate tool output that is no longer useful verbatim. Context replaces eligible output with stable, reasoned stubs while preserving original transcript results for `read_output`. Context also owns immutable execution evidence, independent of outer script results.
 
 ## Compaction
 
@@ -12,7 +12,7 @@ These checkpoints are not portable. A different provider, model, endpoint, API-k
 
 Context delegates transcript construction and request serialization to Pi, using its current system prompt and tool declarations. It preserves the provider's opaque compaction item, including additional provider fields, with real user continuations in their original order. It adds no transcript-string limits, artifact-size caps, continuation-count truncation, or separate compaction deadline; provider context limits and Pi cancellation still apply. Validation covers recognizable checkpoint metadata, route compatibility, branch lineage, a completed compaction artifact, and a unique replay target—not local-file tamper detection.
 
-Context stores checkpoint metadata append-only with Pi's normal compaction entry. Reload, resume, and a fork containing that entry reconstruct its authority; a fork before it has none. Pruning remains non-destructive and applies persisted decisions before replay, so it does not erase original messages or tool results. `context_recall` continues to retrieve original results across textual and native compaction.
+Context stores checkpoint metadata append-only with Pi's normal compaction entry. Reload, resume, and a fork containing that entry reconstruct its authority; a fork before it has none. Pruning remains non-destructive and applies persisted decisions before replay, so it does not erase original messages or tool results. `read_output` continues to retrieve authorized original results across textual and native compaction.
 
 ## Pruning behavior
 
@@ -28,7 +28,7 @@ The original session entry is never changed. Context evaluates deterministic bra
 Each stub names the reason and source call:
 
 ```text
-[read result elided: covered by a later read of PATH at user entry 8. Call context_recall("TOOL_CALL_ID") to retrieve.]
+[read result elided: covered by a later read of PATH at user entry 8. Call read_output({reference:"transcript:v1:OPAQUE_ID"}) to retrieve.]
 ```
 
 | Opportunity  | Selection rule                                                                                    |
@@ -49,30 +49,31 @@ context · pruned 6 results (~18k tokens) · warm
 
 Expanding it shows a bounded reason breakdown. These are custom session entries outside model context. Older epochs without per-decision savings remain replayable without an invented token total.
 
-## Recall
+## Retained output
 
-Use the tool-call ID from an elision stub or recallable outcome.
+Use `output_list` to recover execution references, including calls made by a script that later threw. It lists only authorized bounded metadata, newest first with stable reference ties. Pagination uses `offset` (default 0) and `limit` (default 25, 1..25); counts and `nextOffset` describe authorized records only. Pruning stubs instead identify original transcript entries with a distinct opaque reference. Both authorization and transcript resolution verify the immutable raw source entry fingerprint, not just its session-local short ID. Copied entries remain accessible in genuine forks even without the origin session file; colliding IDs in unrelated history grant no access. Neither reference is a filesystem path.
 
-| Request                                                              | Effect                                                        |
-| -------------------------------------------------------------------- | ------------------------------------------------------------- |
-| `{ "id": "TOOL_CALL_ID" }`                                           | Return the original stored content blocks                     |
-| `{ "id": "TOOL_CALL_ID", "selector": { "lines": "40-80" } }`         | Return a positive 1-indexed line or range from one text block |
-| `{ "id": "TOOL_CALL_ID", "selector": { "find": "AssertionError" } }` | Search one text block case-insensitively with bounded context |
+| `read_output` input                                        | Effect                                    |
+| ---------------------------------------------------------- | ----------------------------------------- |
+| `{reference:"REFERENCE"}`                                  | Return bounded original text/image blocks |
+| `{reference:"REFERENCE",selector:{lines:"40-80"}}`         | Positive 1-based line or inclusive range  |
+| `{reference:"REFERENCE",selector:{tailLines:80}}`          | Newest 1..200 lines                       |
+| `{reference:"REFERENCE",selector:{find:"AssertionError"}}` | Case-insensitive literal search           |
 
-The selector union makes `lines` and `find` mutually exclusive. Search returns at most ten source-ordered matches with three surrounding lines and reports truncation or omitted matches. A search with no matches succeeds; missing content, invalid ranges, unsupported content shapes, and empty slices are errors.
+Selectors are mutually exclusive and require one textual source. A trimmed search literal is 1..256 UTF-8 bytes; search selects at most ten ordered matches with three context lines and reports omissions. No-match succeeds; invalid/empty slices and mixed/image selections fail. Text responses retain native byte/line bounds. Images remain native blocks in direct and structured content (up to 10 MiB, 4,096×12,000); codemode scripts forward them explicitly with `image(block)`. Successful retrieval is `ok:true` even when the source execution failed. `not_found` does not distinguish missing from unauthorized evidence; selection failures use `invalid_arguments`.
 
-Recall preserves a bounded source label for terminal presentation but does not add it to model content or alter pruning decisions.
+Authorization follows raw active-branch ancestry, not the compacted model projection. Resume, compaction, and forks containing the source anchor retain access; siblings and forks before it do not. Admission reserves origin session/file/branch and call identity before dispatch, so late settlement cannot attach to a switched session. A genuinely entryless capture is accessible only through its exact scope while still entryless. In-memory sessions and workers receive unique ephemeral scopes; worker provenance and host promotion are private capabilities, not automatic parent public-list access.
 
-## Bash outcomes
+### Execution presentation
 
-Choose `bash_outcome` for an action or validation when exit status alone answers the question. Choose ordinary Bash for discovery, diagnostics, listings, diffs, warnings, skipped tests, test counts, or any successful output needed for reasoning.
+`bash` defaults to `presentation:"output"`. Choose `presentation:"status"` when exit status alone suffices; it suppresses only successful logs in both direct and structured output. Failures retain diagnostics, `isError:true`, actual known exit/signal, ISO timing, and `completed`, `failed`, `cancelled`, or `timed_out` state. `execution_failed`, `cancelled`, and `timed_out` identify command failures. Invalid arguments or blocked calls dispatch no process.
 
-On successful output, `bash_outcome` returns concise status and retains the ordinary bounded result for immediate recall. Inspect that execution through `context_recall` rather than rerunning it solely to recover output. Success without output remains concise; failures remain directly visible. Its optional display label is normalized, control-safe, and limited to 80 Unicode code points.
+Retention is separate from execution: `retention:"retained"` includes `outputRef` only after immutable persistence; `retention:"failed"` reports `persistence_failed`, no reference, and available output with the true execution state. Bash captures its native bounded tail. Process snapshots retain the full bounded live tail, separately from their smaller display projection; see [Workflow tools](workflow-tools.md#managed-processes). Reading an earlier snapshot never observes newer output or reruns work. Former recall/outcome aliases and translation of old outcome IDs are not supported; raw historical transcripts remain intact.
 
-`bash_outcome` uses Sandbox's ordinary Bash path and does not create another confinement boundary.
+### Storage and cleanup
 
-## Managed-process outcomes
+Persisted sessions store version-1 sidecars under `<agent-directory>/pipkin/outputs/` (normally `~/.pi/agent/pipkin/outputs/`). Context uses generated scope/record names, exclusive atomic immutable writes, 0700 directories and 0600 files. Each record permits at most 1 MiB decoded text and 16 KiB metadata; encoded reads are capped at 8 MiB before parsing. Records contain bounded execution provenance/state, output completeness/drop information, and command/cwd previews with explicit truncation flags—not environments or arbitrary tool details.
 
-`get_process_result` and `stop_process` default to bounded visible output. For `get_process_result`, choose `result: { mode: "outcome" }` when only point-in-time status matters; `stop_process` retains its scalar `resultMode`. Successful outcome results return concise status and exact recall guidance. Failed process output remains visible.
+Durable captures survive ordinary shutdown. There is no background GC, quota eviction, or historical migration. Operators may explicitly remove sidecars when they no longer need the evidence, but must account for surviving forks: deleting an origin session file does not prove its evidence is unused. Orphaned records may remain; their presence alone grants no retrieval authority.
 
-Recall can recover that retained snapshot after compaction or process-record eviction, but it cannot recover output produced later or already dropped by retention. Request a later output-mode result for newer output. Tail and literal-search filters require output mode.
+Ephemeral captures have no resume promise. Context closes new admission at shutdown without awaiting later producer handlers. Issued handles can still flush; promotion leases retain worker records through export and child disposal. Ephemeral directories are released only when their holders and requested handoff are finished.

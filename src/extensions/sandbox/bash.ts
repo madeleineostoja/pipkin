@@ -4,7 +4,6 @@ import { randomUUID } from "node:crypto";
 import { delimiter, join } from "node:path";
 import {
   createBashToolDefinition,
-  createLocalBashOperations,
   getAgentDir,
   getShellConfig,
   type BashOperations,
@@ -15,10 +14,11 @@ import {
 } from "./denial-observer.js";
 import type { SandboxPolicy } from "./policy.js";
 import { SANDBOX_EXECUTABLE, sandboxArguments } from "./seatbelt.js";
-import type {
-  SandboxExecutionLease,
-  SandboxExecutionTerminal,
-  SandboxManagedRequest,
+import {
+  SandboxCleanupError,
+  type SandboxExecutionLease,
+  type SandboxExecutionTerminal,
+  type SandboxManagedRequest,
 } from "./bash-capability.js";
 
 const MAX_TIMEOUT_MS = 2_147_483_647;
@@ -155,8 +155,15 @@ function appendLaunchDiagnostic(output: Buffer, data: Buffer): Buffer {
     : combined;
 }
 
+type ForegroundOperations = {
+  exec: (...args: Parameters<BashOperations["exec"]>) => Promise<{
+    exitCode: number | null;
+    signal: string | null;
+    outputComplete: boolean;
+  }>;
+};
 export type SandboxBashRuntime = Readonly<{
-  operations: BashOperations;
+  operations: ForegroundOperations;
   startManaged: (
     request: SandboxManagedRequest,
   ) => Promise<SandboxExecutionLease>;
@@ -184,7 +191,6 @@ export function createSandboxBashRuntime(
     terminationWaitMs?: number;
   }>,
 ): SandboxBashRuntime {
-  const local = createLocalBashOperations({ shellPath: options.shellPath });
   const active = new Set<ActiveInvocation>();
   const managed = new Set<{
     stop: (
@@ -257,45 +263,13 @@ export function createSandboxBashRuntime(
     };
   };
 
-  const localOperations: BashOperations = {
+  const foregroundOperations: ForegroundOperations = {
     async exec(command, cwd, execution) {
       if (disposed) {
         throw new Error("Sandbox: Bash is shutting down.");
       }
-      const controller = new AbortController();
-      const forwardAbort = () => controller.abort();
-      if (execution.signal?.aborted) {
-        forwardAbort();
-      } else {
-        execution.signal?.addEventListener("abort", forwardAbort, {
-          once: true,
-        });
-      }
-      let settleInvocation: () => void = () => undefined;
-      const invocation: ActiveInvocation = {
-        terminate: forwardAbort,
-        settled: new Promise<void>((settle) => (settleInvocation = settle)),
-      };
-      active.add(invocation);
-      try {
-        return await local.exec(command, cwd, {
-          ...execution,
-          signal: controller.signal,
-        });
-      } finally {
-        execution.signal?.removeEventListener("abort", forwardAbort);
-        active.delete(invocation);
-        settleInvocation();
-      }
-    },
-  };
-
-  const protectedOperations: BashOperations = {
-    async exec(command, cwd, execution) {
-      if (disposed) {
-        throw new Error("Sandbox: Bash is shutting down.");
-      }
-      if (!options.policy) {
+      const protectedLaunch = supportedMac && protectedMode();
+      if (protectedLaunch && !options.policy) {
         throw new Error(
           options.unavailableReason ?? "Sandbox: Bash is unavailable.",
         );
@@ -308,200 +282,231 @@ export function createSandboxBashRuntime(
         command,
         cwd,
         env: execution.env ?? executionEnvironment(),
-        protectedLaunch: true,
+        protectedLaunch,
       });
       const marker = launch.marker!;
-      return new Promise<{ exitCode: number | null }>(
-        (resolveResult, reject) => {
-          let child: ChildProcess;
-          let timer: NodeJS.Timeout | undefined;
-          let outputDrainTimer: NodeJS.Timeout | undefined;
-          let abort: (() => void) | undefined;
-          let finished = false;
-          let completing = false;
-          let terminationError: Error | undefined;
-          let terminatedPid: number | undefined;
-          let invocation: ActiveInvocation | undefined;
-          let settleInvocation: () => void = () => undefined;
-          let launchDiagnostics = Buffer.alloc(0);
-          let launchConfirmed = false;
-          let exitedCode: number | null | undefined;
-          let launchOutput = Buffer.alloc(0);
-          let releaseDenial: (() => void) | undefined;
-          const launchMarker = Buffer.from(LAUNCH_MARKER);
-          const cleanup = () => {
-            if (timer) {
-              clearTimeout(timer);
-            }
-            if (outputDrainTimer) {
-              clearTimeout(outputDrainTimer);
-            }
-            if (abort) {
-              execution.signal?.removeEventListener("abort", abort);
-            }
-            if (invocation) {
-              active.delete(invocation);
-            }
-            releaseDenial?.();
-            settleInvocation();
-          };
-          const finish = (result: { exitCode: number | null } | Error) => {
-            if (finished) {
-              return;
-            }
-            finished = true;
-            cleanup();
-            result instanceof Error ? reject(result) : resolveResult(result);
-          };
-          const stop = (error: Error) => {
-            if (terminationError) {
-              return;
-            }
-            terminationError = error;
-            terminatedPid = child.pid;
-            terminate(child);
-          };
-          try {
-            releaseDenial = options.denialObserver?.registerBashInvocation(
-              marker,
-              (denial) => {
-                if (!finished) {
-                  execution.onData(
-                    Buffer.from(formatSandboxWriteDenial(denial)),
-                  );
-                }
-              },
-            );
-            child = launch.spawn();
-          } catch (error) {
-            finish(error instanceof Error ? error : new Error(String(error)));
+      return new Promise<{
+        exitCode: number | null;
+        signal: string | null;
+        outputComplete: boolean;
+      }>((resolveResult, reject) => {
+        let child: ChildProcess;
+        let timer: NodeJS.Timeout | undefined;
+        let outputDrainTimer: NodeJS.Timeout | undefined;
+        let abort: (() => void) | undefined;
+        let finished = false;
+        let completing = false;
+        let terminationError: Error | undefined;
+        let terminatedPid: number | undefined;
+        let invocation: ActiveInvocation | undefined;
+        let settleInvocation: () => void = () => undefined;
+        let launchDiagnostics = Buffer.alloc(0);
+        let launchConfirmed = !protectedLaunch;
+        let exitedCode: number | null | undefined;
+        let exitedSignal: string | null = null;
+        let outputComplete = true;
+        let launchOutput = Buffer.alloc(0);
+        let releaseDenial: (() => void) | undefined;
+        const launchMarker = Buffer.from(LAUNCH_MARKER);
+        const cleanup = () => {
+          if (timer) {
+            clearTimeout(timer);
+          }
+          if (outputDrainTimer) {
+            clearTimeout(outputDrainTimer);
+          }
+          if (abort) {
+            execution.signal?.removeEventListener("abort", abort);
+          }
+          if (invocation) {
+            active.delete(invocation);
+          }
+          releaseDenial?.();
+          settleInvocation();
+        };
+        const finish = (
+          result:
+            | {
+                exitCode: number | null;
+                signal: string | null;
+                outputComplete: boolean;
+              }
+            | Error,
+        ) => {
+          if (finished) {
             return;
           }
-          invocation = {
-            terminate: () => stop(new Error("aborted")),
-            settled: new Promise<void>((settle) => (settleInvocation = settle)),
-          };
-          active.add(invocation);
-          const complete = (exitCode: number | null) => {
-            if (completing || finished) {
-              return;
-            }
-            completing = true;
-            void (async () => {
-              if (
-                terminationError &&
-                terminatedPid !== undefined &&
-                !(await waitForProcessTree(
-                  terminatedPid,
-                  Date.now() + terminationWaitMs,
-                ))
-              ) {
-                finish(
+          finished = true;
+          cleanup();
+          result instanceof Error ? reject(result) : resolveResult(result);
+        };
+        const stop = (error: Error) => {
+          if (terminationError) {
+            return;
+          }
+          terminationError = error;
+          terminatedPid = child.pid;
+          terminate(child);
+        };
+        try {
+          releaseDenial = protectedLaunch
+            ? options.denialObserver?.registerBashInvocation(
+                marker,
+                (denial) => {
+                  if (!finished) {
+                    execution.onData(
+                      Buffer.from(formatSandboxWriteDenial(denial)),
+                    );
+                  }
+                },
+              )
+            : undefined;
+          child = launch.spawn();
+        } catch (error) {
+          finish(error instanceof Error ? error : new Error(String(error)));
+          return;
+        }
+        invocation = {
+          terminate: () => stop(new Error("aborted")),
+          settled: new Promise<void>((settle) => (settleInvocation = settle)),
+        };
+        active.add(invocation);
+        const complete = (
+          exitCode: number | null,
+          signal: NodeJS.Signals | null = null,
+        ) => {
+          exitedSignal = signal ?? exitedSignal;
+          if (completing || finished) {
+            return;
+          }
+          completing = true;
+          void (async () => {
+            if (
+              terminationError &&
+              terminatedPid !== undefined &&
+              !(await waitForProcessTree(
+                terminatedPid,
+                Date.now() + terminationWaitMs,
+              ))
+            ) {
+              finish(
+                Object.assign(
                   new Error(
                     `${terminationError.message}; process tree did not terminate`,
                   ),
-                );
-                return;
-              }
-              if (!terminationError && !launchConfirmed) {
-                const diagnostic = launchDiagnostics.toString().trim();
-                const failure = sandboxRejected(launchDiagnostics)
-                  ? "sandbox-exec rejected the launch"
-                  : "sandbox-exec exited before shell startup";
-                finish(
+                  { exitCode, signal: exitedSignal, outputComplete },
+                ),
+              );
+              return;
+            }
+            if (!terminationError && !launchConfirmed) {
+              const diagnostic = launchDiagnostics.toString().trim();
+              const failure = sandboxRejected(launchDiagnostics)
+                ? "sandbox-exec rejected the launch"
+                : "sandbox-exec exited before shell startup";
+              finish(
+                Object.assign(
                   new Error(
                     `Sandbox: ${failure}: ${diagnostic || `exit code ${exitCode ?? "unknown"}`}`,
                   ),
-                );
-                return;
-              }
-              finish(terminationError ?? { exitCode });
-            })();
-          };
-          const refreshOutputDrain = () => {
-            const exitCode = exitedCode;
-            if (exitCode === undefined) {
-              return;
-            }
-            if (outputDrainTimer) {
-              clearTimeout(outputDrainTimer);
-            }
-            outputDrainTimer = setTimeout(() => {
-              child.stdout?.destroy();
-              child.stderr?.destroy();
-              complete(exitCode);
-            }, options.outputDrainTimeoutMs ?? OUTPUT_DRAIN_TIMEOUT_MS);
-          };
-          const onData = (data: Buffer) => {
-            refreshOutputDrain();
-            execution.onData(data);
-          };
-          const onStderr = (data: Buffer) => {
-            if (!launchConfirmed) {
-              launchDiagnostics = appendLaunchDiagnostic(
-                launchDiagnostics,
-                data,
+                  { exitCode, signal: exitedSignal, outputComplete },
+                ),
               );
-            }
-            onData(data);
-          };
-          const onStdout = (data: Buffer) => {
-            if (launchConfirmed) {
-              onData(data);
               return;
             }
-            launchDiagnostics = appendLaunchDiagnostic(launchDiagnostics, data);
-            launchOutput = Buffer.concat([launchOutput, data]);
-            const markerIndex = launchOutput.indexOf(launchMarker);
-            if (markerIndex >= 0) {
-              const prefix = launchOutput.subarray(0, markerIndex);
-              const remainder = launchOutput.subarray(
-                markerIndex + launchMarker.length,
-              );
-              launchConfirmed = true;
-              launchOutput = Buffer.alloc(0);
-              if (prefix.length) {
-                onData(prefix);
-              }
-              if (remainder.length) {
-                onData(remainder);
-              }
-              return;
-            }
-            const flushLength = Math.max(
-              0,
-              launchOutput.length - launchMarker.length + 1,
+            finish(
+              terminationError
+                ? Object.assign(terminationError, {
+                    exitCode,
+                    signal: exitedSignal,
+                    outputComplete,
+                  })
+                : { exitCode, signal: exitedSignal, outputComplete },
             );
-            if (flushLength > 0) {
-              onData(launchOutput.subarray(0, flushLength));
-              launchOutput = launchOutput.subarray(flushLength);
-            }
-          };
-          child.stdout?.on("data", onStdout);
-          child.stderr?.on("data", onStderr);
-          child.once("error", (error) => {
-            if (child.pid) {
-              stop(terminationError ?? error);
-            } else {
-              finish(new Error(`Sandbox: launch failed: ${error.message}`));
-            }
-          });
-          child.once("exit", (exitCode) => {
-            exitedCode = exitCode;
-            refreshOutputDrain();
-          });
-          child.once("close", complete);
-          abort = () => stop(new Error("aborted"));
-          execution.signal?.addEventListener("abort", abort, { once: true });
-          if (timeout !== undefined) {
-            timer = setTimeout(
-              () => stop(new Error(`timeout:${execution.timeout}`)),
-              timeout,
-            );
+          })();
+        };
+        const refreshOutputDrain = () => {
+          const exitCode = exitedCode;
+          if (exitCode === undefined) {
+            return;
           }
-          launch.start(child);
-        },
-      );
+          if (outputDrainTimer) {
+            clearTimeout(outputDrainTimer);
+          }
+          outputDrainTimer = setTimeout(() => {
+            outputComplete = false;
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+            complete(exitCode);
+          }, options.outputDrainTimeoutMs ?? OUTPUT_DRAIN_TIMEOUT_MS);
+        };
+        const onData = (data: Buffer) => {
+          refreshOutputDrain();
+          execution.onData(data);
+        };
+        const onStderr = (data: Buffer) => {
+          if (!launchConfirmed) {
+            launchDiagnostics = appendLaunchDiagnostic(launchDiagnostics, data);
+          }
+          onData(data);
+        };
+        const onStdout = (data: Buffer) => {
+          if (launchConfirmed) {
+            onData(data);
+            return;
+          }
+          launchDiagnostics = appendLaunchDiagnostic(launchDiagnostics, data);
+          launchOutput = Buffer.concat([launchOutput, data]);
+          const markerIndex = launchOutput.indexOf(launchMarker);
+          if (markerIndex >= 0) {
+            const prefix = launchOutput.subarray(0, markerIndex);
+            const remainder = launchOutput.subarray(
+              markerIndex + launchMarker.length,
+            );
+            launchConfirmed = true;
+            launchOutput = Buffer.alloc(0);
+            if (prefix.length) {
+              onData(prefix);
+            }
+            if (remainder.length) {
+              onData(remainder);
+            }
+            return;
+          }
+          const flushLength = Math.max(
+            0,
+            launchOutput.length - launchMarker.length + 1,
+          );
+          if (flushLength > 0) {
+            onData(launchOutput.subarray(0, flushLength));
+            launchOutput = launchOutput.subarray(flushLength);
+          }
+        };
+        child.stdout?.on("data", onStdout);
+        child.stderr?.on("data", onStderr);
+        child.once("error", (error) => {
+          if (child.pid) {
+            stop(terminationError ?? error);
+          } else {
+            finish(new Error(`Sandbox: launch failed: ${error.message}`));
+          }
+        });
+        child.once("exit", (exitCode, signal) => {
+          exitedCode = exitCode;
+          exitedSignal = signal ?? null;
+          refreshOutputDrain();
+        });
+        child.once("close", complete);
+        abort = () => stop(new Error("aborted"));
+        execution.signal?.addEventListener("abort", abort, { once: true });
+        if (timeout !== undefined) {
+          timer = setTimeout(
+            () => stop(new Error(`timeout:${execution.timeout}`)),
+            timeout,
+          );
+        }
+        launch.start(child);
+      });
     },
   };
 
@@ -601,9 +606,12 @@ export function createSandboxBashRuntime(
             }
             releaseDenial?.();
             rejectTerminal(
-              error instanceof Error
-                ? error
-                : new Error("Sandbox: process group did not terminate"),
+              new SandboxCleanupError(
+                error instanceof Error
+                  ? error.message
+                  : "Sandbox: process group did not terminate",
+                { exitCode, signal, termination, outputComplete },
+              ),
             );
           }
         });
@@ -742,7 +750,16 @@ export function createSandboxBashRuntime(
           }
         })();
       }
-      await groupSettlement;
+      try {
+        await groupSettlement;
+      } catch (error) {
+        throw new SandboxCleanupError(
+          error instanceof Error
+            ? error.message
+            : "Sandbox: process group did not terminate",
+          { exitCode, signal: exitSignal, termination, outputComplete: false },
+        );
+      }
       return completion;
     };
     owner = { stop };
@@ -778,10 +795,7 @@ export function createSandboxBashRuntime(
         if (disposed) {
           return Promise.reject(new Error("Sandbox: Bash is shutting down."));
         }
-        if (!supportedMac || !protectedMode()) {
-          return localOperations.exec(command, cwd, execution);
-        }
-        return protectedOperations.exec(command, cwd, execution);
+        return foregroundOperations.exec(command, cwd, execution);
       },
     },
     startManaged,

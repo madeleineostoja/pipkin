@@ -70,6 +70,7 @@ export function isEpochKind(value: unknown): value is EpochKind {
 }
 
 function isDecision(value: unknown): value is EpochDecision {
+  // Historical epoch stubs stay readable without registering the retired tool.
   return (
     isRecord(value) &&
     hasOnlyKeys(value, [
@@ -84,7 +85,8 @@ function isDecision(value: unknown): value is EpochDecision {
     ELISION_REASONS.includes(value.reason as ElisionReason) &&
     typeof value.stub === "string" &&
     value.stub.length > 0 &&
-    value.stub.includes(`context_recall("${value.sourceToolCallId}")`) &&
+    (value.stub.includes('read_output({reference:"transcript:v1:') ||
+      value.stub.includes(`context_recall("${value.sourceToolCallId}")`)) &&
     (value.estimatedTokensSaved === undefined ||
       isPositiveSafeInteger(value.estimatedTokensSaved))
   );

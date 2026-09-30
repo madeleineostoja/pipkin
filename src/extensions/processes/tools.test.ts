@@ -1,243 +1,182 @@
 import { describe, expect, it } from "vitest";
+import { Value } from "typebox/value";
 import { registerProcessTools } from "./tools.js";
-
-type Tool = {
-  name: string;
-  parameters: { additionalProperties?: boolean };
-  execute: (...args: any[]) => Promise<any>;
-  renderCall?: (...args: any[]) => { render: (width: number) => string[] };
-  renderResult?: (...args: any[]) => { render: (width: number) => string[] };
-};
-
-function toolsFor(runtime: Record<string, unknown>): Map<string, Tool> {
-  const tools = new Map<string, Tool>();
-  registerProcessTools(
-    {
-      registerTool(tool: Tool) {
-        tools.set(tool.name, tool);
-      },
-    } as never,
-    () => runtime as never,
-  );
-  return tools;
-}
-
 const snapshot = {
   id: "process-1",
   status: "completed",
-  description: "Run the focused tests",
-  command: "echo done",
+  description: "Tests",
+  command: "test",
   cwd: "/work",
   pid: 42,
   exitCode: 0,
   signal: null,
-  startedAt: "2026-03-09T10:00:00.000Z",
-  endedAt: "2026-03-09T10:00:01.000Z",
-  retainedBytes: 5,
+  startedAt: "2026-01-01T00:00:00.000Z",
+  endedAt: "2026-01-01T00:00:01.000Z",
+  retainedBytes: 4,
   droppedBytes: 0,
   outputComplete: true,
-} as const;
-
-const theme = {
-  fg: (_color: string, text: string) => text,
-  bold: (text: string) => text,
-} as never;
-
-describe("process tools", () => {
-  it("returns readable status and selected output while retaining normalized details", async () => {
-    const calls: unknown[][] = [];
-    const tools = toolsFor({
-      async start() {
-        return snapshot;
-      },
-      async result(...args: unknown[]) {
-        calls.push(args);
-        return {
-          snapshot,
-          waitOutcome: "terminal",
-          output: "done",
-          selector: { type: "tail", requestedLines: 80, sourceLines: 1 },
-        };
-      },
-      async stop() {
-        return {
-          snapshot,
-          output: "done",
-          selector: { type: "tail", requestedLines: 80, sourceLines: 1 },
-        };
-      },
+};
+function fixture(
+  state = "completed",
+  retention: unknown = { retention: "retained", outputRef: "capture" },
+  waitOutcome = "terminal",
+  error?: { code: string; message: string },
+) {
+  const tools = new Map<string, any>();
+  const result = {
+    snapshot: {
+      ...snapshot,
+      status: state,
+      exitCode: state === "failed" ? 1 : 0,
+    },
+    output: "diagnostics",
+    selector: { outputTruncated: false, requestedLines: 80, sourceLines: 1 },
+    retention,
+    waitOutcome,
+    ...(error ? { error } : {}),
+  };
+  registerProcessTools(
+    { registerTool: (tool: any) => tools.set(tool.name, tool) } as never,
+    () =>
+      ({
+        assertOwned: () => {},
+        result: async () => result,
+        stop: async () => result,
+        start: async () => result.snapshot,
+        authorizedSnapshots: () => [result.snapshot],
+      }) as never,
+  );
+  return {
+    tools,
+    run: (name: string, input: unknown) =>
+      tools
+        .get(name)
+        .execute("call", input, undefined, undefined, { cwd: "/work" }),
+  };
+}
+describe("process operation contracts", () => {
+  it("distinguishes acceptance, successful status suppression, and failure diagnostics in both payloads", async () => {
+    const f = fixture();
+    const accepted = await f.run("process_start", {
+      command: "test",
+      description: "Tests",
     });
-    const start = tools.get("start_process")!;
-    const get = tools.get("get_process_result")!;
-
-    const started = await start.execute(
-      "start-call",
-      {
-        command: "echo done",
-        description: "Run the focused tests",
-      },
-      undefined,
-      undefined,
-      { cwd: "/work" },
-    );
-    expect(started.content[0].text).toBe(
-      "Started managed process process-1 (pid 42).",
-    );
-    expect(started.details).toMatchObject({
-      snapshot: { id: "process-1", command: "echo done" },
-      resultMode: "output",
+    expect(accepted.structuredContent).toMatchObject({
+      ok: true,
+      process: { id: "process-1" },
     });
-
-    const output = await get.execute("output-call", {
+    expect(accepted.structuredContent).not.toHaveProperty("outputRef");
+    const success = await f.run("process_wait", {
       id: "process-1",
-      wait: false,
-      result: { mode: "output", selector: { tailLines: 20 } },
+      presentation: "status",
     });
-    expect(output.content[0].text).toContain(
-      "Managed process process-1 completed.",
-    );
-    expect(output.content[0].text).toContain(
-      "The process reached terminal settlement.",
-    );
-    expect(output.content[0].text).toContain(
-      "Showing the newest 80 output lines",
-    );
-    expect(output.content[0].text).toContain("Output:\n\ndone");
-    expect(output.content[0].text).not.toContain('"command": "echo done"');
-    expect(output.details).toMatchObject({
-      snapshot: { id: "process-1", status: "completed" },
-      selector: { type: "tail", sourceLines: 1 },
-      resultMode: "output",
+    expect(success.structuredContent.output).toBe("");
+    expect(success.content[0].text).not.toContain("diagnostics");
+    const failed = await fixture("failed").run("process_inspect", {
+      id: "process-1",
+      presentation: "status",
     });
-    expect(calls[0]?.at(-1)).toEqual({ tailLines: 20, find: undefined });
-
-    const renderCall = (isPartial: boolean) =>
-      get.renderCall!({ id: "process-1", wait: true }, theme, { isPartial })
-        .render(120)
-        .map((line: string) => line.trimEnd())
-        .join("\n");
-    expect(renderCall(true)).toBe(
-      "get_process_result process-1\nWaiting for process…",
-    );
-    expect(renderCall(false)).toBe("get_process_result process-1");
-
-    expect(get.parameters.additionalProperties).toBe(false);
-    const resultSchema = (
-      get.parameters as {
-        properties: {
-          result: {
-            anyOf: Array<{
-              properties: {
-                mode: { const: string };
-                selector?: { anyOf: Array<{ required: string[] }> };
-              };
-            }>;
-          };
-        };
-      }
-    ).properties.result;
-    expect(
-      resultSchema.anyOf.map((branch) => branch.properties.mode.const),
-    ).toEqual(["output", "outcome"]);
-    expect(
-      resultSchema.anyOf[0]?.properties.selector?.anyOf.map(
-        (branch) => branch.required,
-      ),
-    ).toEqual([["tailLines"], ["find"]]);
-    expect(tools.get("stop_process")!.parameters.additionalProperties).toBe(
-      false,
-    );
+    expect(failed.structuredContent).toMatchObject({
+      ok: false,
+      error: { code: "execution_failed" },
+      output: "diagnostics",
+    });
+    expect(failed.isError).toBe(true);
+    for (const [name, value] of [
+      ["process_start", accepted],
+      ["process_wait", success],
+      ["process_inspect", failed],
+    ] as const) {
+      expect(
+        Value.Check(f.tools.get(name).outputSchema, value.structuredContent),
+      ).toBe(true);
+    }
   });
-
-  it("retains non-failed outcomes, keeps failed output visible, and renders semantic summaries", async () => {
-    const tools = toolsFor({
-      async result() {
-        return {
-          snapshot,
-          waitOutcome: "terminal",
-          output: "done",
-          selector: { type: "find", sourceLines: 1, totalMatches: 1 },
-        };
-      },
-      async stop() {
-        return {
-          snapshot: { ...snapshot, status: "failed" },
-          output: "failure output",
-          selector: { type: "tail", requestedLines: 80, sourceLines: 1 },
-        };
-      },
-    });
-    const get = tools.get("get_process_result")!;
-    const stop = tools.get("stop_process")!;
-
-    const outcome = await get.execute("outcome-call", {
-      id: "process-1",
-      wait: true,
-      result: { mode: "outcome" },
-    });
-    expect(outcome.content[0].text).toContain('context_recall("outcome-call")');
-    expect(outcome.details.retainedResult.result.content[0].text).toContain(
-      "Output:\n\ndone",
+  it("keeps timeout/cancellation distinct from stopping and persistence failures from execution", async () => {
+    const timed = await fixture("running", undefined, "timed_out").run(
+      "process_wait",
+      { id: "process-1" },
     );
-
-    const failed = await stop.execute("failed-call", {
-      id: "process-1",
-      resultMode: "outcome",
+    expect(timed.structuredContent).toMatchObject({
+      ok: true,
+      waitOutcome: "timed_out",
+      process: { state: "running" },
     });
-    expect(failed.details.retainedResult).toBeUndefined();
-    expect(failed.content[0].text).toContain("failure output");
-
-    const render = get.renderResult!;
-    const summary = (details: unknown) =>
-      render(
-        {
-          content: [{ type: "text", text: "complete result" }],
-          details,
-        },
-        { expanded: false, isPartial: false },
-        theme,
-        {},
-      )
-        .render(120)
-        .map((line: string) => line.trimEnd())
-        .join("\n");
+    const cancelled = await fixture("running", undefined, "cancelled").run(
+      "process_wait",
+      { id: "process-1" },
+    );
+    expect(cancelled.structuredContent).toMatchObject({
+      ok: false,
+      error: { code: "cancelled" },
+      process: { state: "running" },
+    });
+    const stopped = await fixture("stopped").run("process_stop", {
+      id: "process-1",
+    });
+    expect(stopped.structuredContent.ok).toBe(false);
+    const f = fixture("completed", {
+      retention: "failed",
+      error: { code: "persistence_failed", message: "disk unavailable" },
+    });
+    const result = await f.run("process_wait", {
+      id: "process-1",
+      presentation: "status",
+    });
+    expect(result.structuredContent).toMatchObject({
+      ok: false,
+      process: { state: "completed", exitCode: 0 },
+      output: "diagnostics",
+      retention: "failed",
+    });
+    expect(result.structuredContent).not.toHaveProperty("outputRef");
     expect(
-      summary({
-        snapshot: { ...snapshot, status: "running" },
-        waitOutcome: "timed_out",
-      }),
-    ).toContain("The wait timed out; the process is still running.");
+      Value.Check(
+        f.tools.get("process_wait").outputSchema,
+        result.structuredContent,
+      ),
+    ).toBe(true);
+  });
+  it("returns nonterminal cleanup failure diagnostics under status presentation", async () => {
+    const f = fixture("running", undefined, "snapshot", {
+      code: "unavailable",
+      message: "Process group did not terminate",
+    });
+    for (const name of ["process_inspect", "process_wait", "process_stop"]) {
+      const result = await f.run(name, {
+        id: "process-1",
+        presentation: "status",
+      });
+      expect(result.structuredContent).toMatchObject({
+        ok: false,
+        error: { code: "unavailable" },
+        process: { state: "running" },
+        waitOutcome: "snapshot",
+        output: "diagnostics",
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain("diagnostics");
+      expect(
+        Value.Check(f.tools.get(name).outputSchema, result.structuredContent),
+      ).toBe(true);
+    }
+  });
+  it("lists bounded public metadata and schema-bearing not-found results, with no legacy aliases", async () => {
+    const f = fixture();
+    expect([...f.tools.keys()]).toEqual([
+      "process_start",
+      "process_list",
+      "process_inspect",
+      "process_wait",
+      "process_stop",
+    ]);
+    const result = await f.run("process_list", {});
+    expect(result.structuredContent.processes[0]).not.toHaveProperty("command");
     expect(
-      summary({
-        snapshot,
-        selector: { type: "find", sourceLines: 100, totalMatches: 0 },
-      }),
-    ).toContain("No retained output matched");
-    expect(
-      summary({
-        snapshot,
-        selector: {
-          type: "find",
-          sourceLines: 100,
-          totalMatches: 3,
-          selectedMatchAnchors: 2,
-          find: "needle",
-        },
-      }),
-    ).toContain("Showing 2 selected matches from 3 retained output matches");
-    expect(
-      summary({
-        retainedResult: {
-          type: "pipkin.context.retained-result",
-          version: 1,
-          result: {
-            content: [{ type: "text", text: "complete result" }],
-            details: { snapshot, waitOutcome: "terminal" },
-          },
-        },
-      }),
-    ).toContain("The process reached terminal settlement.");
-    expect(tools.get("start_process")!.renderResult).toBeTypeOf("function");
-    expect(tools.get("stop_process")!.renderResult).toBeTypeOf("function");
+      Value.Check(
+        f.tools.get("process_list").outputSchema,
+        result.structuredContent,
+      ),
+    ).toBe(true);
   });
 });

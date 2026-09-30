@@ -27,7 +27,16 @@ function context(
     ctx: {
       cwd: "/work",
       model: undefined,
-      sessionManager: { getBranch: () => entries },
+      sessionManager: {
+        getBranch: () => [
+          ...messages.flatMap((message: any) =>
+            message.role === "toolResult"
+              ? [{ id: message.toolCallId, type: "message", message }]
+              : [],
+          ),
+          ...entries,
+        ],
+      },
       ui: { notify: () => {} },
       append,
     },
@@ -74,7 +83,7 @@ describe("context epochs", () => {
     ]);
     expect(result.messages[0]).not.toBe(source);
     expect((result.messages[0] as any).content[0].text).toContain(
-      'context_recall("source")',
+      'read_output({reference:"transcript:v1:',
     );
     const decision = appended[0]?.data.decisions[0];
     expect(decision.estimatedTokensSaved).toBe(
@@ -123,7 +132,7 @@ describe("context epochs", () => {
         }),
       ]);
       expect((result.messages[0] as any).content[0].text).toContain(
-        `context_recall("${source.toolCallId}")`,
+        'read_output({reference:"transcript:v1:',
       );
     }
     expect(single.content[0].text).toBe(singleContent);

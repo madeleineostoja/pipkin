@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { createRetainedBashDefinition } from "./execution.ts";
 import { registerSandboxCommand } from "./command.js";
 import { createSandboxDenialRecorder } from "./denials.js";
 import { createSandboxSessionController } from "./lifecycle.js";
@@ -28,15 +29,9 @@ export default function (pi: ExtensionAPI): void {
       ctx,
       hostBinding.inherited,
     );
-    pi.registerTool({
-      ...started.definition,
-      exposure: "direct",
-      namespace: {
-        name: "execution",
-        description:
-          "Run commands, manage processes, and recall retained output.",
-      },
-    });
+    pi.registerTool(
+      createRetainedBashDefinition(pi.events, ctx.cwd, started.runtime),
+    );
   });
   pi.on("session_shutdown", async (_event, ctx) => {
     const binding = hostBinding;

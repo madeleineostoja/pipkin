@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SandboxDenialObserver } from "./denial-observer.js";
 import { createSandboxDenialRecorder } from "./denials.js";
-import { executeSandboxBash } from "./bash-capability.js";
+import { startSandboxManagedExecution } from "./bash-capability.js";
 import { createSandboxSessionController } from "./lifecycle.js";
 import type { ConfigSnapshot, ProjectConfigSnapshot } from "#lib/config";
 import type { SandboxPolicy } from "./policy.js";
@@ -264,11 +264,12 @@ describe("Sandbox lifecycle", () => {
         getSessionId: () => "test-session",
       },
     } as never;
-    const request = (command: string, timeout?: number) => ({
+    const request = (command: string) => ({
       toolCallId: "call",
-      params: timeout === undefined ? { command } : { command, timeout },
+      command,
+      cwd: process.cwd(),
       signal: undefined,
-      onUpdate: undefined,
+      onOutput: () => {},
       ctx: executionContext,
     });
 
@@ -281,26 +282,22 @@ describe("Sandbox lifecycle", () => {
       (update) => updates.push(update),
       executionContext,
     );
-    const delegatedResult = await executeSandboxBash(
+    expect(publicResult.content).toEqual([{ type: "text", text: "first" }]);
+    expect(updates).not.toHaveLength(0);
+    const first = await startSandboxManagedExecution(
       host as never,
       request("printf first"),
     );
-    expect(delegatedResult).toEqual(publicResult);
-    expect(updates).not.toHaveLength(0);
-    await expect(
-      executeSandboxBash(host as never, request("printf never", 0)),
-    ).rejects.toThrow("Invalid timeout");
-
+    await expect(first.completion).resolves.toMatchObject({ exitCode: 0 });
     await session.sessionStart({} as never, ctx as never);
-    await expect(
-      executeSandboxBash(host as never, request("printf second")),
-    ).resolves.toMatchObject({
-      content: [{ type: "text", text: "second" }],
-    });
-
+    const second = await startSandboxManagedExecution(
+      host as never,
+      request("printf second"),
+    );
+    await expect(second.completion).resolves.toMatchObject({ exitCode: 0 });
     await session.sessionShutdown(ctx as never);
     await expect(
-      executeSandboxBash(host as never, request("printf never")),
+      startSandboxManagedExecution(host as never, request("printf never")),
     ).rejects.toThrow("unavailable");
   });
 

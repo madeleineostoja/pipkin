@@ -38,16 +38,23 @@ Unavailable servers and unsupported capabilities return non-fatal fallback resul
 
 Use foreground Bash when completion is immediately required. Use managed processes only when useful independent work can continue.
 
-| Tool or command      | Purpose                                                        |
-| -------------------- | -------------------------------------------------------------- |
-| `start_process`      | Start one foreground, non-interactive command and return an ID |
-| `get_process_result` | Wait once or inspect bounded output/status                     |
-| `stop_process`       | Stop a process and return final output or a recallable outcome |
-| `/processes`         | Human live inspection and direct stop controls                 |
+| Tool              | Purpose                                                                                                            |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `process_start`   | Accept a foreground command with a normalized 1..120-code-point description; return its ID, not a completion claim |
+| `process_list`    | Recover session-owned IDs and bounded descriptions/state/timing, without commands or output                        |
+| `process_inspect` | Immediately capture current state/output                                                                           |
+| `process_wait`    | Wait for settlement, a deadline, or caller cancellation                                                            |
+| `process_stop`    | Gracefully stop, escalate if needed, and join terminal cleanup                                                     |
 
-Use `wait: true` only for finite processes expected to terminate. For servers, watchers, and other long-lived processes, use `wait: false` to inspect current status and retained output; inspect again whenever newer information is needed. A wait timeout ends only the wait and leaves the process running.
+The human `/processes` dashboard remains available for live inspection and direct stop controls.
 
-Results state process status, wait outcome, and output selection in prose before the complete bounded selected output. Their `details` retain bounded normalized snapshots and selectors. For `get_process_result`, optional `result` selects either `{ mode: "outcome" }` or output mode with an optional mutually exclusive `selector` containing `tailLines` or `find`; omitted `result` defaults to unfiltered output. Outcome mode retains that same point-in-time result for `context_recall`. A later output-mode request is required for newer output.
+Use `process_wait` only for finite work expected to terminate. Its optional `timeoutSeconds` is positive and finite, capped at 2,147,483.647 seconds. Omission waits until terminal settlement or cancellation; it does not grant unlimited process lifetime. Timeout returns `ok:true`, `waitOutcome:"timed_out"`; cancellation returns `ok:false`, `cancelled`, with the latest snapshot. Neither kills the process. Inspect long-lived servers/watchers with `process_inspect`; stop unneeded work explicitly.
+
+Snapshot operations return matching direct and structured process state/timing/exit/signal, `waitOutcome`, output, truncation/completeness and retention data. `presentation:"output"` is the default; `"status"` suppresses only successful logs. Failed terminal commands retain diagnostics and return `execution_failed`; intentional stopping returns `stopped`, not successful verification. Lookup failures use `not_found`; rejected inputs/capacity/deadlines use `invalid_arguments`. Persistence failure returns `persistence_failed`, no bogus reference, and available diagnostics without relabeling the true process state.
+
+The runtime permits 8 active jobs, 32 public records, and 16 waiters per process. Listing filters session/branch ownership before pagination; `offset` defaults to 0 and `limit` to 25 (1..25), newest first with stable ID ties. Commands/cwd in snapshots are bounded previews with explicit truncation flags. Jobs remain discoverable when the initiating script throws.
+
+Each process retains a 1 MiB live output tail. Presentation shows the normal 80-line tail, bounded to 18 KiB/200 lines; [Context](context.md#retained-output) owns selectors over immutable captures, not a live buffer. Inspect/wait/stop persist point-in-time snapshots before returning references. Running snapshots never change; terminal evidence is persisted even without joining and reused across later observers. It survives runtime eviction and durable-session shutdown. Shutdown stops owned processes through Sandbox leases and flushes terminal evidence before clearing; restart never resurrects OS processes. If bounded cleanup fails, shutdown reports failure, captures available output and known exit/signal diagnostics, and releases its reservations without waiting forever for completion. Cleanup failure remains a nonterminal, incomplete snapshot (`unavailable`), not an achieved stop; subsequent inspect/wait/stop calls preserve that uncertainty and failed status presentation still includes diagnostics.
 
 `/processes` groups Running and Settled work, shows command, working directory, PID, settlement, and exceptional output-integrity information on a process landing page, and provides live merged output. Output follows the bottom until you scroll upward; returning to the bottom resumes following new output.
 

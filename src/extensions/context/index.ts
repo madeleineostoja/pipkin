@@ -3,7 +3,13 @@ import {
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import { loadPipkinConfig, presetIssue } from "#lib/config";
-import { registerBashOutcomeTool } from "./bash-outcome.ts";
+import { join } from "node:path";
+import {
+  createOutputScope,
+  inheritedOutputScope,
+  bindOutputScope,
+  type OutputScope,
+} from "./retained-output.ts";
 import {
   COMPACTION_FAILURE_ENTRY_TYPE,
   renderCompactionFailureEntry,
@@ -12,11 +18,13 @@ import { renderEpochEntry } from "./epoch-renderer.ts";
 import { EPOCH_TYPE } from "./policy.ts";
 import { createCompactionCoordinator } from "./compaction.ts";
 import { createPruningFlow } from "./pruning.ts";
-import { registerRecallTool } from "./recall.ts";
+import { registerOutputTools } from "./recall.ts";
 
 export default function (pi: ExtensionAPI): void {
   const config = loadPipkinConfig(getAgentDir());
   const pruning = createPruningFlow(pi);
+  let scope: OutputScope | undefined;
+  let unbind: (() => void) | undefined;
   const compaction = createCompactionCoordinator({
     low: config.config.models.low,
     lowIssue: presetIssue(config, "low")?.message,
@@ -43,6 +51,13 @@ export default function (pi: ExtensionAPI): void {
     renderCompactionFailureEntry,
   );
   pi.on("session_start", (_event, ctx) => {
+    unbind?.();
+    scope?.close();
+    scope?.release();
+    scope =
+      inheritedOutputScope(pi.events, ctx) ??
+      createOutputScope(join(getAgentDir(), "pipkin", "outputs"), ctx);
+    unbind = bindOutputScope(pi.events, scope);
     compaction.sessionStart();
     pruning.sessionStart(ctx);
   });
@@ -63,6 +78,13 @@ export default function (pi: ExtensionAPI): void {
     compaction.beforeProviderRequest(event.payload, ctx),
   );
   pi.on("model_select", (event, ctx) => compaction.modelSelect(event, ctx));
-  registerRecallTool(pi);
-  registerBashOutcomeTool(pi);
+  pi.on("session_shutdown", () => {
+    unbind?.();
+    unbind = undefined;
+    // Later producer shutdown handlers still own issued capture handles.
+    scope?.close();
+    scope?.release();
+    scope = undefined;
+  });
+  registerOutputTools(pi);
 }

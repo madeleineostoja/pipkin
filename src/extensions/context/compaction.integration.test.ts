@@ -23,7 +23,7 @@ function observeOrdering(events: string[]) {
           ? source.content[0].text
           : "";
       events.push(
-        text.includes('context_recall("source")')
+        text.includes('read_output({reference:"transcript:v1:')
           ? "context:pruned"
           : "context:full",
       );

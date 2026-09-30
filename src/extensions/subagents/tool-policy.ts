@@ -17,11 +17,13 @@ const publicAgentTools = new Set([
 ]);
 const activeGatedTools = new Set([
   "bash",
-  "start_process",
-  "get_process_result",
-  "stop_process",
-  "bash_outcome",
-  "context_recall",
+  "process_start",
+  "process_list",
+  "process_inspect",
+  "process_wait",
+  "process_stop",
+  "output_list",
+  "read_output",
   "lsp",
 ]);
 
@@ -61,14 +63,8 @@ export function resolveChildToolNames(
     (!activeGatedTools.has(name) ||
       parentActiveTools?.includes(name) !== false);
   const bashActive = active("bash");
-  const recallActive = bashActive && active("context_recall");
-
   const selected = candidates.filter(
-    (name) =>
-      active(name) &&
-      (name !== "start_process" || bashActive) &&
-      (name !== "context_recall" || recallActive) &&
-      (name !== "bash_outcome" || recallActive),
+    (name) => active(name) && (name !== "process_start" || bashActive),
   );
   if (input.allowExplore && !excluded.has("explore")) {
     selected.push("explore");

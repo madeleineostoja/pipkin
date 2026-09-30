@@ -34,7 +34,7 @@ Workspace-write mode admits the canonical repository workspace, required Git adm
 
 Repository-read-only mode adds final denies for source and Git authorities after writable-root allows, except for discovered package `node_modules` trees and validated configured generated roots. Direct `write` and `edit` may use only canonical temporary roots and validated configured generated roots in that mode, never tracked source, Git, or Pi/Pipkin configuration; they receive no authority over dependency or cache roots merely because Bash does. Seatbelt uses the same narrow configured-root containment for managed Bash and Processes. It is defense in depth for trusted inspection agents, not a general filesystem sandbox.
 
-`bash_outcome` uses the same Sandbox-owned Bash path as ordinary model Bash. Processes uses that path for current-host managed foreground commands. User `!` and `!!` shell execution remains ordinary user-controlled Bash on every platform.
+Sandbox owns the single model `bash` operation and current-host managed foreground execution leases. Bash output/status presentation and Context retention do not add a confinement boundary. Native nested calls traverse the same tool hooks, including Readonly and direct-tool restrictions; codemode JavaScript and annotations are not the confinement boundary. User `!` and `!!` shell execution remains ordinary user-controlled Bash on every platform.
 
 ## Child-session snapshots
 
@@ -50,7 +50,7 @@ Public subagents share the invoking working tree. Implement workers instead rece
 
 Managed commands must remain foreground and non-interactive. Do not use `&`, `nohup`, daemonization, terminal attachment, or input.
 
-Start a process only when useful independent work can continue. Use `wait: true` only for finite processes expected to terminate. Inspect servers, watchers, and other long-lived processes with `wait: false` whenever newer status or output is needed; a wait timeout leaves the process running. Retain a point-in-time outcome when status is enough, and stop unneeded work explicitly. `/processes` provides current-session inspection and direct stop controls; it does not expose arbitrary PID management.
+Start a process only when useful independent work can continue. Use `process_wait` only for finite processes expected to terminate. Inspect servers, watchers, and other long-lived processes with `process_inspect` whenever newer status or output is needed; wait timeout/cancellation leaves the process alive. Choose status presentation when status is enough, and stop unneeded work explicitly. `/processes` provides current-session inspection and direct stop controls; it does not expose arbitrary PID management.
 
 Each runtime permits at most eight active processes, retains at most 32 records and 1 MiB of output per record, and closes with the session.
 

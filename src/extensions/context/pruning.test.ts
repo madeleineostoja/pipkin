@@ -91,6 +91,13 @@ describe("pruning flow", () => {
       readResult("early", 2),
       readResult("late", 100),
     ];
+    entries.push(
+      ...messages.slice(1).map((message, index) => ({
+        type: "message",
+        id: `source-${index}`,
+        message,
+      })),
+    );
     const ctx = {
       cwd: "/work",
       model: { provider: "test", id: "model" },
@@ -120,7 +127,7 @@ describe("pruning flow", () => {
     );
 
     expect((exposed.messages[1] as any).content[0]?.text).toContain(
-      'context_recall("early")',
+      'read_output({reference:"transcript:v1:',
     );
     expect(entries).toEqual(
       expect.arrayContaining([
@@ -144,7 +151,7 @@ describe("pruning flow", () => {
     const restored = createContextRuntime(manager).context(messages);
 
     expect((first.messages[0] as any).content[0].text).toContain(
-      'context_recall("source")',
+      'read_output({reference:"transcript:v1:',
     );
     expect(first.messages[0]?.content).toEqual(restored.messages[0]?.content);
     expect(

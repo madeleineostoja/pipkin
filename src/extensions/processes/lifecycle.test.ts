@@ -1,7 +1,13 @@
-import { createEventBus } from "@earendil-works/pi-coding-agent";
+import { bindOutputScope, createOutputScope } from "#context/retained-output";
+import { join } from "node:path";
+import {
+  createEventBus,
+  getAgentDir,
+  SessionManager,
+} from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import { ACTIVITY_CHANNEL } from "#ui/activity";
-import { bindSandboxBashExecutor } from "../sandbox/bash-binding.js";
+import { bindSandboxManagedExecutor } from "../sandbox/bash-binding.js";
 import type { SandboxExecutionTerminal } from "../sandbox/bash-capability.js";
 import { ProcessSessionLifecycle } from "./lifecycle.js";
 
@@ -51,16 +57,15 @@ describe("ProcessSessionLifecycle", () => {
   });
 
   it("replaces disposed session state with a fresh process-id generation", async () => {
-    const events = {} as never;
-    const binding = bindSandboxBashExecutor(
-      events,
-      async () => ({ content: [], details: undefined }),
-      async () => ({
-        pid: 1,
-        completion: Promise.resolve(terminal()),
-        stop: async () => terminal(),
-      }),
-    );
+    const events = createEventBus();
+    const ctx = { sessionManager: SessionManager.inMemory("/tmp") } as never;
+    const scope = createOutputScope(join(getAgentDir(), "outputs"), ctx);
+    const off = bindOutputScope(events, scope);
+    const binding = bindSandboxManagedExecutor(events, async () => ({
+      pid: 1,
+      completion: Promise.resolve(terminal()),
+      stop: async () => terminal(),
+    }));
     const lifecycle = new ProcessSessionLifecycle({
       events,
       getActiveTools: () => ["bash"],
@@ -69,7 +74,7 @@ describe("ProcessSessionLifecycle", () => {
       command: "true",
       description: "test process",
       cwd: "/tmp",
-      ctx: {} as never,
+      ctx,
       signal: undefined,
       toolCallId: "call",
     };
@@ -87,6 +92,8 @@ describe("ProcessSessionLifecycle", () => {
       await lifecycle.sessionShutdown();
     } finally {
       binding.dispose();
+      off();
+      scope.release();
     }
   });
 });

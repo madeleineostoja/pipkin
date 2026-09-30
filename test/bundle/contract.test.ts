@@ -1,7 +1,6 @@
 import {
   AgentSessionRuntime,
   createAgentSession,
-  createBashToolDefinition,
   createCodemodeExtension,
   createMcpExtension,
   createToolSearchExtension,
@@ -17,6 +16,10 @@ import {
   type LoadExtensionsResult,
 } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import {
+  bindSandboxHost as bindSandboxMode,
+  prepareSandboxChild,
+} from "#sandbox/runtime";
 import { createManagedSessionHarness } from "../support/managed-session.ts";
 import { createServer } from "node:http";
 import {
@@ -532,17 +535,13 @@ describe("Pipkin bundle", () => {
       });
       expect(calls).toEqual(safetyPaths);
       const bash = safety[0]?.tools.get("bash")?.definition;
-      const native = createBashToolDefinition(fixture.cwd);
       expect(bash).toMatchObject({
-        name: native.name,
-        label: native.label,
-        description: native.description,
-        parameters: native.parameters,
-        promptSnippet: native.promptSnippet,
-        promptGuidelines: native.promptGuidelines,
+        name: "bash",
         exposure: "direct",
         namespace: { name: "execution" },
       });
+      expect(bash?.parameters).toHaveProperty("properties.presentation");
+      expect(bash?.outputSchema).toBeDefined();
       await runner.emit({ type: "session_shutdown", reason: "reload" });
       expect(errors).toEqual([]);
       await fixture.loader.reload();
@@ -711,6 +710,73 @@ describe("Pipkin bundle", () => {
       expect(host.errors).toEqual([]);
     } finally {
       await host.dispose();
+    }
+  });
+
+  it("recovers Bash evidence and a process accepted by a codemode script that later throws", async () => {
+    const fixture = await loadBundle({ nativeFactories: true });
+    const parent = createEventBus();
+    const mode = bindSandboxMode(parent, () => false);
+    const pending = prepareSandboxChild(parent, fixture.eventBus);
+    const host = await nativeSession(fixture);
+    try {
+      const results = await host.prompt([
+        {
+          name: "codemode",
+          id: "lost-script",
+          args: {
+            code: `
+          const failed = await tools.bash({command:"printf nested-failure; exit 9", presentation:"status"});
+          if (failed.ok || failed.execution.exitCode !== 9 || !failed.output.includes("nested-failure")) throw new Error("bad failure data");
+          await tools.process_start({command:"printf lost-process",description:"recover lost job"});
+          throw new Error("enclosing script failed");
+        `,
+          },
+        },
+        {
+          name: "codemode",
+          id: "recover-script",
+          args: {
+            code: `
+          const jobs = await tools.process_list({});
+          if (!jobs.ok || jobs.processes.length !== 1) throw new Error("lost process");
+          const job = await tools.process_wait({id:jobs.processes[0].id});
+          if (!job.ok || !job.output.includes("lost-process")) throw new Error("lost job output");
+          const outputs = await tools.output_list({});
+          if (!outputs.ok || outputs.outputs.length !== 2) throw new Error("lost or duplicated captures");
+          const failed = outputs.outputs.find(output=>output.sourceTool === "bash");
+          const evidence = await tools.read_output({reference:failed.reference});
+          if (!evidence.ok || evidence.source.execution.state !== "failed" || evidence.source.execution.exitCode !== 9 || !evidence.content[0].text.includes("nested-failure")) throw new Error("lost failure evidence");
+          text("recovered immutable evidence without rerunning");
+        `,
+          },
+        },
+      ]);
+      expect(
+        results.find((result) => result.toolCallId === "lost-script"),
+      ).toMatchObject({
+        isError: true,
+        content: expect.arrayContaining([
+          expect.objectContaining({
+            text: expect.stringContaining("enclosing script failed"),
+          }),
+        ]),
+      });
+      expect(
+        results.find((result) => result.toolCallId === "recover-script"),
+      ).toMatchObject({
+        isError: false,
+        content: expect.arrayContaining([
+          expect.objectContaining({
+            text: expect.stringContaining("recovered immutable evidence"),
+          }),
+        ]),
+      });
+      expect(host.errors).toEqual([]);
+    } finally {
+      await host.dispose();
+      pending?.dispose();
+      mode.dispose();
     }
   });
 
@@ -1131,8 +1197,8 @@ describe("Pipkin bundle", () => {
       { setPipkinStatus },
       { createActivityPublisher },
       { bindSandboxHost },
-      { executeSandboxBash, startSandboxManagedExecution },
-      { retainResult, decodeRetainedResult },
+      { startSandboxManagedExecution },
+      { reserveOutput, outputScope },
       { getSubagentRuntime },
       { MANAGED_COMPLETION_FINAL_ACTION },
       { generateSessionName },
@@ -1143,7 +1209,7 @@ describe("Pipkin bundle", () => {
       import("#ui/activity"),
       import("#sandbox/runtime"),
       import("#sandbox/bash"),
-      import("#context/retained-result"),
+      import("#context/retained-output"),
       import("#subagents/runtime"),
       import("#subagents/completion"),
       import("#personality/session-name"),
@@ -1154,10 +1220,9 @@ describe("Pipkin bundle", () => {
       setPipkinStatus,
       createActivityPublisher,
       bindSandboxHost,
-      executeSandboxBash,
       startSandboxManagedExecution,
-      retainResult,
-      decodeRetainedResult,
+      reserveOutput,
+      outputScope,
       getSubagentRuntime,
       generateSessionName,
     ]) {
@@ -1169,27 +1234,17 @@ describe("Pipkin bundle", () => {
     expect(snapshotGlobalSymbols()).toEqual(before);
   });
 
-  it("keeps Context retained-result ownership side-effect-free and acyclic", () => {
+  it("keeps Context retained-output ownership side-effect-free and acyclic", () => {
     const retained = readFileSync(
-      join(ROOT, "src/extensions/context/retained-result.ts"),
+      join(ROOT, "src/extensions/context/retained-output.ts"),
       "utf8",
     );
-    expect(retained).not.toMatch(/register|bindSandbox|#sandbox|#processes/);
-    expect(
-      readFileSync(
-        join(ROOT, "src/extensions/context/bash-outcome.ts"),
-        "utf8",
-      ),
-    ).toContain('from "./retained-result.ts"');
-    expect(
-      readFileSync(join(ROOT, "src/extensions/processes/tools.ts"), "utf8"),
-    ).toContain('from "#context/retained-result"');
-    expect(
-      readFileSync(
-        join(ROOT, "src/extensions/sandbox/bash-capability.ts"),
-        "utf8",
-      ),
-    ).not.toContain("#context/retained-result");
+    expect(retained).not.toMatch(/registerTool|#sandbox|#processes/);
+    for (const path of ["sandbox/execution.ts", "processes/runtime.ts"]) {
+      expect(
+        readFileSync(join(ROOT, "src/extensions", path), "utf8"),
+      ).toContain('from "#context/retained-output"');
+    }
   });
 
   it("contains no package-era topology, retired transport, or cross-feature entrypoint imports", () => {

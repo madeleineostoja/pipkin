@@ -1,7 +1,16 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+  reserveOutput,
+  entryFingerprint,
+  type CaptureHandle,
+  type Retention,
+  type CaptureData,
+  type OutputHost,
+} from "#context/retained-output";
 import { StringDecoder } from "node:string_decoder";
 import {
   startSandboxManagedExecution,
+  sandboxCleanupExecution,
   type SandboxExecutionLease,
 } from "#sandbox/bash";
 
@@ -13,8 +22,6 @@ const MAX_PROJECTION_LINES = 200;
 const MAX_PROJECTION_BYTES = 18 * 1024;
 const MAX_WAIT_TIMEOUT_SECONDS = 2_147_483_647 / 1000;
 const DEFAULT_TAIL_LINES = 80;
-const SEARCH_CONTEXT_LINES = 3;
-const SEARCH_MATCH_LIMIT = 10;
 
 type Stream = "stdout" | "stderr";
 
@@ -44,20 +51,12 @@ export type ProcessSnapshot = Readonly<{
 export type ProcessSubscription = (
   snapshot: ProcessSnapshot | undefined,
 ) => void;
-export type ProcessResultSelection = Readonly<{
-  tailLines?: number;
-  find?: string;
-}>;
 export type ProcessProjection = Readonly<{
   output: string;
   selector: Readonly<{
-    type: "tail" | "find";
-    requestedLines?: number;
+    type: "tail";
+    requestedLines: number;
     sourceLines: number;
-    totalMatches?: number;
-    selectedMatchAnchors?: number;
-    omittedMatches?: number;
-    windows?: number;
     outputTruncated: boolean;
   }>;
 }>;
@@ -81,9 +80,15 @@ type ProcessRecord = RecordState & {
   stdout: StringDecoder;
   stderr: StringDecoder;
   waiters: Set<Waiter>;
+  capture: CaptureHandle;
+  retention?: Retention;
+  settlement: Promise<void>;
+  finalization?: Promise<void>;
+  cleanupError?: { code: string; message: string };
+  completionFailed?: boolean;
+  released?: boolean;
 };
 type LogicalLine = { stream: Stream; text: string; number: number };
-type SearchWindow = { start: number; end: number };
 
 function copy(snapshot: ProcessSnapshot): ProcessSnapshot {
   return { ...snapshot };
@@ -98,7 +103,7 @@ export function normalizeProcessDescription(description: string): string {
     .trim();
   if ([...normalized].length < 1 || [...normalized].length > 120) {
     throw new Error(
-      "start_process: description must normalize to 1–120 Unicode code points",
+      "process_start: description must normalize to 1–120 Unicode code points",
     );
   }
   return normalized;
@@ -159,28 +164,6 @@ function trimPartPrefix(part: OutputPart, bytes: number): number {
   return removed;
 }
 
-function literalBytes(value: string, tool: string, trimmed: boolean): string {
-  const literal = trimmed ? value.trim() : value;
-  const bytes = Buffer.byteLength(literal);
-  if (bytes < 1 || bytes > 256) {
-    throw new Error(`${tool}: literal must contain 1–256 UTF-8 bytes`);
-  }
-  return literal;
-}
-
-function mergeWindows(windows: SearchWindow[]): SearchWindow[] {
-  const merged: SearchWindow[] = [];
-  for (const window of windows) {
-    const previous = merged.at(-1);
-    if (previous && window.start <= previous.end + 1) {
-      previous.end = Math.max(previous.end, window.end);
-    } else {
-      merged.push({ ...window });
-    }
-  }
-  return merged;
-}
-
 export class ProcessRuntime {
   #records = new Map<string, ProcessRecord>();
   #reservations = 0;
@@ -237,14 +220,14 @@ export class ProcessRuntime {
       throw new Error("Processes: session is shutting down.");
     }
     if (!this.bashActive()) {
-      throw new Error("start_process: bash is inactive");
+      throw new Error("process_start: bash is inactive");
     }
     if (!input.command.trim()) {
-      throw new Error("start_process: command must not be empty");
+      throw new Error("process_start: command must not be empty");
     }
     const description = normalizeProcessDescription(input.description);
     if (this.#reservations + this.activeCount() >= MAX_ACTIVE) {
-      throw new Error("start_process: maximum of 8 active processes reached");
+      throw new Error("process_start: maximum of 8 active processes reached");
     }
     this.#reservations += 1;
     const controller = new AbortController();
@@ -261,7 +244,16 @@ export class ProcessRuntime {
     );
     this.#stagingSettlements.add(stagingSettlement);
     const id = `process-${this.#nextId++}`;
+    let capture: CaptureHandle | undefined;
     try {
+      capture = reserveOutput(this.host as OutputHost, input.ctx, {
+        sourceTool: "process_start",
+        callId: input.toolCallId ?? id,
+        jobId: id,
+        command: input.command,
+        cwd: input.cwd,
+        description,
+      });
       const stdout = new StringDecoder("utf8");
       const stderr = new StringDecoder("utf8");
       const staging: RecordState = {
@@ -296,36 +288,41 @@ export class ProcessRuntime {
             (stream === "stdout" ? stdout : stderr).write(data),
           ),
       });
-      if (this.#disposed) {
-        await lease.stop();
-        throw new Error("Processes: session is shutting down.");
-      }
       const record: ProcessRecord = {
         ...staging,
         lease,
         stdout,
         stderr,
         waiters: new Set(),
+        capture,
+        settlement: Promise.resolve(),
       };
       observed = record;
       record.snapshot = { ...record.snapshot, pid: lease.pid };
-      this.#reservations -= 1;
+      await Promise.all(
+        [...this.#records.values()]
+          .filter((record) => terminal(record.snapshot.status))
+          .map((record) => record.finalization),
+      );
+      if (this.#disposed) {
+        await this.settle(record, await lease.stop());
+        throw new Error("Processes: session is shutting down.");
+      }
       this.evictForSuccessfulLaunch();
+      this.#reservations -= 1;
       this.#records.set(id, record);
-      void lease.completion
-        .then((result) => this.settle(record, result))
-        .catch(() =>
-          this.settle(record, {
-            exitCode: null,
-            signal: null,
-            termination: "natural",
-            outputComplete: false,
-          }),
-        );
+      record.settlement = lease.completion.then(
+        (result) => this.settle(record, result),
+        (error: unknown) => {
+          record.completionFailed = true;
+          this.cleanupFailed(record, error);
+        },
+      );
       await Promise.resolve();
       this.emit(record);
       return copy(record.snapshot);
     } catch (error) {
+      capture?.release();
       this.#reservations -= 1;
       throw error;
     } finally {
@@ -345,14 +342,15 @@ export class ProcessRuntime {
     wait: boolean,
     timeoutSeconds: number | undefined,
     signal: AbortSignal | undefined,
-    selection: ProcessResultSelection = {},
   ): Promise<{
     snapshot: ProcessSnapshot;
     waitOutcome: ProcessWaitOutcome;
     output: string;
     selector: ProcessProjection["selector"];
+    retention: Retention;
+    error?: { code: string; message: string };
   }> {
-    this.validateResult(wait, timeoutSeconds, selection);
+    this.validateResult(wait, timeoutSeconds);
     const record = this.require(id);
     let waitOutcome: ProcessWaitOutcome = "snapshot";
     if (wait) {
@@ -360,32 +358,57 @@ export class ProcessRuntime {
         ? "cancelled"
         : terminal(record.snapshot.status)
           ? "terminal"
-          : await this.wait(record, timeoutSeconds, signal);
+          : record.completionFailed
+            ? "snapshot"
+            : await this.wait(record, timeoutSeconds, signal);
     }
-    const projection = this.project(record, selection);
-    return { snapshot: copy(record.snapshot), waitOutcome, ...projection };
+    if (terminal(record.snapshot.status)) {
+      await record.finalization;
+    }
+    const projection = this.project(record);
+    const snapshot = copy(record.snapshot);
+    const retention = await this.captureSnapshot(record);
+    return {
+      snapshot,
+      waitOutcome,
+      ...projection,
+      retention,
+      ...(record.cleanupError ? { error: record.cleanupError } : {}),
+    };
   }
 
   async inspectionOutput(id: string): Promise<ProcessInspectionOutput> {
     return this.inspectOutput(this.require(id));
   }
 
-  async stop(
-    id: string,
-    selection: ProcessResultSelection = {},
-  ): Promise<{
+  async stop(id: string): Promise<{
     snapshot: ProcessSnapshot;
     output: string;
     selector: ProcessProjection["selector"];
+    retention: Retention;
+    error?: { code: string; message: string };
+    waitOutcome: ProcessWaitOutcome;
   }> {
     const record = this.require(id);
+    let error: { code: string; message: string } | undefined;
     if (!terminal(record.snapshot.status)) {
-      await record.lease.stop();
-      await Promise.resolve();
+      try {
+        await this.settle(record, await record.lease.stop());
+      } catch (failure) {
+        this.cleanupFailed(record, failure);
+        error = record.cleanupError;
+      }
     }
+    const snapshot = copy(record.snapshot);
+    const projection = this.project(record);
+    const retention = await this.captureSnapshot(record);
     return {
-      snapshot: copy(record.snapshot),
-      ...this.project(record, selection),
+      snapshot,
+      ...projection,
+      retention,
+      ...(error ? { error } : {}),
+      waitOutcome:
+        error || snapshot.status === "running" ? "snapshot" : "terminal",
     };
   }
 
@@ -398,20 +421,98 @@ export class ProcessRuntime {
       controller.abort();
     }
     await Promise.allSettled(this.#stagingSettlements);
-    await Promise.allSettled(
-      [...this.#records.values()]
-        .filter((record) => !terminal(record.snapshot.status))
-        .map((record) => record.lease.stop()),
+    const results = await Promise.allSettled(
+      [...this.#records.values()].map(async (record) => {
+        try {
+          if (terminal(record.snapshot.status)) {
+            await record.finalization;
+          } else {
+            try {
+              // Sandbox owns bounded termination. A rejected stop does not
+              // imply that its completion promise will ever settle.
+              await this.settle(record, await record.lease.stop());
+            } catch (error) {
+              this.cleanupFailed(record, error);
+              record.retention = await record.capture.commit(
+                this.captureData(record),
+              );
+              throw new Error(record.cleanupError!.message);
+            }
+          }
+        } finally {
+          record.released = true;
+          record.capture.release();
+          for (const waiter of record.waiters) {
+            waiter.finish("cancelled");
+          }
+          record.waiters.clear();
+        }
+      }),
     );
-    for (const record of this.#records.values()) {
-      for (const waiter of record.waiters) {
-        waiter.finish("cancelled");
-      }
-      record.waiters.clear();
-    }
     this.#records.clear();
     this.#subscribers.clear();
     this.#recordSubscribers.clear();
+    const failures = results.filter((result) => result.status === "rejected");
+    if (failures.length) {
+      throw new AggregateError(
+        failures.map((result) => result.reason),
+        "Processes: process cleanup unavailable during shutdown.",
+      );
+    }
+  }
+
+  authorizedSnapshots(ctx: ExtensionContext): readonly ProcessSnapshot[] {
+    return [...this.#records.values()]
+      .filter((record) => this.owns(record, ctx))
+      .map((record) => copy(record.snapshot));
+  }
+
+  assertOwned(id: string, ctx: ExtensionContext): void {
+    const record = this.#records.get(id);
+    if (!record || !this.owns(record, ctx)) {
+      throw new Error("Processes: not found");
+    }
+  }
+
+  private owns(record: ProcessRecord, ctx: ExtensionContext): boolean {
+    const origin = record.capture.origin;
+    if (origin.sessionId !== ctx.sessionManager.getSessionId()) {
+      return false;
+    }
+    return origin.anchor === null
+      ? ctx.sessionManager.getEntries().length === 0
+      : ctx.sessionManager
+          .getBranch()
+          .some(
+            (entry) =>
+              entry.id === origin.anchor &&
+              entryFingerprint(entry) === origin.anchorFingerprint,
+          );
+  }
+
+  private captureData(record: ProcessRecord): CaptureData {
+    const snapshot = record.snapshot;
+    return {
+      execution: {
+        state: snapshot.status,
+        exitCode: snapshot.exitCode,
+        signal: snapshot.signal,
+        startedAt: snapshot.startedAt,
+        ...(snapshot.endedAt ? { endedAt: snapshot.endedAt } : {}),
+      },
+      text: record.output.map((part) => part.text).join(""),
+      truncated: snapshot.droppedBytes > 0,
+      outputComplete: snapshot.outputComplete,
+      droppedBytes: snapshot.droppedBytes,
+    };
+  }
+
+  private async captureSnapshot(record: ProcessRecord): Promise<Retention> {
+    if (terminal(record.snapshot.status)) {
+      await record.finalization;
+      return record.retention!;
+    }
+    return record.capture.snapshot(this.captureData(record));
   }
 
   private activeCount(): number {
@@ -431,10 +532,9 @@ export class ProcessRuntime {
   private validateResult(
     wait: boolean,
     timeoutSeconds: number | undefined,
-    selection: ProcessResultSelection,
   ): void {
     if (!wait && timeoutSeconds !== undefined) {
-      throw new Error("get_process_result: timeoutSeconds requires wait:true");
+      throw new Error("process_inspect: timeoutSeconds requires process_wait");
     }
     if (
       timeoutSeconds !== undefined &&
@@ -442,25 +542,7 @@ export class ProcessRuntime {
         timeoutSeconds <= 0 ||
         timeoutSeconds > MAX_WAIT_TIMEOUT_SECONDS)
     ) {
-      throw new Error("get_process_result: invalid timeoutSeconds");
-    }
-    if (
-      selection.tailLines !== undefined &&
-      (!Number.isInteger(selection.tailLines) ||
-        selection.tailLines < 1 ||
-        selection.tailLines > MAX_PROJECTION_LINES)
-    ) {
-      throw new Error(
-        "get_process_result: tailLines must be an integer from 1 through 200",
-      );
-    }
-    if (selection.tailLines !== undefined && selection.find !== undefined) {
-      throw new Error(
-        "get_process_result: tailLines and find are mutually exclusive",
-      );
-    }
-    if (selection.find !== undefined) {
-      literalBytes(selection.find, "get_process_result: find", true);
+      throw new Error("process_wait: invalid timeoutSeconds");
     }
   }
 
@@ -471,7 +553,7 @@ export class ProcessRuntime {
       );
       if (!oldest) {
         throw new Error(
-          "start_process: record capacity is occupied by active processes",
+          "process_start: record capacity is occupied by active processes",
         );
       }
       this.#records.delete(oldest.snapshot.id);
@@ -480,7 +562,7 @@ export class ProcessRuntime {
   }
 
   private append(record: RecordState, stream: Stream, text: string): void {
-    if (!text) {
+    if (!text || terminal(record.snapshot.status)) {
       return;
     }
     const part: OutputPart = { stream, text, bytes: Buffer.byteLength(text) };
@@ -525,7 +607,55 @@ export class ProcessRuntime {
   private settle(
     record: ProcessRecord,
     result: Awaited<SandboxExecutionLease["completion"]>,
-  ): void {
+  ): Promise<void> {
+    if (record.released) {
+      return Promise.resolve();
+    }
+    return (record.finalization ??= this.finalize(record, result));
+  }
+
+  private cleanupFailed(record: ProcessRecord, failure: unknown): void {
+    if (record.released || terminal(record.snapshot.status)) {
+      return;
+    }
+    const execution = sandboxCleanupExecution(failure);
+    const error = {
+      code: "unavailable",
+      message: truncateUtf8(
+        sanitiseLine(
+          failure instanceof Error
+            ? failure.message
+            : "Process cleanup unavailable.",
+        ),
+        512,
+      ),
+    };
+    if (record.cleanupError?.message !== error.message) {
+      this.append(
+        record,
+        "stderr",
+        `\nProcess cleanup unavailable: ${error.message}\n`,
+      );
+    }
+    record.cleanupError = error;
+    record.snapshot = {
+      ...record.snapshot,
+      ...(execution
+        ? { exitCode: execution.exitCode, signal: execution.signal }
+        : {}),
+      outputComplete: false,
+    };
+    this.emit(record);
+    for (const waiter of Array.from(record.waiters)) {
+      waiter.finish("snapshot");
+    }
+  }
+
+  private async finalize(
+    record: ProcessRecord,
+    result: Awaited<SandboxExecutionLease["completion"]>,
+  ): Promise<void> {
+    record.cleanupError = undefined;
     this.append(record, "stdout", record.stdout.end());
     this.append(record, "stderr", record.stderr.end());
     const status: ProcessStatus =
@@ -542,10 +672,11 @@ export class ProcessRuntime {
       outputComplete: result.outputComplete,
       endedAt: new Date().toISOString(),
     };
+    record.retention = await record.capture.commit(this.captureData(record));
+    this.emit(record);
     for (const waiter of Array.from(record.waiters)) {
       waiter.finish("terminal");
     }
-    this.emit(record);
   }
 
   private wait(
@@ -555,7 +686,7 @@ export class ProcessRuntime {
   ): Promise<ProcessWaitOutcome> {
     if (record.waiters.size >= MAX_WAITERS) {
       return Promise.reject(
-        new Error("get_process_result: maximum of 16 waiters reached"),
+        new Error("process_wait: maximum of 16 waiters reached"),
       );
     }
     if (terminal(record.snapshot.status)) {
@@ -679,10 +810,7 @@ export class ProcessRuntime {
     };
   }
 
-  private project(
-    record: ProcessRecord,
-    selection: ProcessResultSelection,
-  ): ProcessProjection {
+  private project(record: ProcessRecord): ProcessProjection {
     const lines = this.logicalLines(record);
     const notices = [
       ...(record.snapshot.droppedBytes > 0
@@ -694,82 +822,27 @@ export class ProcessRuntime {
         ? ["Final output may be incomplete."]
         : []),
     ];
-    let outputLines: string[];
-    let fixedOutputLines = 0;
-    let selector: ProcessProjection["selector"];
-    if (selection.find !== undefined) {
-      const find = literalBytes(
-        selection.find,
-        "get_process_result: find",
-        true,
-      );
-      const matches = lines
-        .map((line, index) => ({ line, index }))
-        .filter(({ line }) =>
-          sanitiseLine(line.text).toLowerCase().includes(find.toLowerCase()),
-        );
-      const anchors = matches.slice(0, SEARCH_MATCH_LIMIT);
-      const windows = mergeWindows(
-        anchors.map(({ index }) => ({
-          start: Math.max(0, index - SEARCH_CONTEXT_LINES),
-          end: Math.min(lines.length - 1, index + SEARCH_CONTEXT_LINES),
-        })),
-      );
-      outputLines =
-        matches.length === 0
-          ? [
-              `No matches for ${JSON.stringify(sanitiseLine(find))}.`,
-              `Searched ${lines.length} retained source lines.`,
-            ]
-          : [
-              `Matches for ${JSON.stringify(sanitiseLine(find))}: ${anchors.length} selected from ${matches.length}.`,
-              ...(matches.length > anchors.length
-                ? [
-                    `${matches.length - anchors.length} matches omitted from anchors.`,
-                  ]
-                : []),
-              ...windows.flatMap((window, index) => [
-                ...(index > 0 ? ["…"] : []),
-                ...lines
-                  .slice(window.start, window.end + 1)
-                  .map(
-                    (line) =>
-                      `${line.number} [${line.stream}] ${sanitiseLine(line.text)}`,
-                  ),
-              ]),
-            ];
-      selector = {
-        type: "find",
-        sourceLines: lines.length,
-        totalMatches: matches.length,
-        selectedMatchAnchors: anchors.length,
-        omittedMatches: matches.length - anchors.length,
-        windows: windows.length,
-        outputTruncated: false,
-      };
-    } else {
-      const requestedLines = selection.tailLines ?? DEFAULT_TAIL_LINES;
-      const omittedLines = Math.max(0, lines.length - requestedLines);
-      outputLines = [
-        ...(lines.length === 0 ? ["No retained output observed."] : []),
-        ...(omittedLines > 0
-          ? [
-              `${omittedLines} older retained source lines omitted by tail selection.`,
-            ]
-          : []),
-        ...lines
-          .slice(-requestedLines)
-          .map((line) => `[${line.stream}] ${sanitiseLine(line.text)}`),
-      ];
-      fixedOutputLines =
-        (lines.length === 0 ? 1 : 0) + (omittedLines > 0 ? 1 : 0);
-      selector = {
-        type: "tail",
-        requestedLines,
-        sourceLines: lines.length,
-        outputTruncated: false,
-      };
-    }
+    const requestedLines = DEFAULT_TAIL_LINES;
+    const omittedLines = Math.max(0, lines.length - requestedLines);
+    let outputLines = [
+      ...(lines.length === 0 ? ["No retained output observed."] : []),
+      ...(omittedLines > 0
+        ? [
+            `${omittedLines} older retained source lines omitted by tail selection.`,
+          ]
+        : []),
+      ...lines
+        .slice(-requestedLines)
+        .map((line) => `[${line.stream}] ${sanitiseLine(line.text)}`),
+    ];
+    const fixedOutputLines =
+      (lines.length === 0 ? 1 : 0) + (omittedLines > 0 ? 1 : 0);
+    let selector: ProcessProjection["selector"] = {
+      type: "tail",
+      requestedLines,
+      sourceLines: lines.length,
+      outputTruncated: false,
+    };
     let pathological = false;
     outputLines = outputLines.map((line) => {
       const clipped = truncateUtf8(line, 4_096);
@@ -788,61 +861,31 @@ export class ProcessRuntime {
       `Output projection truncated; ${omitted} rendered lines omitted.`;
     let selected: string[];
     let truncated = false;
-    if (selector.type === "tail") {
-      const suffix: string[] = [];
-      for (let index = variable.length - 1; index >= 0; index -= 1) {
-        const next = [variable[index]!, ...suffix];
-        const omitted = variable.length - next.length;
-        const result = [
-          ...fixed,
-          ...(omitted > 0 ? [truncationNotice(omitted)] : []),
-          ...next,
-        ];
-        if (
-          result.length <= MAX_PROJECTION_LINES &&
-          bytesOf(result) <= MAX_PROJECTION_BYTES
-        ) {
-          suffix.unshift(variable[index]!);
-          continue;
-        }
-        break;
-      }
-      truncated = suffix.length < variable.length;
-      selected = [
+    const suffix: string[] = [];
+    for (let index = variable.length - 1; index >= 0; index -= 1) {
+      const next = [variable[index]!, ...suffix];
+      const omitted = variable.length - next.length;
+      const result = [
         ...fixed,
-        ...(truncated
-          ? [truncationNotice(variable.length - suffix.length)]
-          : []),
-        ...suffix,
+        ...(omitted > 0 ? [truncationNotice(omitted)] : []),
+        ...next,
       ];
-    } else {
-      const prefix: string[] = [];
-      for (let index = 0; index < variable.length; index += 1) {
-        const next = [...prefix, variable[index]!];
-        const omitted = variable.length - next.length;
-        const result = [
-          ...fixed,
-          ...next,
-          ...(omitted > 0 ? [truncationNotice(omitted)] : []),
-        ];
-        if (
-          result.length > MAX_PROJECTION_LINES ||
-          bytesOf(result) > MAX_PROJECTION_BYTES
-        ) {
-          break;
-        }
-        prefix.push(variable[index]!);
+      if (
+        result.length <= MAX_PROJECTION_LINES &&
+        bytesOf(result) <= MAX_PROJECTION_BYTES
+      ) {
+        suffix.unshift(variable[index]!);
+        continue;
       }
-      truncated = prefix.length < variable.length;
-      selected = [
-        ...fixed,
-        ...prefix,
-        ...(truncated
-          ? [truncationNotice(variable.length - prefix.length)]
-          : []),
-      ];
+      break;
     }
-    selector = { ...selector, outputTruncated: truncated };
+    truncated = suffix.length < variable.length;
+    selected = [
+      ...fixed,
+      ...(truncated ? [truncationNotice(variable.length - suffix.length)] : []),
+      ...suffix,
+    ];
+    selector = { ...selector, outputTruncated: truncated || pathological };
     return { output: selected.join("\n"), selector };
   }
 }

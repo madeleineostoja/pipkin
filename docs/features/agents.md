@@ -64,10 +64,10 @@ Subagents inherit the parent session's active tools, so inactive parent tools re
 
 Where Bash is available:
 
-- use `bash_outcome` when exit status alone answers the question;
-- use ordinary Bash when successful output informs reasoning;
+- use `bash` with `presentation:"status"` when exit status alone answers the question;
+- use default output presentation when successful output informs reasoning;
 - use managed-process tools only for work that can overlap independent activity; and
-- use `context_recall` for retained child-session output while that child remains alive.
+- use `output_list` and `read_output` for authorized immutable child-session evidence while that child remains alive. [Context](context.md#retained-output) owns retention and handoff limits.
 
 Explore and Review may record qualifying incidental friction through `record_papercut`. That controlled metadata write does not grant source, dependency, or Git mutation.
 

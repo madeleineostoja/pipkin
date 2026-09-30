@@ -12,8 +12,8 @@ import {
   MANAGED_TEST_MODEL,
   MANAGED_TEST_PROVIDER,
 } from "#test/managed-session";
-import { executeSandboxBash } from "#sandbox/bash";
-import { bindSandboxBashExecutor } from "../../src/extensions/sandbox/bash-binding.ts";
+import { startSandboxManagedExecution } from "#sandbox/bash";
+import { bindSandboxManagedExecutor } from "../../src/extensions/sandbox/bash-binding.ts";
 import context from "../../src/extensions/context/index.ts";
 import processes from "../../src/extensions/processes/index.ts";
 import sandbox from "../../src/extensions/sandbox/index.ts";
@@ -58,9 +58,20 @@ describe("Sandbox child binding", () => {
     const canonicalWorkspace = realpathSync(workspace);
     const parentBus = createEventBus();
     const parentMode = bindSandboxHost(parentBus, () => false);
-    const parentExecutor = bindSandboxBashExecutor(parentBus, async () => ({
-      content: [{ type: "text" as const, text: "parent executor" }],
-      details: undefined,
+    const parentExecutor = bindSandboxManagedExecutor(parentBus, async () => ({
+      pid: 999,
+      completion: Promise.resolve({
+        exitCode: 0,
+        signal: null,
+        termination: "natural",
+        outputComplete: true,
+      }),
+      stop: async () => ({
+        exitCode: 0,
+        signal: null,
+        termination: "stopped",
+        outputComplete: true,
+      }),
     }));
     const childSandbox = {} as {
       mode?: { enabled: boolean; writeMode: string };
@@ -69,7 +80,7 @@ describe("Sandbox child binding", () => {
       [
         fauxAssistantMessage(
           fauxToolCall(
-            "bash_outcome",
+            "bash",
             {
               command:
                 'printf \'child retained:%s:%s\' "$PWD" "$PI_SESSION_ID"',
@@ -78,15 +89,11 @@ describe("Sandbox child binding", () => {
           ),
         ),
         fauxAssistantMessage(
-          fauxToolCall(
-            "context_recall",
-            { id: "child-outcome" },
-            { id: "child-recall" },
-          ),
+          fauxToolCall("output_list", {}, { id: "child-recall" }),
         ),
         fauxAssistantMessage(
           fauxToolCall(
-            "start_process",
+            "process_start",
             {
               command: 'printf "managed:%s:%s" "$PWD" "$PI_SESSION_ID"',
               description: "verify child process binding",
@@ -96,8 +103,8 @@ describe("Sandbox child binding", () => {
         ),
         fauxAssistantMessage(
           fauxToolCall(
-            "get_process_result",
-            { id: "process-1", wait: true },
+            "process_wait",
+            { id: "process-1" },
             { id: "child-process-result" },
           ),
         ),
@@ -117,11 +124,12 @@ describe("Sandbox child binding", () => {
         events: parentBus,
         getActiveTools: () => [
           "bash",
-          "bash_outcome",
-          "context_recall",
-          "start_process",
-          "get_process_result",
-          "stop_process",
+          "output_list",
+          "read_output",
+          "process_start",
+          "process_wait",
+          "process_inspect",
+          "process_stop",
         ],
       } as never,
       {
@@ -142,16 +150,15 @@ describe("Sandbox child binding", () => {
 
     try {
       await expect(
-        executeSandboxBash(parentBus, {
+        startSandboxManagedExecution(parentBus, {
           toolCallId: "parent-marker",
-          params: { command: "printf parent" },
+          command: "printf parent",
+          cwd: workspace,
           signal: undefined,
-          onUpdate: undefined,
+          onOutput: () => {},
           ctx: {} as never,
         }),
-      ).resolves.toMatchObject({
-        content: [{ type: "text", text: "parent executor" }],
-      });
+      ).resolves.toMatchObject({ pid: 999 });
 
       const handle = await client.spawn({
         type: "pipkin:implement:reviewer",
@@ -181,17 +188,17 @@ describe("Sandbox child binding", () => {
           expect.objectContaining({
             role: "toolResult",
             toolCallId: "child-outcome",
-            toolName: "bash_outcome",
+            toolName: "bash",
             isError: false,
           }),
           expect.objectContaining({
             role: "toolResult",
             toolCallId: "child-recall",
-            toolName: "context_recall",
+            toolName: "output_list",
             content: [
               expect.objectContaining({
                 type: "text",
-                text: `child retained:${canonicalWorkspace}:${session.sessionId}`,
+                text: expect.stringContaining('"sourceTool":"bash"'),
               }),
             ],
             isError: false,
@@ -199,7 +206,7 @@ describe("Sandbox child binding", () => {
           expect.objectContaining({
             role: "toolResult",
             toolCallId: "child-process-result",
-            toolName: "get_process_result",
+            toolName: "process_wait",
             content: [
               expect.objectContaining({
                 type: "text",
@@ -218,11 +225,12 @@ describe("Sandbox child binding", () => {
         writeMode: "repository-read-only",
       });
       await expect(
-        executeSandboxBash(childBus, {
+        startSandboxManagedExecution(childBus, {
           toolCallId: "child-after-shutdown",
-          params: { command: "printf child" },
+          command: "printf child",
+          cwd: workspace,
           signal: undefined,
-          onUpdate: undefined,
+          onOutput: () => {},
           ctx: {} as never,
         }),
       ).rejects.toThrow("unavailable");
@@ -311,7 +319,7 @@ describe("Sandbox child binding", () => {
     const response = (label: string) => [
       fauxAssistantMessage(
         fauxToolCall(
-          "start_process",
+          "process_start",
           {
             command:
               label === "readonly"
@@ -324,8 +332,8 @@ describe("Sandbox child binding", () => {
       ),
       fauxAssistantMessage(
         fauxToolCall(
-          "get_process_result",
-          { id: "process-1", wait: label !== "readonly" },
+          label === "readonly" ? "process_inspect" : "process_wait",
+          { id: "process-1" },
           { id: `${label}-result` },
         ),
       ),
@@ -333,7 +341,7 @@ describe("Sandbox child binding", () => {
         ? [
             fauxAssistantMessage(
               fauxToolCall(
-                "stop_process",
+                "process_stop",
                 { id: "process-1" },
                 { id: "readonly-stop" },
               ),
@@ -361,11 +369,10 @@ describe("Sandbox child binding", () => {
         events: parentBus,
         getActiveTools: () => [
           "bash",
-          "bash_outcome",
-          "context_recall",
-          "start_process",
-          "get_process_result",
-          "stop_process",
+          "process_start",
+          "process_wait",
+          "process_inspect",
+          "process_stop",
         ],
       } as never,
       {
@@ -477,7 +484,7 @@ describe("Sandbox child binding", () => {
             ? {
                 isError: false,
                 details: {
-                  snapshot: { status: "running", cwd: workspace },
+                  process: { state: "running" },
                   waitOutcome: "snapshot",
                 },
               }

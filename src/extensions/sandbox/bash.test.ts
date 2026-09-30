@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createSandboxBashDefinition,
   createSandboxBashRuntime,
@@ -116,7 +116,7 @@ describe("Sandbox Bash runtime", () => {
           env: executionEnv({ PIPKIN_SANDBOX_TEST: "forwarded" }),
         },
       ),
-    ).resolves.toEqual({ exitCode: 0 });
+    ).resolves.toEqual({ exitCode: 0, signal: null, outputComplete: true });
     expect(output.join("")).toBe(`forwarded:${realpathSync(workspace)}`);
   });
 
@@ -334,7 +334,7 @@ describe("Sandbox Bash runtime", () => {
         onData: (data) => output.push(data.toString()),
         env: executionEnv({ BASH_ENV: bashEnv }),
       }),
-    ).resolves.toEqual({ exitCode: 0 });
+    ).resolves.toEqual({ exitCode: 0, signal: null, outputComplete: true });
     expect(output.join("")).toBe("startupcommand");
     expect(output.join("")).not.toContain("__PIPKIN_SANDBOX_LAUNCHED__");
   });
@@ -356,7 +356,7 @@ printf last`,
         workspace,
         { onData: (data) => output.push(data.toString()) },
       ),
-    ).resolves.toEqual({ exitCode: 0 });
+    ).resolves.toEqual({ exitCode: 0, signal: null, outputComplete: true });
     const text = output.join("");
     expect(text.startsWith("first")).toBe(true);
     expect(text.endsWith("last")).toBe(true);
@@ -391,7 +391,7 @@ printf last`,
       runtime.operations.exec("printf ignored", workspace, {
         onData: (data) => output.push(data.toString()),
       }),
-    ).resolves.toEqual({ exitCode: 0 });
+    ).resolves.toEqual({ exitCode: 0, signal: null, outputComplete: false });
     expect(output.join("")).toBe("done and drained");
     expect(stdout.destroyed).toBe(true);
     expect(stderr.destroyed).toBe(true);
@@ -415,7 +415,11 @@ printf last`,
             onData: (data) => output.push(data.toString()),
           },
         ),
-      ).resolves.toEqual({ exitCode: code });
+      ).resolves.toEqual({
+        exitCode: code,
+        signal: null,
+        outputComplete: true,
+      });
       expect(output.join("")).toBe(`exit-${code}`);
     }
   });
@@ -436,7 +440,7 @@ printf last`,
           onData: () => undefined,
           env: { PATH: process.env.PATH ?? "" },
         }),
-      ).resolves.toEqual({ exitCode: 0 });
+      ).resolves.toEqual({ exitCode: 0, signal: null, outputComplete: true });
     } finally {
       if (inheritedSessionId === undefined) {
         delete process.env.PI_SESSION_ID;
@@ -623,7 +627,7 @@ printf last`,
       runtime.operations.exec("printf local", workspace, {
         onData: (data) => output.push(data.toString()),
       }),
-    ).resolves.toEqual({ exitCode: 0 });
+    ).resolves.toEqual({ exitCode: 0, signal: null, outputComplete: true });
     expect(output.join("")).toBe("local");
   });
 
@@ -639,7 +643,7 @@ printf last`,
         runtime.operations.exec("printf local", workspace, {
           onData: (data) => output.push(data.toString()),
         }),
-      ).resolves.toEqual({ exitCode: 0 });
+      ).resolves.toEqual({ exitCode: 0, signal: null, outputComplete: true });
       expect(output.join("")).toBe("local");
     }
   });
@@ -788,6 +792,61 @@ printf last`,
         expect.objectContaining({ stream: "stderr", text: "err" }),
       ]),
     );
+  });
+
+  it("preserves known exit diagnostics when managed process-group cleanup rejects", async () => {
+    const child = new EventEmitter();
+    const stdout = new PassThrough(),
+      stderr = new PassThrough();
+    Object.assign(child, {
+      pid: 54321,
+      stdin: new PassThrough(),
+      stdout,
+      stderr,
+    });
+    const kill = vi.spyOn(process, "kill").mockImplementation((pid) => {
+      expect(pid).toBe(-54321);
+      return true; // The fake group remains alive after both signals.
+    });
+    const runtime = createSandboxBashRuntime({
+      enabled: () => false,
+      supportedMac: false,
+      terminationWaitMs: 1,
+      spawn: () => child as never,
+    });
+    try {
+      const lease = await runtime.startManaged({
+        toolCallId: "cleanup-failure",
+        command: "ignored",
+        cwd: "/tmp",
+        ctx: {
+          sessionManager: {
+            getSessionId: () => "session",
+            getSessionFile: () => undefined,
+          },
+        } as never,
+        signal: undefined,
+        onOutput: () => undefined,
+      });
+      const completion = expect(lease.completion).rejects.toMatchObject({
+        code: "sandbox_cleanup_failed",
+        execution: { exitCode: 7, signal: "SIGTERM", termination: "stopped" },
+      });
+      const stopped = expect(lease.stop()).rejects.toMatchObject({
+        code: "sandbox_cleanup_failed",
+        execution: { exitCode: 7, signal: "SIGTERM" },
+      });
+      child.emit("exit", 7, "SIGTERM");
+      stdout.destroy();
+      stderr.destroy();
+      await Promise.all([completion, stopped]);
+      await expect(lease.stop()).rejects.toMatchObject({
+        code: "sandbox_cleanup_failed",
+      });
+    } finally {
+      kill.mockRestore();
+      await runtime.dispose();
+    }
   });
 
   it("gives SIGKILL a fresh deadline when a managed child ignores SIGTERM", async () => {

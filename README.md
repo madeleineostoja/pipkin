@@ -55,7 +55,7 @@ Implement coordinates trusted workers in disposable Git worktrees, publishes thr
 
 - **Sandbox** contains model Bash and direct `write`/`edit` calls on macOS. Inspection children can protect source and Git while retaining disposable dependency runtime writes; Linux remains instruction-only.
 - **Readonly** independently asks for confirmation before resolved `edit` and `write` calls.
-- **Context** prunes stale or superseded tool output, routes textual compaction through `models.low`, uses server checkpoints for eligible Codex OAuth sessions with visible fallback diagnostics and turn cancellation when checkpoints cannot be replayed, and preserves original results for `context_recall`.
+- **Context** prunes stale or superseded tool output, routes textual compaction through `models.low`, uses server checkpoints for eligible Codex OAuth sessions with visible fallback diagnostics and turn cancellation when checkpoints cannot be replayed, and preserves original results and immutable execution evidence for `read_output`.
 - **Processes** runs foreground non-interactive commands while the main agent continues independent work.
 
 [Safety →](docs/features/safety.md) · [Context →](docs/features/context.md)
@@ -113,12 +113,15 @@ These tools are called by the agent rather than typed as slash commands. They us
 
 | Tool                    | Purpose                                                                                |
 | ----------------------- | -------------------------------------------------------------------------------------- |
-| `bash_outcome`          | Run an action or validation when exit status alone is enough                           |
-| `context_recall`        | Recover retained output or content hidden behind a pruning stub                        |
+| `bash`                  | Run a command with output or explicit status presentation and retained evidence        |
+| `output_list`           | Recover authorized execution capture references                                        |
+| `read_output`           | Read immutable execution output or original transcript content                         |
 | `lsp`                   | Query definitions, types, implementations, references, symbols, hover, and diagnostics |
-| `start_process`         | Start managed foreground work while independent work continues                         |
-| `get_process_result`    | Join or intentionally inspect a managed process                                        |
-| `stop_process`          | Stop managed work that is no longer needed                                             |
+| `process_start`         | Accept managed foreground work while independent work continues                        |
+| `process_list`          | Recover session-owned process IDs and metadata                                         |
+| `process_inspect`       | Immediately capture current process output/state                                       |
+| `process_wait`          | Join finite work without killing it on wait timeout/cancellation                       |
+| `process_stop`          | Stop unneeded work and join cleanup                                                    |
 | `Agent`                 | Start an Explore or Review managed subagent and return its ID                          |
 | `get_subagent_result`   | Join or inspect a managed subagent                                                     |
 | `steer_subagent`        | Queue guidance for a running managed subagent                                          |

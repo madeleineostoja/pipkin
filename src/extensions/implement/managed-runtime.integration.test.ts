@@ -352,8 +352,8 @@ describe("Implement managed runtime integration", () => {
       getActiveTools: () => [
         "read",
         "bash",
-        "bash_outcome",
-        "context_recall",
+        "output_list",
+        "read_output",
         "edit",
         "write",
         "Agent",
