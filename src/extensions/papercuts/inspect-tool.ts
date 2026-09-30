@@ -77,6 +77,13 @@ type InspectRequest = Static<typeof InspectPapercutsSchema>;
 export function registerInspectTool(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "inspect_papercuts",
+    exposure: "deferred",
+    namespace: {
+      name: "papercuts",
+      description:
+        "Read or record incidental friction under the personal registry policy.",
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
     label: "inspect_papercuts",
     description:
       "Read recorded Papercut findings in the current repository. Inspect only when the user asks about a finding, or to check for an equivalent existing finding before recording newly encountered qualifying friction. Include closed findings when checking for duplicates. Do not proactively inspect to find work, and do not discuss or address existing findings merely because a deduplication check found them. Inspection does not authorize implementation or closing a finding.",

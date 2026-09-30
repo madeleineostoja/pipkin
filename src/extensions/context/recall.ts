@@ -126,6 +126,13 @@ export function parseLineRange(
 export function registerRecallTool(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "context_recall",
+    exposure: "deferred",
+    namespace: {
+      name: "execution",
+      description:
+        "Run commands, manage processes, and recall retained output.",
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
     label: "context_recall",
     description:
       "Retrieve original content retained by an outcome tool or hidden behind a Context pruning stub.",

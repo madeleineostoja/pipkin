@@ -117,6 +117,7 @@ function completionTool(options: unknown): {
   if (!tool) {
     throw new Error("Managed completion tool was not registered.");
   }
+  expect(tool).toMatchObject({ exposure: "model-only" });
   return tool as {
     description?: string;
     executionMode?: string;

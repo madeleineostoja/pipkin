@@ -25,56 +25,46 @@ Only `models` is required for the complete model-powered feature set. `nickname`
 
 Configuration is snapshotted at each consuming feature's documented lifecycle boundary. Run Pi's `/reload` after changing it.
 
-## MCP servers
+## Native discovery
 
-MCP is optional. Add personal servers to `<getAgentDir()>/pipkin/config.json` and checkout-specific servers to `<canonical-root>/<CONFIG_DIR_NAME>/pipkin/config.json` (currently `<checkout>/.pi/pipkin/config.json`). An empty `mcp` map is valid. Project MCP configuration is read only in trusted sessions, never by searching ancestor directories.
+Merge this fragment into Pi's `settings.json`; do not overwrite unrelated settings or model presets:
 
 ```json
 {
-  "mcp": {
-    "research": {
-      "url": "https://mcp.example.test/v1",
-      "oauth": {
-        "clientName": "Approved Client"
-      }
-    }
-  }
+  "defaultTools": ["+codemode", "+tool_search"],
+  "codemode": { "mode": "on" }
 }
 ```
 
-This is a strict endpoint and OAuth client-metadata schema:
+Keep the native built-in extensions enabled and the native declaration budget. Sandbox `bash` stays directly declared, and user-enabled native tools such as `read`, `edit`, and `write` remain intact. Other public Pipkin tools are deferred: native `tool_search` can discover and activate them for direct calls, and native `codemode` can call them without activation. Private managed completion is directly declared but model-only. Discovery and annotation hints never grant permission.
 
-| Path                          | Required           | Exact contract                                                                                                                                  |
-| ----------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `mcp`                         | No                 | Object map of server definitions                                                                                                                |
-| `mcp.<name>`                  | Yes for each entry | Object with `url` and optional `oauth`; `<name>` matches `[a-z][a-z0-9_-]*`, is at most 64 characters, and cannot begin `project__`             |
-| `mcp.<name>.url`              | Yes                | HTTP(S) URL string at most 2,000 characters                                                                                                     |
-| `mcp.<name>.oauth`            | No                 | Object containing only `clientName`                                                                                                             |
-| `mcp.<name>.oauth.clientName` | Yes with `oauth`   | Literal Dynamic Client Registration `client_name`, trimmed, without control characters or environment interpolation, and at most 256 characters |
+At least one discovery path must be active. Pipkin currently checks once at the first turn, after the initial native startup wait; a slow MCP connection can outlast that wait, so the check can warn prematurely. Setup warnings use UI notifications when available and stderr in print/JSON sessions, leaving protocol stdout untouched. Pipkin does not rewrite settings, crash, or enable every tool as a fallback. SDK hosts must supply the supported native factories and complete `bindExtensions()`; the CLI supplies them normally.
 
-Pipkin performs no endpoint reachability check while parsing configuration. Each server definition is validated independently: an invalid name, malformed definition, unsupported field, invalid URL, or invalid OAuth client name omits only that entry while valid siblings remain available. Invalid `mcp` values are rejected, and all unsupported fields in strict server definitions are reported as configuration issues.
+## MCP servers
 
-`oauth.clientName` overrides the non-secret literal client name that the adapter advertises during Dynamic Client Registration for that server. It does not provide a pre-registered client ID, secret, access token, or refresh token. Configure only the identity required by the provider; changing it may require `/mcp logout <server>` before authenticating again.
+Native Pi exclusively owns MCP configuration, transport, authentication, discovery, and `/mcp`, even with no servers configured. Pipkin has no MCP proxy or `/mcp-auth` command. Configure `mcpServers` in `<getAgentDir()>/mcp.json` or trusted project `.pi/mcp.json`. Native project entries replace same-named global entries wholesale. Native OAuth credentials stay in `<getAgentDir()>/mcp-auth.json`; Pi owns their lifecycle.
 
-No credential, token, transport, lifecycle, or other provider-specific setting belongs in this schema. Do not put secrets in configuration or URLs; adapter-owned credentials are separate from Pipkin configuration.
+### Manual cutover
 
-At session start Pipkin parses both scopes independently, preserving valid siblings and scope-labelled issues. A valid trusted-project entry replaces a global entry with the same logical name; an invalid project sibling leaves the valid global server intact. Global servers keep their configured adapter name. Project servers are supplied to the adapter as `project__<slug>_<digest>__<logical-name>` (at most 112 characters):
+1. Finish or stop active Implement runs before upgrading.
+2. Manually review old Pipkin `mcp` entries and configure the intended native `mcpServers` entries. Pipkin rejects even an empty old `mcp` field and reports bounded, scope-labelled native-configuration guidance at session start for global and trusted-project configuration. Valid sibling settings still apply; no configuration is translated. Remove that field manually, preserving unrelated settings.
+3. Remove any separately installed adapter extension that claims `/mcp`, and enable native MCP. Run `/reload` or start a new session.
+4. Use native `/mcp` to inspect configuration and connection state. For authorized authentication, use the native manager or `/mcp login <server>` (`pi mcp login <server>` from a shell). Anonymous and API-key servers use ordinary native MCP configuration; OAuth uses native login, not Pipkin credentials.
 
-- `<slug>` starts with the lowercased canonical-root basename. Each maximal run outside `[a-z0-9]` becomes `_`; surrounding `_` characters are removed; the result is truncated to 24 characters; and an `_` newly left at the end by truncation is removed. An empty result becomes `project`.
-- `<digest>` is the first 12 lowercase hexadecimal characters of SHA-256 over the UTF-8 canonical absolute root string.
+Consult [Pi's MCP guide](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md) for exact native settings and authentication procedures. Never put secrets in repository files, URLs, or tool arguments. Pipkin does not edit personal adapter/native configuration, credentials, or historical data. Old adapter identities and credentials are not automatically migrated or deleted.
 
-These names deliberately key adapter-owned credentials and metadata: global names share credentials, while project names isolate credentials and their URL binding. Moving or recloning a checkout changes its generated name, so authenticate again if needed.
+### Figma operator gate
 
-Pipkin resolves the current canonical Git worktree root, or canonical current directory outside a usable worktree; it never searches a different ancestor. Snapshots are immutable for the session and Pipkin does not watch files. Save changes and run `/reload` to reconstruct the map and adapter. [MCP](features/mcp.md) documents the visible operational consequences of these adapter identities.
+Live Figma cutover is **blocked/unverified** until the operator, with explicit authorization, registers/configures/logs in using the separately supplied current guide and makes a real permitted Figma tool call through native Pi. Record only pass/fail and a non-secret explanation. Native Pi supports a configured `oauth.clientId` and matching callback URL to skip dynamic registration, but not the adapter's client-name override; use the working name, matching callback, and returned authentication method from that guide. Tests with a local fake server do not verify Figma. Failed or unperformed verification remains blocked/unverified: no proxy, fallback server, credential change, or workaround is authorized by this cutover.
 
 ## Sandbox writable roots
 
 Sandbox reads `sandbox.writable` from both configuration scopes:
 
-| Scope   | Path                                                                                                         | Allowed fields                                          |
-| ------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
-| Global  | `<getAgentDir()>/pipkin/config.json` (normally `~/.pi/agent/pipkin/config.json`)                             | `nickname`, `models`, `implement`, `sandbox`, and `mcp` |
-| Project | `<canonical-workspace>/<CONFIG_DIR_NAME>/pipkin/config.json` (currently `<checkout>/.pi/pipkin/config.json`) | `sandbox` and `mcp`                                     |
+| Scope   | Path                                                                                                         | Allowed fields                                   |
+| ------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------ |
+| Global  | `<getAgentDir()>/pipkin/config.json` (normally `~/.pi/agent/pipkin/config.json`)                             | `nickname`, `models`, `implement`, and `sandbox` |
+| Project | `<canonical-workspace>/<CONFIG_DIR_NAME>/pipkin/config.json` (currently `<checkout>/.pi/pipkin/config.json`) | `sandbox`                                        |
 
 Project configuration is anchored to the resolved workspace; Pipkin does not search ancestors. Put personal persistent roots in the global file, not in a project file or `.pi/settings.json`.
 
@@ -130,25 +120,11 @@ Pi owns provider credentials and `settings.json`; keep API keys out of Pipkin co
 
 Publication remains serialized regardless of worker concurrency. See [Implementation](features/implementation.md).
 
-## Reference credentials
+## Native research setup
 
-Reference optionally reads `<getAgentDir()>/pipkin/auth.json`, separate from `config.json`:
+Pipkin no longer supplies `docs`, `package_search`, or `code_search`, and never reads `pipkin/auth.json`. Existing credential files and historical results remain untouched; there is no replacement Pipkin credential abstraction.
 
-```json
-{
-  "context7": "…",
-  "github": "…"
-}
-```
-
-| Key        | Purpose                                                                                |
-| ---------- | -------------------------------------------------------------------------------------- |
-| `context7` | Context7 documentation requests                                                        |
-| `github`   | GitHub code search; repository access determines searchable private or internal source |
-
-Both values are optional non-empty strings. Unrelated keys are ignored. Use a dedicated least-privilege GitHub token. `package_search` always requests public repositories.
-
-Reference does not read GitHub CLI, npm, repository, or environment credentials. Never place real credentials in documentation, repository files, or tool inputs. See [Reference](features/reference.md).
+For parent-session research, manually configure an existing Context7 server in native `mcp.json` and authenticate through native Pi if required. Pipkin never provisions Context7. Use the user's existing `gh` authentication for GitHub work, `npm search --json <query>` for package discovery, and file/LSP capabilities for local source evidence. Web Fetch and Browser retain their distinct public-URL and rendered-state boundaries. Worker documentation inheritance is a separate worker-runtime contract, not implied by parent setup.
 
 ## Durable state
 

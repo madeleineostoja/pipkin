@@ -16,15 +16,6 @@ export const THINKING_LEVELS = [
 export const MAX_CONFIG_BYTES = 64 * 1024;
 export const MAX_SANDBOX_WRITABLE_ENTRIES = 64;
 export const MAX_SANDBOX_WRITABLE_LENGTH = 1024;
-export const MAX_MCP_SERVER_NAME_LENGTH = 64;
-export const MAX_MCP_SERVER_URL_LENGTH = 2_000;
-export const MAX_MCP_OAUTH_CLIENT_NAME_LENGTH = 256;
-export const MCP_PROJECT_NAME_PREFIX = "project__";
-
-// The adapter resolves these forms at authentication time; Pipkin snapshots
-// client identity as a validated literal instead.
-const MCP_ENV_INTERPOLATION_PATTERN = /\$\{\w+\}|\$env:\w+|\{env:\w+\}/;
-
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 export type ModelPresetName = "utility" | "low" | "medium" | "high";
 export type ModelPreset = Readonly<{ model: string; thinking: ThinkingLevel }>;
@@ -35,22 +26,14 @@ export type ConfigIssue = Readonly<{
   scope?: ConfigScope;
 }>;
 export type SandboxConfig = Readonly<{ writable: readonly string[] }>;
-export type McpOAuthConfig = Readonly<{ clientName: string }>;
-export type McpServerConfig = Readonly<{
-  url: string;
-  oauth?: McpOAuthConfig;
-}>;
-export type McpConfig = Readonly<Record<string, McpServerConfig>>;
 export type PipkinConfig = Readonly<{
   models: Readonly<Partial<Record<ModelPresetName, ModelPreset>>>;
   implement: Readonly<{ workerConcurrency: number }>;
   sandbox?: SandboxConfig;
-  mcp?: McpConfig;
   nickname?: string;
 }>;
 export type ProjectPipkinConfig = Readonly<{
   sandbox: SandboxConfig;
-  mcp?: McpConfig;
 }>;
 export type ConfigSnapshot = Readonly<{
   path: string;
@@ -270,15 +253,10 @@ function parsePipkinValue(
     }
   }
   const sandbox = parseSandbox(root?.sandbox, issue);
-  const mcp = parseMcp(root?.mcp, issue);
   if (root) {
     for (const key of Object.keys(root)) {
-      if (
-        !(
-          ["models", "implement", "nickname", "sandbox", "mcp"] as string[]
-        ).includes(key)
-      ) {
-        issue(key, "is not supported");
+      if (!["models", "implement", "nickname", "sandbox"].includes(key)) {
+        issue(key, unsupportedField(key));
       }
     }
   }
@@ -288,7 +266,6 @@ function parsePipkinValue(
       models,
       implement: { workerConcurrency },
       sandbox,
-      ...(mcp ? { mcp } : {}),
       ...(nickname ? { nickname } : {}),
     },
     issues,
@@ -302,15 +279,14 @@ function parseProjectValue(
 ): ProjectConfigSnapshot {
   const { issue, root, issues } = parser(value, initialIssues);
   const sandbox = parseSandbox(root?.sandbox, issue);
-  const mcp = parseMcp(root?.mcp, issue);
   if (root) {
     for (const key of Object.keys(root)) {
-      if (key !== "sandbox" && key !== "mcp") {
-        issue(key, "is not supported in project configuration");
+      if (key !== "sandbox") {
+        issue(key, unsupportedField(key, true));
       }
     }
   }
-  return freeze({ path, config: { sandbox, ...(mcp ? { mcp } : {}) }, issues });
+  return freeze({ path, config: { sandbox }, issues });
 }
 
 function parser(value: unknown, initialIssues: ConfigIssue[]) {
@@ -372,118 +348,13 @@ function parseSandbox(value: unknown, issue: Issue): SandboxConfig {
   return freeze({ writable });
 }
 
-function parseMcp(value: unknown, issue: Issue): McpConfig | undefined {
-  if (value === undefined) {
-    return undefined;
+function unsupportedField(key: string, project = false): string {
+  if (key === "mcp") {
+    return "is retired; configure mcpServers in native Pi's agent-directory mcp.json or trusted project .pi/mcp.json, then use /mcp and /reload (see docs/configuration.md)";
   }
-  if (!isRecord(value)) {
-    issue("mcp", "must be an object of server definitions");
-    return undefined;
-  }
-
-  const servers: Record<string, McpServerConfig> = {};
-  for (const [name, definition] of Object.entries(value)) {
-    const field = `mcp.${name}`;
-    if (
-      name.length > MAX_MCP_SERVER_NAME_LENGTH ||
-      !/^[a-z][a-z0-9_-]*$/.test(name) ||
-      name.startsWith(MCP_PROJECT_NAME_PREFIX)
-    ) {
-      issue(
-        field,
-        `name must match [a-z][a-z0-9_-]*, avoid reserved ${MCP_PROJECT_NAME_PREFIX}, and be at most ${MAX_MCP_SERVER_NAME_LENGTH} characters`,
-      );
-      continue;
-    }
-    if (!isRecord(definition)) {
-      issue(field, "must be an object with url");
-      continue;
-    }
-    let serverValid = true;
-    for (const key of Object.keys(definition)) {
-      if (key !== "url" && key !== "oauth") {
-        issue(`${field}.${key}`, "is not supported");
-        serverValid = false;
-      }
-    }
-    let oauth: McpOAuthConfig | undefined;
-    if ("oauth" in definition) {
-      const oauthField = `${field}.oauth`;
-      if (!isRecord(definition.oauth)) {
-        issue(oauthField, "must be an object with clientName");
-        serverValid = false;
-      } else {
-        for (const key of Object.keys(definition.oauth)) {
-          if (key !== "clientName") {
-            issue(`${oauthField}.${key}`, "is not supported");
-            serverValid = false;
-          }
-        }
-        if (typeof definition.oauth.clientName !== "string") {
-          issue(`${oauthField}.clientName`, "must be text");
-          serverValid = false;
-        } else {
-          const clientName = definition.oauth.clientName.trim();
-          if (
-            clientName.length === 0 ||
-            clientName.length > MAX_MCP_OAUTH_CLIENT_NAME_LENGTH
-          ) {
-            issue(
-              `${oauthField}.clientName`,
-              `must be 1 to ${MAX_MCP_OAUTH_CLIENT_NAME_LENGTH} characters`,
-            );
-            serverValid = false;
-          } else if (
-            Array.from(clientName).some((character) =>
-              /\p{Cc}/u.test(character),
-            )
-          ) {
-            issue(
-              `${oauthField}.clientName`,
-              "must not contain control characters",
-            );
-            serverValid = false;
-          } else if (MCP_ENV_INTERPOLATION_PATTERN.test(clientName)) {
-            issue(
-              `${oauthField}.clientName`,
-              "must not contain environment interpolation",
-            );
-            serverValid = false;
-          } else {
-            oauth = { clientName };
-          }
-        }
-      }
-    }
-    if (typeof definition.url !== "string") {
-      issue(`${field}.url`, "must be an HTTP(S) URL");
-      serverValid = false;
-    } else if (definition.url.length > MAX_MCP_SERVER_URL_LENGTH) {
-      issue(
-        `${field}.url`,
-        `must be at most ${MAX_MCP_SERVER_URL_LENGTH} characters`,
-      );
-      serverValid = false;
-    } else {
-      try {
-        const url = new URL(definition.url);
-        if (url.protocol !== "http:" && url.protocol !== "https:") {
-          issue(`${field}.url`, "must be an HTTP(S) URL");
-          serverValid = false;
-        }
-      } catch {
-        issue(`${field}.url`, "must be an HTTP(S) URL");
-        serverValid = false;
-      }
-    }
-    if (serverValid) {
-      servers[name] = {
-        url: definition.url as string,
-        ...(oauth ? { oauth } : {}),
-      };
-    }
-  }
-  return freeze(servers);
+  return project
+    ? "is not supported in project configuration"
+    : "is not supported";
 }
 
 function parseNickname(value: unknown, issue: Issue): string | undefined {

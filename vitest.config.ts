@@ -11,10 +11,8 @@ const features = [
   "lsp",
   "processes",
   "subagents",
-  "reference",
   "web",
   "browser",
-  "mcp",
   "papercuts",
   "btw",
 ];

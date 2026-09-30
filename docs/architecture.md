@@ -16,14 +16,12 @@ The root manifest loads one complete bundle:
 8. Processes
 9. Subagents
 10. Implement
-11. Reference
-12. Web Fetch
-13. Browser
-14. MCP
-15. Papercuts
-16. BTW
+11. Web Fetch
+12. Browser
+13. Papercuts
+14. BTW
 
-Order is a runtime contract. Sandbox and Readonly form the safety prefix. Processes follows LSP and precedes Subagents; Subagents precedes Implement because Implement consumes its managed runtime. Web Fetch follows Reference while retaining separate ownership of direct public-URL retrieval. Browser follows Web Fetch and owns lazy, isolated rendered-page state without sharing Web Fetch, Processes, or UI internals. MCP follows Browser and precedes Papercuts.
+Order is a runtime contract. Sandbox and Readonly form the safety prefix. Processes follows LSP and precedes Subagents; Subagents precedes Implement because Implement consumes its managed runtime. Web Fetch follows Implement while retaining separate ownership of direct public-URL retrieval. Browser follows Web Fetch and owns lazy, isolated rendered-page state without sharing Web Fetch, Processes, or UI internals. Papercuts follows Browser.
 
 The bundle integration suite loads the actual manifest through Pi's loader and verifies inventory, public registration ownership, source provenance, startup and reload behavior, internal imports, and safety ordering.
 
@@ -53,15 +51,15 @@ Cross-feature coupling is explicit, narrow, typed, and producer-owned.
 
 Consumers never import another feature's registration root. A new mapping requires a real consumer, an acyclic dependency, a narrow producer-owned type, a `package.json#imports` declaration, Pi Jiti/Vitest/TypeScript resolution coverage, and updates to this guide and `AGENTS.md`.
 
-Guidance owns persistent summaries for Pipkin's public tools, cross-tool strategy, and the external-content instruction boundary. MCP results use that boundary as external evidence; MCP does not add another instruction authority. Feature descriptions and schemas retain capability details; result owners retain recovery instructions. Its catalogue is static test data, not a registration API.
+Guidance contributes concise cross-tool strategy and external-content authority through native structured prompt sections. It has no production tool catalogue. Native namespace/exposure metadata owns discovery; `test/bundle/inventory.ts` owns expected public inventory and provenance. Feature descriptions and schemas retain capability details; result owners retain recovery instructions.
 
-UI owns generic presentation, not producer state, cleanup, or terminal delivery. Activity is a bounded live-work projection: producers publish only queued, running, or waiting records and remove them immediately at settlement. It omits prompts, commands, cwd, raw output, hidden runtime objects, provider payloads, cost, and aggregate token telemetry; Subagents may project current context usage and one bounded latest-assistant preview. Personality owns voice and identity, including the asynchronous-context fresh-session welcome and naming generation; Implement owns active-run lifecycle and applies its authoritative name. MCP suppresses the adapter footer, so UI remains the sole footer owner.
+UI owns generic presentation, not producer state, cleanup, or terminal delivery. Activity is a bounded live-work projection: producers publish only queued, running, or waiting records and remove them immediately at settlement. It omits prompts, commands, cwd, raw output, hidden runtime objects, provider payloads, cost, and aggregate token telemetry; Subagents may project current context usage and one bounded latest-assistant preview. Personality owns voice and identity, including the asynchronous-context fresh-session welcome and naming generation; Implement owns active-run lifecycle and applies its authoritative name. UI remains the sole Pipkin footer owner.
 
-## MCP containment
+## Native capabilities and discovery
 
-MCP owns the pinned `pi-mcp-adapter@2.34.0` dependency and translates Pipkin's strict endpoint and non-secret OAuth client-name configuration into the adapter's complete in-memory snapshot. Its registration facade permits only Pipkin's public proxy tools and commands, rejects adapter flag exposure, and applies a process-lifetime `MCP_DIRECT_TOOLS=__none__` override for configured sessions.
+Native Pi exclusively owns MCP, including `/mcp` in unconfigured sessions, native `mcp.json`, discovery, and authentication. Pipkin has no adapter, credential abstraction, synthetic identity, environment bridge, or replacement research dispatcher. [Configuration](configuration.md#manual-cutover) owns manual cutover and the live Figma operator gate.
 
-MCP claims `/mcp` during extension loading so Pi 0.99 suppresses its replaceable native MCP owner; `session_start` then installs the configured adapter or recovery handler. The adapter owns configured-server connection, authentication, and shutdown lifecycle. Pipkin owns the facade around registration: it records every adapter listener attached to the shared Pi event bus and removes those listeners on session shutdown, while the adapter's own lifecycle handlers run through the normal session lifecycle. MCP has no second footer owner and no MCP-specific child-agent machinery; child agents inherit the active generic MCP proxy tools through Subagents' ordinary tool policy.
+Sandbox `bash` is direct. Other public Pipkin operations are deferred and callable through native codemode, with useful namespaces (`execution`, `lsp`, `browser`, `web`, `agents`, `implement`, `papercuts`). Private `explore` is deferred only in authorized worker sessions; `pi_managed_complete` is model-only. User-enabled native tools remain intact. Native callable-catalogue filtering, not discovery or annotation hints, is the authorization boundary. The CLI supplies native factories; SDK hosts explicitly supply them and bind extensions. [Configuration](configuration.md#native-discovery) owns parent settings, diagnostic delivery, and the current slow-startup limitation.
 
 ## Separate loaders and explicit coordination
 
@@ -92,7 +90,7 @@ State belongs to the narrowest durable owner:
 - Implement state belongs to a checkout;
 - Papercuts belongs to the canonical primary worktree;
 - repository policy belongs under Pi's project configuration directory in `pipkin/` (currently `.pi/pipkin/`);
-- personal model routing, Reference credentials, and logs belong under Pi's agent directory.
+- personal model routing, native Pi credentials, and logs belong under Pi's agent directory.
 
 See [Configuration and state](configuration.md) for concrete paths.
 

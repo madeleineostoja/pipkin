@@ -42,6 +42,12 @@ export default function (pi: ExtensionAPI): void {
   });
   pi.registerTool({
     name: "browser_observe",
+    exposure: "deferred",
+    namespace: {
+      name: "browser",
+      description: "Observe and interact with isolated rendered browser state.",
+    },
+    annotations: { readOnlyHint: true, openWorldHint: true },
     label: "Browser Observe",
     description:
       "Inspect the active rendered browser tab. Use snapshot to get AI refs, then observe a ref or semantic target; screenshots return a native PNG image. Browser state is isolated to this session and refs can become stale after page changes.",
@@ -72,6 +78,11 @@ export default function (pi: ExtensionAPI): void {
   });
   pi.registerTool({
     name: "browser_act",
+    exposure: "deferred",
+    namespace: {
+      name: "browser",
+      description: "Observe and interact with isolated rendered browser state.",
+    },
     label: "Browser Act",
     description:
       "Navigate, interact with strict snapshot refs or semantic targets, scroll, wait for structured rendered state, and manage isolated tabs. Observe first for refs, act without force or replay, then observe after page-changing actions or uncertain outcomes.",

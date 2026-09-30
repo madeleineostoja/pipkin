@@ -227,7 +227,11 @@ describe("runtime-injected explore tool", () => {
     const reviewerOptions = calls[0]?.[0];
     const exploreOptions = calls[1]?.[0];
     expect(reviewerOptions.customTools).toEqual([
-      expect.objectContaining({ name: "explore" }),
+      expect.objectContaining({
+        name: "explore",
+        exposure: "deferred",
+        namespace: { name: "agents", description: expect.any(String) },
+      }),
     ]);
     expect(reviewerOptions.tools).toEqual([
       "read",

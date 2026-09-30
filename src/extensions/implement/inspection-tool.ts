@@ -34,6 +34,13 @@ type InspectionDetails = {
 export function registerImplementInspectionTool(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "inspect_implement_run",
+    exposure: "deferred",
+    namespace: {
+      name: "implement",
+      description:
+        "Inspect checkout-owned implementation runs without controlling publication.",
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
     label: "inspect_implement_run",
     description:
       "List and inspect durable Pipkin Implement runs in the current checkout. This tool is read-only and reports only durable retained state and paths.",

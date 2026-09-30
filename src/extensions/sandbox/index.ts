@@ -28,7 +28,15 @@ export default function (pi: ExtensionAPI): void {
       ctx,
       hostBinding.inherited,
     );
-    pi.registerTool(started.definition);
+    pi.registerTool({
+      ...started.definition,
+      exposure: "direct",
+      namespace: {
+        name: "execution",
+        description:
+          "Run commands, manage processes, and recall retained output.",
+      },
+    });
   });
   pi.on("session_shutdown", async (_event, ctx) => {
     const binding = hostBinding;

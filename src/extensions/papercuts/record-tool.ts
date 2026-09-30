@@ -122,6 +122,12 @@ export function registerRecordTool(
 ): void {
   pi.registerTool({
     name: "record_papercut",
+    exposure: "deferred",
+    namespace: {
+      name: "papercuts",
+      description:
+        "Read or record incidental friction under the personal registry policy.",
+    },
     label: "record_papercut",
     description: TOOL_DESCRIPTION,
     parameters: PapercutObservationSchema,

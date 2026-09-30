@@ -16,6 +16,12 @@ export default function (pi: ExtensionAPI): void {
   const owner = new WebFetchOwner();
   pi.registerTool({
     name: "web_fetch",
+    exposure: "deferred",
+    namespace: {
+      name: "web",
+      description: "Retrieve bounded credential-free content from public URLs.",
+    },
+    annotations: { readOnlyHint: true, openWorldHint: true },
     label: "Web Fetch",
     description:
       "Retrieve bounded public web content from one URL. Automatically returns pretty-printed JSON, extracted markdown, or plain text; attachments and non-text responses become temporary artifacts. Set raw only to preserve an untouched textual response.",
@@ -32,6 +38,12 @@ export default function (pi: ExtensionAPI): void {
   });
   pi.registerTool({
     name: "batch_web_fetch",
+    exposure: "deferred",
+    namespace: {
+      name: "web",
+      description: "Retrieve bounded credential-free content from public URLs.",
+    },
+    annotations: { readOnlyHint: true, openWorldHint: true },
     label: "Batch Web Fetch",
     description:
       "Retrieve bounded public web content from one to eight URLs with fixed concurrency. Each response automatically becomes pretty-printed JSON, extracted markdown, plain text, or a temporary artifact; set raw per request only to preserve untouched text.",

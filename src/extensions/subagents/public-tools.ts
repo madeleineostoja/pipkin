@@ -104,6 +104,11 @@ export function registerPublicAgentTools({
 }): void {
   pi.registerTool({
     name: "Agent",
+    exposure: "deferred",
+    namespace: {
+      name: "agents",
+      description: "Delegate bounded exploration and review to managed agents.",
+    },
     label: "Agent",
     description:
       "Start an Explore or Review managed subagent and return its ID immediately. Continue independent work, then join once with get_subagent_result when its result becomes a dependency.",
@@ -135,6 +140,11 @@ export function registerPublicAgentTools({
 
   pi.registerTool({
     name: "get_subagent_result",
+    exposure: "deferred",
+    namespace: {
+      name: "agents",
+      description: "Delegate bounded exploration and review to managed agents.",
+    },
     label: "get_subagent_result",
     description:
       "Join a managed subagent or intentionally inspect bounded partial progress. wait:true blocks for completion and final cleanup; wait:false returns its current status immediately.",
@@ -162,6 +172,11 @@ export function registerPublicAgentTools({
 
   pi.registerTool({
     name: "steer_subagent",
+    exposure: "deferred",
+    namespace: {
+      name: "agents",
+      description: "Delegate bounded exploration and review to managed agents.",
+    },
     label: "steer_subagent",
     description:
       "Send guidance to a running managed subagent. Reports whether Pi queued it after the current turn's tool calls or an extension handled it. Fails for unknown or completed agents.",

@@ -198,6 +198,13 @@ const capabilityFor = {
 export function registerLsp(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "lsp",
+    exposure: "deferred",
+    namespace: {
+      name: "lsp",
+      description:
+        "Read workspace language semantics and bounded server diagnostics.",
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
     label: "lsp",
     description:
       "Read-only, workspace-scoped language-semantic queries for definitions, implementations, references, type information, symbols, hover, diagnostics, and server status. Results are bounded and reflect available configured language servers.",

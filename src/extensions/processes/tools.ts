@@ -346,6 +346,12 @@ export function registerProcessTools(
 ): void {
   pi.registerTool({
     name: "start_process",
+    exposure: "deferred",
+    namespace: {
+      name: "execution",
+      description:
+        "Run commands, manage processes, and recall retained output.",
+    },
     label: "start_process",
     description:
       "Start and manage a foreground non-interactive command. Returns an ID for later inspection, joining, or stopping.",
@@ -369,6 +375,12 @@ export function registerProcessTools(
   });
   pi.registerTool({
     name: "get_process_result",
+    exposure: "deferred",
+    namespace: {
+      name: "execution",
+      description:
+        "Run commands, manage processes, and recall retained output.",
+    },
     label: "get_process_result",
     description:
       "Wait for a finite process to settle or immediately inspect any managed process. Use wait:false for servers, watchers, and other long-lived processes. Output includes retained process output; outcome retains a point-in-time status for context_recall.",
@@ -409,6 +421,12 @@ export function registerProcessTools(
   });
   pi.registerTool({
     name: "stop_process",
+    exposure: "deferred",
+    namespace: {
+      name: "execution",
+      description:
+        "Run commands, manage processes, and recall retained output.",
+    },
     label: "stop_process",
     description:
       "Stop a managed process and return its final output or a recallable point-in-time status.",

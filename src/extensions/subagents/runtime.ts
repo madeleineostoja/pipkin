@@ -954,6 +954,12 @@ export class SubagentRuntime {
   createExploreTool(parent: RuntimeSnapshot): ToolDefinition {
     return {
       name: "explore",
+      exposure: "deferred",
+      namespace: {
+        name: "agents",
+        description:
+          "Delegate bounded exploration and review to managed agents.",
+      },
       label: "explore",
       description:
         "Ask a nested repository-preserving Explore child to answer a bounded codebase discovery question synchronously. Use it for multi-step tracing or mapping where keeping the search trail in separate context is useful, not for one targeted semantic lookup or one or two direct reads. The child follows repository-preserving instructions while combining LSP with search and source reads when useful; it cannot spawn agents or invoke explore recursively. Continue with direct discovery if the result is stopped, failed, timed out, or truncated.",

@@ -9,7 +9,7 @@
   </p>
 </div>
 
-Pipkin is an extension bundle for the [Pi](https://pi.dev) coding-agent harness. It adds autonomous plan implementation, focused subagents, context pruning with recall, semantic code navigation, bounded reference and web retrieval, managed processes, and macOS repository-write containment.
+Pipkin is an extension bundle for the [Pi](https://pi.dev) coding-agent harness. It adds autonomous plan implementation, focused subagents, context pruning with recall, semantic code navigation, bounded web retrieval, managed processes, and macOS repository-write containment.
 
 ## Getting started
 
@@ -33,7 +33,7 @@ Configure the models Pipkin should use in `~/.pi/agent/pipkin/config.json`:
 }
 ```
 
-All four model presets are required for the complete model-powered feature set. See [Configuration and state](docs/configuration.md) for validation, model routing, optional settings, credentials, and durable paths.
+All four model presets are required for the complete model-powered feature set. Enable native `codemode`/`tool_search` discovery with `codemode.mode: "on"`; [Configuration and state](docs/configuration.md#native-discovery) owns the settings fragment, validation, model routing, credentials, and durable paths.
 
 ## Features
 
@@ -63,18 +63,18 @@ Implement coordinates trusted workers in disposable Git worktrees, publishes thr
 ### Agents and research
 
 - **Explore** maps unfamiliar code; **Review** independently assesses a concrete artifact. Both run through `Agent` and remain visible through `/agents`.
-- **Reference** searches bounded library documentation, package ecosystems, and credential-visible GitHub source.
+- Research uses user-configured native documentation MCP, existing `gh` authentication, and `npm search --json`; Pipkin has no research credential abstraction.
 - **Web Fetch** retrieves readable content from direct public URLs without authentication or page JavaScript.
 - **Browser** lazily opens an isolated rendered browser with a valid locale for local applications, page state, visual evidence, and navigation.
 - **LSP** provides read-only definitions, references, symbols, types, hover information, and diagnostics for supported languages.
 
-[Agents →](docs/features/agents.md) · [Reference →](docs/features/reference.md) · [Web Fetch →](docs/features/web-fetch.md) · [Browser →](docs/features/browser.md) · [Workflow tools →](docs/features/workflow-tools.md)
+[Agents →](docs/features/agents.md) · [Native research setup →](docs/configuration.md#native-research-setup) · [Web Fetch →](docs/features/web-fetch.md) · [Browser →](docs/features/browser.md) · [Workflow tools →](docs/features/workflow-tools.md)
 
-### Optional external MCP
+### Native external capabilities
 
-When globally or trusted-project configured with endpoints and optional non-secret OAuth client names, **MCP** proxies generic external capabilities one operation at a time or through trusted MCP-only scripts. `/mcp` is always available after startup; without valid servers it explains where to save an `mcp` map and to run `/reload`. `/mcp-auth`, `mcp`, and `mcpScript` require at least one valid server.
+Native Pi owns MCP configuration, authentication, discovery, and `/mcp`, including unconfigured sessions. Pipkin's adapter and Reference are retired. Personal credentials and historical data remain untouched; live Figma cutover remains blocked/unverified until the authorized operator gate passes.
 
-[MCP →](docs/features/mcp.md) · [MCP configuration →](docs/configuration.md#mcp-servers)
+[Native setup and manual cutover →](docs/configuration.md#mcp-servers)
 
 ### Session utilities
 
@@ -96,10 +96,10 @@ When globally or trusted-project configured with endpoints and optional non-secr
 | `/processes`          | Inspect and stop current-session managed processes                        |
 | `/agents`             | Inspect activity/results, guide, or stop public agents                    |
 | `/implement …`        | Start, inspect, stop, restart, or clean Implement runs                    |
-| `/mcp`                | Inspect configured MCP servers, or show unconfigured-session recovery     |
-| `/mcp-auth <server>`  | Authenticate one configured external MCP server (when configured)         |
 | `/papercuts`          | Browse, discuss one finding with the agent, close, and clean up Papercuts |
 | `/btw <question>`     | Ask an ephemeral side question; press `s` to promote a completed exchange |
+
+Native Pi separately supplies `/mcp` for server management and authentication.
 
 ### Keyboard shortcut
 
@@ -109,31 +109,26 @@ When globally or trusted-project configured with endpoints and optional non-secr
 
 ## Model tools
 
-These tools are called by the agent rather than typed as slash commands.
+These tools are called by the agent rather than typed as slash commands. They use native deferred discovery and codemode invocation; Sandbox `bash` stays direct. Native `read`, `edit`, `write`, and other user-enabled built-ins remain available. Private completion stays model-only; discovery never grants permission.
 
-| Tool                    | Purpose                                                                                            |
-| ----------------------- | -------------------------------------------------------------------------------------------------- |
-| `bash_outcome`          | Run an action or validation when exit status alone is enough                                       |
-| `context_recall`        | Recover retained output or content hidden behind a pruning stub                                    |
-| `lsp`                   | Query definitions, types, implementations, references, symbols, hover, and diagnostics             |
-| `start_process`         | Start managed foreground work while independent work continues                                     |
-| `get_process_result`    | Join or intentionally inspect a managed process                                                    |
-| `stop_process`          | Stop managed work that is no longer needed                                                         |
-| `Agent`                 | Start an Explore or Review managed subagent and return its ID                                      |
-| `get_subagent_result`   | Join or inspect a managed subagent                                                                 |
-| `steer_subagent`        | Queue guidance for a running managed subagent                                                      |
-| `inspect_implement_run` | List or inspect durable Implement runs and artifact paths                                          |
-| `docs`                  | Retrieve bounded library documentation                                                             |
-| `package_search`        | Search documentation, npm, and public GitHub package ecosystems                                    |
-| `code_search`           | Search bounded GitHub source visible to the configured credential                                  |
-| `web_fetch`             | Retrieve bounded readable content from one public URL                                              |
-| `batch_web_fetch`       | Retrieve one to eight public URLs with fixed concurrency                                           |
-| `browser_observe`       | Inspect isolated rendered pages, images, diagnostics, and tabs                                     |
-| `browser_act`           | Navigate, interact, scroll, wait, and manage isolated browser tabs                                 |
-| `mcp`                   | Use configured external MCP capabilities through one bounded operation at a time (when configured) |
-| `mcpScript`             | Compose multiple configured MCP operations in one trusted JavaScript request (when configured)     |
-| `inspect_papercuts`     | Read findings on request or check for duplicates before recording                                  |
-| `record_papercut`       | Record qualifying incidental friction after an exercised workaround                                |
+| Tool                    | Purpose                                                                                |
+| ----------------------- | -------------------------------------------------------------------------------------- |
+| `bash_outcome`          | Run an action or validation when exit status alone is enough                           |
+| `context_recall`        | Recover retained output or content hidden behind a pruning stub                        |
+| `lsp`                   | Query definitions, types, implementations, references, symbols, hover, and diagnostics |
+| `start_process`         | Start managed foreground work while independent work continues                         |
+| `get_process_result`    | Join or intentionally inspect a managed process                                        |
+| `stop_process`          | Stop managed work that is no longer needed                                             |
+| `Agent`                 | Start an Explore or Review managed subagent and return its ID                          |
+| `get_subagent_result`   | Join or inspect a managed subagent                                                     |
+| `steer_subagent`        | Queue guidance for a running managed subagent                                          |
+| `inspect_implement_run` | List or inspect durable Implement runs and artifact paths                              |
+| `web_fetch`             | Retrieve bounded readable content from one public URL                                  |
+| `batch_web_fetch`       | Retrieve one to eight public URLs with fixed concurrency                               |
+| `browser_observe`       | Inspect isolated rendered pages, images, diagnostics, and tabs                         |
+| `browser_act`           | Navigate, interact, scroll, wait, and manage isolated browser tabs                     |
+| `inspect_papercuts`     | Read findings on request or check for duplicates before recording                      |
+| `record_papercut`       | Record qualifying incidental friction after an exercised workaround                    |
 
 ## Important safety boundaries
 
@@ -150,10 +145,10 @@ If `pi-smart-fetch` is separately installed, remove it before reloading Pipkin t
 - [Context](docs/features/context.md)
 - [Agents](docs/features/agents.md)
 - [Implementation](docs/features/implementation.md)
-- [Reference](docs/features/reference.md)
+- [Native research setup](docs/configuration.md#native-research-setup)
 - [Web Fetch](docs/features/web-fetch.md)
 - [Browser](docs/features/browser.md)
-- [MCP](docs/features/mcp.md)
+- [Native MCP cutover](docs/configuration.md#mcp-servers)
 - [Interface and Personality](docs/features/interface-and-personality.md)
 - [Workflow tools](docs/features/workflow-tools.md)
 - [Architecture](docs/architecture.md)

@@ -1,0 +1,47 @@
+export const expectedExtensions = [
+  "./src/extensions/sandbox/index.ts",
+  "./src/extensions/readonly/index.ts",
+  "./src/extensions/context/index.ts",
+  "./src/extensions/ui/index.ts",
+  "./src/extensions/personality/index.ts",
+  "./src/extensions/guidance/index.ts",
+  "./src/extensions/lsp/index.ts",
+  "./src/extensions/processes/index.ts",
+  "./src/extensions/subagents/index.ts",
+  "./src/extensions/implement/index.ts",
+  "./src/extensions/web/index.ts",
+  "./src/extensions/browser/index.ts",
+  "./src/extensions/papercuts/index.ts",
+  "./src/extensions/btw/index.ts",
+];
+export const expectedTools = {
+  bash_outcome: "context",
+  context_recall: "context",
+  lsp: "lsp",
+  start_process: "processes",
+  get_process_result: "processes",
+  stop_process: "processes",
+  Agent: "subagents",
+  get_subagent_result: "subagents",
+  steer_subagent: "subagents",
+  inspect_implement_run: "implement",
+  web_fetch: "web",
+  batch_web_fetch: "web",
+  browser_observe: "browser",
+  browser_act: "browser",
+  inspect_papercuts: "papercuts",
+  record_papercut: "papercuts",
+};
+export const expectedCommands = {
+  sandbox: "sandbox",
+  readonly: "readonly",
+  processes: "processes",
+  agents: "subagents",
+  implement: "implement",
+  papercuts: "papercuts",
+  btw: "btw",
+};
+export const privateExposures = {
+  explore: "deferred",
+  pi_managed_complete: "model-only",
+} as const;

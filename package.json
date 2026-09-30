@@ -31,10 +31,8 @@
       "./src/extensions/processes/index.ts",
       "./src/extensions/subagents/index.ts",
       "./src/extensions/implement/index.ts",
-      "./src/extensions/reference/index.ts",
       "./src/extensions/web/index.ts",
       "./src/extensions/browser/index.ts",
-      "./src/extensions/mcp/index.ts",
       "./src/extensions/papercuts/index.ts",
       "./src/extensions/btw/index.ts"
     ]
@@ -60,7 +58,6 @@
     "test": "vitest run --testTimeout 15000"
   },
   "dependencies": {
-    "@octokit/rest": "^22.0.1",
     "@playwright/browser-chromium": "^1.62.0",
     "defuddle": "^0.19.2",
     "eventsource-parser": "^3.1.1",
@@ -69,7 +66,6 @@
     "ipaddr.js": "^2.5.0",
     "linkedom": "^0.18.13",
     "p-queue": "^9.3.3",
-    "pi-mcp-adapter": "2.34.0",
     "playwright-core": "^1.62.0",
     "svelte-language-server": "0.17.19",
     "typescript": "5.7.3",
@@ -103,10 +99,5 @@
     "@earendil-works/pi-coding-agent": "^0.99.0",
     "@earendil-works/pi-tui": "^0.99.0",
     "typebox": "*"
-  },
-  "overrides": {
-    "pi-mcp-adapter": {
-      "@earendil-works/pi-ai": "$@earendil-works/pi-ai"
-    }
   }
 }

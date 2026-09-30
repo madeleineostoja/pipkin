@@ -27,6 +27,12 @@ const BashOutcomeParams = Type.Object(
 export function registerBashOutcomeTool(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "bash_outcome",
+    exposure: "deferred",
+    namespace: {
+      name: "execution",
+      description:
+        "Run commands, manage processes, and recall retained output.",
+    },
     label: "bash_outcome",
     description:
       "Run a Sandbox Bash command and retain a successful result for later recall. Successful calls return concise status while failures remain visible.",
