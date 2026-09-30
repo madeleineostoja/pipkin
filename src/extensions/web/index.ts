@@ -1,16 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { toolCallRenderer } from "#lib/ui/tool-result-renderer";
-import {
-  BatchWebFetchParameters,
-  WebFetchParameters,
-  type BatchWebFetchInput,
-  type WebFetchInput,
-} from "./schema.js";
+import { WebFetchParameters, type WebFetchInput } from "./schema.js";
+import { WebFetchOutput } from "./result.js";
 import { WebFetchOwner } from "./owner.js";
-import {
-  renderBatchWebFetchResult,
-  renderWebFetchResult,
-} from "./result-renderer.js";
+import { renderWebFetchResult } from "./result-renderer.js";
 
 export default function (pi: ExtensionAPI): void {
   const owner = new WebFetchOwner();
@@ -26,6 +19,7 @@ export default function (pi: ExtensionAPI): void {
     description:
       "Retrieve bounded public web content from one URL. Automatically returns pretty-printed JSON, extracted markdown, or plain text; attachments and non-text responses become temporary artifacts. Set raw only to preserve an untouched textual response.",
     parameters: WebFetchParameters,
+    outputSchema: WebFetchOutput,
     renderCall: toolCallRenderer({
       name: "web_fetch",
       detail: (args: WebFetchInput) => args.url,
@@ -35,29 +29,6 @@ export default function (pi: ExtensionAPI): void {
       return owner.execute(input, signal, onUpdate);
     },
     renderResult: renderWebFetchResult,
-  });
-  pi.registerTool({
-    name: "batch_web_fetch",
-    exposure: "deferred",
-    namespace: {
-      name: "web",
-      description: "Retrieve bounded credential-free content from public URLs.",
-    },
-    annotations: { readOnlyHint: true, openWorldHint: true },
-    label: "Batch Web Fetch",
-    description:
-      "Retrieve bounded public web content from one to eight URLs with fixed concurrency. Each response automatically becomes pretty-printed JSON, extracted markdown, plain text, or a temporary artifact; set raw per request only to preserve untouched text.",
-    parameters: BatchWebFetchParameters,
-    renderCall: toolCallRenderer({
-      name: "batch_web_fetch",
-      detail: (args: BatchWebFetchInput) =>
-        `${args.requests.length} target${args.requests.length === 1 ? "" : "s"}`,
-      pending: "Preparing web requests…",
-    }),
-    async execute(_toolCallId, input: BatchWebFetchInput, signal, onUpdate) {
-      return owner.executeBatch(input, signal, onUpdate);
-    },
-    renderResult: renderBatchWebFetchResult,
   });
   pi.on("session_shutdown", () => owner.shutdown());
 }

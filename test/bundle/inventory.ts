@@ -36,7 +36,6 @@ export const expectedTools = {
   steer_subagent: "subagents",
   inspect_implement_run: "implement",
   web_fetch: "web",
-  batch_web_fetch: "web",
   browser_snapshot: "browser",
   browser_screenshot: "browser",
   browser_text: "browser",

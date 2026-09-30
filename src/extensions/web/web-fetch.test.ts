@@ -1,13 +1,39 @@
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { ArtifactStore } from "./artifacts.js";
 import { extractHtml } from "./extraction.js";
 import { normalizeInput } from "./schema.js";
-import { createInvocationDeadline, type WebTransport } from "./transport.js";
-import { executeWebFetch } from "./web-fetch.js";
+import {
+  createInvocationDeadline,
+  createWebTransport,
+  type WebTransport,
+} from "./transport.js";
+import Ajv from "ajv";
+import { WebFetchOutput } from "./result.js";
+import { DeadlineError } from "./errors.js";
+import { executeWebFetch as fetchResult } from "./web-fetch.js";
 import { renderWebFetchResult } from "./result-renderer.js";
+
+const validate = new Ajv().compile(WebFetchOutput);
+async function executeWebFetch(...args: Parameters<typeof fetchResult>) {
+  const result = await fetchResult(...args);
+  expect(
+    validate(result.structuredContent),
+    JSON.stringify(validate.errors),
+  ).toBe(true);
+  expect(result.isError).toBe(!result.structuredContent.ok);
+  return result;
+}
+
+function artifactOf(result: Awaited<ReturnType<typeof fetchResult>>) {
+  const data = result.structuredContent;
+  if (!data.ok || data.format !== "artifact") {
+    throw new Error("Expected a successful artifact result");
+  }
+  return data.artifact;
+}
 
 function page(url: string, contentType: string, body: string): Response {
   const response = new Response(body, {
@@ -70,6 +96,101 @@ describe("web_fetch", () => {
     ).toThrow("invalid schema");
   });
 
+  it("returns bounded typed target failures without reflecting credentials or contacting the target", async () => {
+    const send = vi.fn();
+    const transport = createWebTransport({
+      browserFetch: send,
+      profiles: ["chrome_147"],
+    });
+    for (const [url, code] of [
+      ["http://127.0.0.1", "target"],
+      ["https://user:secret@example.com", "content"],
+      ["http://localhost", "target"],
+    ]) {
+      const result = await executeWebFetch({ url }, undefined, undefined, {
+        transport,
+      });
+      expect(result.structuredContent).toMatchObject({
+        ok: false,
+        error: { code },
+      });
+      expect(JSON.stringify(result)).not.toContain("secret");
+    }
+    const invalid = await executeWebFetch({
+      url: "https://example.com",
+      removeImages: false,
+    } as never);
+    expect(invalid.structuredContent).toMatchObject({
+      ok: false,
+      error: { code: "content" },
+    });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("returns typed network, timeout, HTTP and oversize failures", async () => {
+    const send = vi
+      .fn()
+      .mockRejectedValue(new Error("sensitive transport detail"));
+    const network = await executeWebFetch(
+      { url: "https://8.8.8.8" },
+      undefined,
+      undefined,
+      {
+        transport: createWebTransport({
+          browserFetch: send,
+          profiles: ["chrome_147"],
+        }),
+      },
+    );
+    expect(network.structuredContent).toMatchObject({
+      ok: false,
+      error: { code: "network" },
+    });
+    expect(JSON.stringify(network)).not.toContain("sensitive transport detail");
+    const transport: WebTransport = {
+      profile: { browser: "chrome_147", os: "windows" },
+      fetch: async () => {
+        throw new DeadlineError();
+      },
+    };
+    const timeout = await executeWebFetch(
+      { url: "https://example.com" },
+      undefined,
+      undefined,
+      { transport },
+    );
+    expect(timeout.structuredContent).toMatchObject({
+      ok: false,
+      error: { code: "timeout" },
+    });
+    transport.fetch = async () => new Response("unavailable", { status: 503 });
+    const http = await executeWebFetch(
+      { url: "https://example.com" },
+      undefined,
+      undefined,
+      { transport },
+    );
+    expect(http.structuredContent).toMatchObject({
+      ok: false,
+      error: { code: "http" },
+    });
+    transport.fetch = async () => {
+      const response = page("https://example.com", "text/plain", "body");
+      response.headers.set("content-length", String(5 * 1024 * 1024 + 1));
+      return response;
+    };
+    const oversize = await executeWebFetch(
+      { url: "https://example.com" },
+      undefined,
+      undefined,
+      { transport },
+    );
+    expect(oversize.structuredContent).toMatchObject({
+      ok: false,
+      error: { code: "oversize" },
+    });
+  });
+
   it("automatically renders JSON without extraction and keeps body out of details", async () => {
     const transport: WebTransport = {
       profile: { browser: "chrome_147", os: "windows" },
@@ -85,12 +206,101 @@ describe("web_fetch", () => {
     );
 
     expect(result.content[0]?.text).toContain('{\n  "answer": 42\n}');
+    expect(result.structuredContent).toEqual({
+      ok: true,
+      url: "https://example.com/data",
+      finalUrl: "https://example.com/data",
+      status: 200,
+      contentType: "application/json",
+      format: "json",
+      text: '{\n  "answer": 42\n}',
+      truncated: false,
+    });
     expect(result.details).toMatchObject({ output: "json" });
     expect(result.content[0]?.text).toMatch(
       /^Requested URL: https:\/\/example\.com\/data/,
     );
     expect(JSON.stringify(result.details)).not.toContain("answer");
   });
+
+  it("preserves long JSON strings and decoded control characters in both selections", async () => {
+    const value = {
+      long: "x".repeat(9_001),
+      controls: "a\u0000\u001b\t\n\r\u007f\u0085\u009bb",
+    };
+    const result = await executeWebFetch(
+      { url: "https://example.com/data" },
+      undefined,
+      undefined,
+      {
+        transport: {
+          profile: { browser: "chrome_147", os: "windows" },
+          fetch: async () =>
+            page(
+              "https://example.com/data",
+              "application/json",
+              JSON.stringify(value),
+            ),
+        },
+      },
+    );
+    const data = result.structuredContent;
+    expect(data).toMatchObject({ ok: true, format: "json", truncated: false });
+    if (!data.ok || data.format !== "json") {
+      throw new Error("Expected JSON result");
+    }
+    expect(JSON.parse(data.text)).toEqual(value);
+    expect(data.text).toContain("\\u0085\\u009b");
+    const direct = result.content[0]!.text;
+    expect(direct.split("\n\n").at(-1)).toBe(data.text);
+    expect(
+      [...direct].some((character) => {
+        const code = character.codePointAt(0)!;
+        return (code < 32 && code !== 10) || (code >= 127 && code <= 159);
+      }),
+    ).toBe(false);
+    expect(Buffer.byteLength(direct)).toBeLessThanOrEqual(48 * 1024);
+    expect(direct.split("\n").length).toBeLessThanOrEqual(1_900);
+  });
+
+  it.each([
+    { bound: "characters", value: { text: "x".repeat(100) }, maxChars: 20 },
+    { bound: "bytes", value: { text: "😀".repeat(20_000) }, maxChars: 40_000 },
+    {
+      bound: "lines",
+      value: Array.from({ length: 2_000 }, () => 1),
+      maxChars: 40_000,
+    },
+  ])(
+    "discloses JSON truncation at the $bound bound with matching selections",
+    async ({ value, maxChars }) => {
+      const result = await executeWebFetch(
+        { url: "https://example.com/data", maxChars },
+        undefined,
+        undefined,
+        {
+          transport: {
+            profile: { browser: "chrome_147", os: "windows" },
+            fetch: async () =>
+              page(
+                "https://example.com/data",
+                "application/json",
+                JSON.stringify(value),
+              ),
+          },
+        },
+      );
+      const data = result.structuredContent;
+      expect(data).toMatchObject({ ok: true, format: "json", truncated: true });
+      if (!data.ok || data.format !== "json") {
+        throw new Error("Expected JSON result");
+      }
+      const direct = result.content[0]!.text;
+      expect(direct.split("\n\n").at(-1)).toBe(data.text);
+      expect(Buffer.byteLength(direct)).toBeLessThanOrEqual(48 * 1024);
+      expect(direct.split("\n").length).toBeLessThanOrEqual(1_900);
+    },
+  );
 
   it("extracts readable HTML as markdown without changing global console", async () => {
     const transport: WebTransport = {
@@ -195,9 +405,11 @@ describe("web_fetch", () => {
       "[Content truncated to requested maxChars",
     );
     expect(result.content[0]?.text).toContain("read");
-    expect(result.details).toMatchObject({
-      title: "Example title",
-      semanticTruncated: true,
+    expect(result.structuredContent).toMatchObject({
+      ok: true,
+      source: { title: "Example title", site: "Example" },
+      text: "read",
+      truncated: true,
     });
     expect(JSON.stringify(result.details)).not.toContain("readable content");
   });
@@ -317,7 +529,16 @@ describe("web_fetch", () => {
         undefined,
         { transport: loopingTransport },
       ),
-    ).rejects.toThrow("five immediate meta refreshes");
+    ).resolves.toMatchObject({
+      isError: true,
+      structuredContent: {
+        ok: false,
+        error: {
+          code: "redirect",
+          message: expect.stringContaining("five immediate meta refreshes"),
+        },
+      },
+    });
     expect(loopCalls).toBe(6);
   });
 
@@ -339,13 +560,11 @@ describe("web_fetch", () => {
         undefined,
         { transport, artifacts, extractHtml: extract },
       );
-      const artifact = result.details.artifact as {
-        path: string;
-        bytes: number;
-      };
+      const artifact = artifactOf(result);
+      expect(artifact.lifetime).toBe("temporary");
 
       expect(result.content[0]?.text).toContain("raw ");
-      expect(result.content[0]?.text).toContain("Artifact:");
+      expect(result.content[0]?.text).toContain("Temporary artifact:");
       expect(extract).not.toHaveBeenCalled();
       expect(artifact.bytes).toBe(Buffer.byteLength("raw evidence"));
       expect(await readFile(artifact.path, "utf8")).toBe("raw evidence");
@@ -387,10 +606,7 @@ describe("web_fetch", () => {
         undefined,
         { transport, artifacts, extractHtml: extract },
       );
-      const csvArtifact = csv.details.artifact as {
-        kind: string;
-        path: string;
-      };
+      const csvArtifact = artifactOf(csv);
       expect(csvArtifact.kind).toBe("raw-text");
       expect(csv.content[0]?.text).toContain("name,value\nPipkin,1");
       expect(await readFile(csvArtifact.path, "utf8")).toBe(
@@ -403,7 +619,7 @@ describe("web_fetch", () => {
         undefined,
         { transport, artifacts, extractHtml: extract },
       );
-      expect((binary.details.artifact as { kind: string }).kind).toBe("binary");
+      expect(artifactOf(binary).kind).toBe("binary");
       expect(binary.content[0]?.text).not.toContain("secret binary");
 
       const attachment = await executeWebFetch(
@@ -412,9 +628,7 @@ describe("web_fetch", () => {
         undefined,
         { transport, artifacts, extractHtml: extract },
       );
-      expect((attachment.details.artifact as { kind: string }).kind).toBe(
-        "binary",
-      );
+      expect(artifactOf(attachment).kind).toBe("binary");
       expect(attachment.content[0]?.text).not.toContain("secret attachment");
       expect(extract).not.toHaveBeenCalled();
     } finally {
@@ -493,13 +707,10 @@ describe("web_fetch", () => {
         undefined,
         { transport, artifacts },
       );
-      const artifact = result.details.artifact as {
-        path: string;
-        kind: string;
-      };
+      const artifact = artifactOf(result);
 
       expect(artifact.kind).toBe("binary");
-      expect(result.content[0]?.text).toContain("Artifact:");
+      expect(result.content[0]?.text).toContain("Temporary artifact:");
       expect(result.content[0]?.text).not.toContain("secret");
       expect(JSON.stringify(result.details)).not.toContain("secret");
       expect(await readFile(artifact.path)).toEqual(Buffer.from("\0secret"));
@@ -508,6 +719,70 @@ describe("web_fetch", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    { source: "URL", url: "https://example.com/report%C2%9B31m.bin" },
+    {
+      source: "Content-Disposition",
+      url: "https://example.com/",
+      disposition: "attachment; filename*=UTF-8''report%C2%9B31m.bin",
+    },
+  ])(
+    "rejects C1 controls from $source before creating a temporary artifact",
+    async ({ url, disposition }) => {
+      const root = await mkdtemp(join(tmpdir(), "pipkin-web-test-"));
+      const artifacts = new ArtifactStore({ temporaryRoot: root });
+      try {
+        const result = await executeWebFetch({ url }, undefined, undefined, {
+          artifacts,
+          transport: {
+            profile: { browser: "chrome_147", os: "windows" },
+            fetch: async () => {
+              const response = page(
+                url,
+                "application/octet-stream",
+                "\0artifact bytes",
+              );
+              if (disposition) {
+                response.headers.set("content-disposition", disposition);
+              }
+              return response;
+            },
+          },
+        });
+        const artifact = artifactOf(result);
+        expect(basename(artifact.path)).toMatch(/^artifact-[\da-f-]+\.bin$/u);
+        expect(
+          [...artifact.path].some((character) => {
+            const code = character.codePointAt(0)!;
+            return code < 32 || (code >= 127 && code <= 159);
+          }),
+        ).toBe(false);
+        expect(result.content[0]!.text).toContain(
+          `Temporary artifact: ${artifact.path} (`,
+        );
+        expect(result.content[0]!.text).not.toContain("\u009b");
+        expect(artifact).toMatchObject({
+          bytes: Buffer.byteLength("\0artifact bytes"),
+          lifetime: "temporary",
+          kind: "binary",
+        });
+        expect(await readFile(artifact.path)).toEqual(
+          Buffer.from("\0artifact bytes"),
+        );
+        expect((await stat(artifact.path)).mode & 0o777).toBe(0o600);
+        const [directory] = await readdir(root);
+        expect(await readdir(join(root, directory!))).toEqual([
+          basename(artifact.path),
+        ]);
+        await artifacts.dispose();
+        expect(await readdir(root)).toEqual([]);
+      } finally {
+        await artifacts.dispose();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("rejects script-only fallback content as JavaScript-required", async () => {
     const transport: WebTransport = {
@@ -521,7 +796,6 @@ describe("web_fetch", () => {
         extractHtml(
           "<html><body><script>loadApplication()</script><style>.app { color: red }</style><noscript>Enable JavaScript</noscript></body></html>",
           "https://example.com",
-          normalizeInput({ url: "https://example.com" }),
           { transport, deadline },
         ),
       ).rejects.toThrow("may require JavaScript");
@@ -554,7 +828,46 @@ describe("web_fetch", () => {
     );
     expect(Buffer.byteLength(text)).toBeLessThanOrEqual(48 * 1024);
     expect(text.split("\n").length).toBeLessThanOrEqual(1_900);
-    expect(result.details).toMatchObject({ finalTruncated: true });
+    expect(result.structuredContent).toMatchObject({ truncated: true });
+    const data = result.structuredContent;
+    if (data.ok && data.format !== "artifact") {
+      expect(text.endsWith(data.text)).toBe(true);
+      expect(data.text.split("\n").length).toBeLessThanOrEqual(1900);
+    }
+  });
+
+  it("bounds multi-byte text and extracted metadata without exposing control characters", async () => {
+    const result = await executeWebFetch(
+      { url: "https://example.com" },
+      undefined,
+      undefined,
+      {
+        transport: {
+          profile: { browser: "chrome_147", os: "windows" },
+          fetch: async () =>
+            page("https://example.com", "text/html", "<main>ignored</main>"),
+        },
+        extractHtml: async () => ({
+          content: "\u001b\u0000" + "😀".repeat(40_000),
+          title: "\u001b" + "t".repeat(1000),
+        }),
+      },
+    );
+    const data = result.structuredContent;
+    expect(data).toMatchObject({
+      ok: true,
+      format: "markdown",
+      truncated: true,
+    });
+    if (data.ok && data.format !== "artifact") {
+      expect(data.source?.title).toHaveLength(512);
+      expect(Buffer.byteLength(data.text)).toBeLessThanOrEqual(48 * 1024);
+      expect(result.content[0]?.text.endsWith(data.text)).toBe(true);
+    }
+    const direct = result.content[0]!.text;
+    expect(Buffer.byteLength(direct)).toBeLessThanOrEqual(48 * 1024);
+    expect(direct).not.toContain("\u001b");
+    expect(direct).not.toContain("\u0000");
   });
 
   it("rejects a nonempty application loading shell as JavaScript-required", async () => {
@@ -569,7 +882,6 @@ describe("web_fetch", () => {
         extractHtml(
           '<div id="root">Loading...</div><script>boot()</script>',
           "https://example.com",
-          normalizeInput({ url: "https://example.com" }),
           { transport, deadline },
         ),
       ).rejects.toThrow("may require JavaScript");
@@ -590,7 +902,6 @@ describe("web_fetch", () => {
         extractHtml(
           "<html><body><main>Brief useful evidence.</main><script>ignore()</script><noscript>ignore</noscript><p hidden>hidden</p></body></html>",
           "https://example.com",
-          normalizeInput({ url: "https://example.com" }),
           {
             transport,
             deadline,
@@ -614,34 +925,29 @@ describe("web_fetch", () => {
     };
 
     try {
-      await extractHtml(
-        "<main>Initial content</main>",
-        "https://example.com",
-        normalizeInput({ url: "https://example.com" }),
-        {
-          transport,
-          deadline,
-          defuddle: (async (
-            _document: Document,
-            _url: string,
-            options: {
-              fetch?: (
-                input: RequestInfo | URL,
-                init?: RequestInit,
-              ) => Promise<Response>;
-            },
-          ) => {
-            await options.fetch!(
-              new Request("https://extractor.example/api", {
-                method: "POST",
-                body: "bounded extractor body",
-                headers: { "x-extractor": "yes" },
-              }),
-            );
-            return { content: "Readable extracted content." };
-          }) as never,
-        },
-      );
+      await extractHtml("<main>Initial content</main>", "https://example.com", {
+        transport,
+        deadline,
+        defuddle: (async (
+          _document: Document,
+          _url: string,
+          options: {
+            fetch?: (
+              input: RequestInfo | URL,
+              init?: RequestInit,
+            ) => Promise<Response>;
+          },
+        ) => {
+          await options.fetch!(
+            new Request("https://extractor.example/api", {
+              method: "POST",
+              body: "bounded extractor body",
+              headers: { "x-extractor": "yes" },
+            }),
+          );
+          return { content: "Readable extracted content." };
+        }) as never,
+      });
       expect(fetch).toHaveBeenCalledWith(
         expect.any(Request),
         undefined,
@@ -674,6 +980,9 @@ describe("web_fetch", () => {
           },
         },
       ),
-    ).rejects.toMatchObject({ name: "AbortError" });
+    ).resolves.toMatchObject({
+      isError: true,
+      structuredContent: { ok: false, error: { code: "cancelled" } },
+    });
   });
 });

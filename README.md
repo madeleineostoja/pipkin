@@ -64,7 +64,7 @@ Implement coordinates trusted workers in disposable Git worktrees, publishes thr
 
 - **Explore** maps unfamiliar code; **Review** independently assesses a concrete artifact. Both run through `Agent` and remain visible through `/agents`.
 - Research uses user-configured native documentation MCP, existing `gh` authentication, and `npm search --json`; Pipkin has no research credential abstraction.
-- **Web Fetch** retrieves readable content from direct public URLs without authentication or page JavaScript.
+- **Web Fetch** retrieves bounded, structured readable content from one public URL without authentication or page JavaScript.
 - **Browser** lazily opens an isolated rendered browser with a valid locale for local applications, page state, visual evidence, and navigation.
 - **LSP** provides read-only definitions, references, symbols, types, hover information, and diagnostics for supported languages.
 
@@ -127,7 +127,6 @@ These tools are called by the agent rather than typed as slash commands. They us
 | `steer_subagent`                                                        | Queue guidance for a running managed subagent                                       |
 | `inspect_implement_run`                                                 | List or inspect durable Implement runs and artifact paths                           |
 | `web_fetch`                                                             | Retrieve bounded readable content from one public URL                               |
-| `batch_web_fetch`                                                       | Retrieve one to eight public URLs with fixed concurrency                            |
 | [Browser observations](docs/features/browser.md#observation-operations) | Inspect isolated rendered pages and forward native images                           |
 | [Browser actions](docs/features/browser.md#action-operations)           | Strict interactions with compact page outcomes, without implicit snapshots          |
 | `inspect_papercuts`                                                     | Read findings on request or check for duplicates before recording                   |

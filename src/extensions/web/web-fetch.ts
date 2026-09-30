@@ -19,17 +19,17 @@ import {
   createWebTransport,
   type WebTransport,
 } from "./transport.js";
-
-export type WebFetchResult = {
-  content: Array<{ type: "text"; text: string }>;
-  details: Record<string, unknown>;
-};
+import {
+  controlSafeText,
+  webFetchFailure,
+  type WebFetchData,
+  type WebFetchResult,
+} from "./result.js";
 
 export type WebFetchDependencies = {
   transport?: WebTransport;
   extractHtml?: typeof extractHtml;
   artifacts?: ArtifactStore;
-  deadline?: Deadline;
 };
 
 export async function executeWebFetch(
@@ -38,13 +38,13 @@ export async function executeWebFetch(
   onUpdate?: AgentToolUpdateCallback,
   dependencies: WebFetchDependencies = {},
 ): Promise<WebFetchResult> {
-  const request = normalizeInput(input);
-  const deadline =
-    dependencies.deadline ?? createInvocationDeadline(request.timeoutMs);
-  const transport = dependencies.transport ?? createWebTransport();
-  const extract = dependencies.extractHtml ?? extractHtml;
-  const artifacts = dependencies.artifacts ?? new ArtifactStore();
+  let deadline: Deadline | undefined;
   try {
+    const request = normalizeInput(input);
+    deadline = createInvocationDeadline(request.timeoutMs);
+    const transport = dependencies.transport ?? createWebTransport();
+    const extract = dependencies.extractHtml ?? extractHtml;
+    const artifacts = dependencies.artifacts ?? new ArtifactStore();
     onUpdate?.({
       content: [{ type: "text", text: "Resolving public target…" }],
       details: { phase: "resolving" },
@@ -113,7 +113,6 @@ export async function executeWebFetch(
           output: "json",
           profile: transport.profile,
           semanticTruncated: content.truncated,
-          metaRefreshes,
         });
       }
       if (isHtml(contentType) || looksLikeHtml(source)) {
@@ -147,16 +146,11 @@ export async function executeWebFetch(
           content: [{ type: "text", text: "Extracting readable content…" }],
           details: { phase: "extracting" },
         });
-        const page: ExtractedPage = await extract(
-          source,
-          response.url,
-          request,
-          {
-            transport,
-            parentSignal: signal,
-            deadline,
-          },
-        );
+        const page: ExtractedPage = await extract(source, response.url, {
+          transport,
+          parentSignal: signal,
+          deadline,
+        });
         assertActive(deadline, signal);
         const content = truncateCharacters(page.content, request.maxChars);
         return result({
@@ -168,7 +162,6 @@ export async function executeWebFetch(
           profile: transport.profile,
           page,
           semanticTruncated: content.truncated,
-          metaRefreshes,
         });
       }
       const content = truncateCharacters(source, request.maxChars);
@@ -180,11 +173,12 @@ export async function executeWebFetch(
         output: "text",
         profile: transport.profile,
         semanticTruncated: content.truncated,
-        metaRefreshes,
       });
     }
+  } catch (error) {
+    return webFetchFailure(error, signal);
   } finally {
-    deadline.dispose();
+    deadline?.dispose();
   }
 }
 
@@ -193,15 +187,14 @@ function result(options: {
   response: Response;
   contentType: string;
   body: string;
-  output: "markdown" | "json" | "text" | "raw" | "binary";
+  output: "markdown" | "json" | "text";
   profile: WebTransport["profile"];
   page?: ExtractedPage;
   semanticTruncated: boolean;
-  metaRefreshes: number;
   artifact?: Artifact;
 }): WebFetchResult {
-  const requestedUrl = metadataText(options.requestedUrl);
-  const finalUrl = metadataText(options.response.url);
+  const requestedUrl = metadataText(options.requestedUrl, LIMITS.urlChars);
+  const finalUrl = metadataText(options.response.url, LIMITS.urlChars);
   const title = options.page?.title
     ? metadataText(options.page.title)
     : undefined;
@@ -210,32 +203,55 @@ function result(options: {
     ? metadataText(options.page.published)
     : undefined;
   const contentType = metadataText(options.contentType);
-  const metadata = {
-    requestedUrl,
-    finalUrl,
-    status: options.response.status,
-    contentType,
-    output: options.output,
-    contentChars: Array.from(options.body).length,
-    profile: options.profile.browser,
-    os: options.profile.os,
+  const source = {
     ...(title ? { title } : {}),
     ...(site ? { site } : {}),
     ...(published ? { published } : {}),
-    ...(options.semanticTruncated ? { semanticTruncated: true } : {}),
-    ...(options.metaRefreshes ? { metaRefreshes: options.metaRefreshes } : {}),
-    ...(options.artifact
+  };
+  const finish = (
+    text: string,
+    directText: string,
+    finalTruncated: boolean,
+  ): WebFetchResult => {
+    const truncated = options.semanticTruncated || finalTruncated;
+    const common = {
+      ok: true as const,
+      url: requestedUrl,
+      finalUrl,
+      status: options.response.status,
+      contentType,
+      ...(Object.keys(source).length ? { source } : {}),
+      truncated,
+    };
+    const structuredContent: WebFetchData = options.artifact
       ? {
+          ...common,
+          format: "artifact",
           artifact: {
-            finalUrl,
             path: options.artifact.path,
+            mediaType: contentType,
             bytes: options.artifact.bytes,
-            contentType: options.artifact.contentType,
-            name: options.artifact.name,
+            lifetime: "temporary",
             kind: options.artifact.kind,
           },
+          ...(options.artifact.kind === "raw-text" ? { text } : {}),
         }
-      : {}),
+      : {
+          ...common,
+          format: options.output,
+          text,
+        };
+    return {
+      content: [{ type: "text", text: directText }],
+      details: {
+        output: options.artifact ? "artifact" : options.output,
+        contentType,
+        contentChars: Array.from(text).length,
+        truncated,
+      },
+      structuredContent,
+      isError: false,
+    };
   };
   const header = [
     `Requested URL: ${requestedUrl}`,
@@ -243,14 +259,14 @@ function result(options: {
       ? [`Final URL: ${finalUrl}`]
       : []),
     `HTTP: ${options.response.status} · ${contentType}`,
-    `Output: ${options.output}`,
+    `Output: ${options.artifact ? "artifact" : options.output}`,
     ...(title ? [`Title: ${title}`] : []),
     ...(site ? [`Site: ${site}`] : []),
     ...(published ? [`Published: ${published}`] : []),
     `Browser: ${options.profile.browser} / ${options.profile.os}`,
     ...(options.artifact
       ? [
-          `Artifact: ${options.artifact.path} (${options.artifact.bytes} bytes, ${options.artifact.contentType}, ${options.artifact.kind})`,
+          `Temporary artifact: ${options.artifact.path} (${options.artifact.bytes} bytes, ${contentType}, ${options.artifact.kind}; deleted at session shutdown)`,
         ]
       : []),
     ...(options.semanticTruncated
@@ -260,17 +276,20 @@ function result(options: {
       : []),
   ];
   const prefix = `${header.join("\n")}\n\n`;
-  const body = options.output === "raw" ? options.body : softWrap(options.body);
+  // JSON is already control-escaped; filtering or wrapping would change its values.
+  const safeBody =
+    options.output === "json" ? options.body : controlSafeText(options.body);
+  const body =
+    options.output === "json" || options.artifact?.kind === "raw-text"
+      ? safeBody
+      : softWrap(safeBody);
   const initial = `${prefix}${body}`;
   const trial = truncateHead(initial, {
     maxBytes: LIMITS.resultBytes,
     maxLines: LIMITS.resultLines,
   });
   if (!trial.truncated) {
-    return {
-      content: [{ type: "text", text: trial.content }],
-      details: metadata,
-    };
+    return finish(body, trial.content, false);
   }
   const notice = "[Final output truncated to 48 KiB or 1,900 lines.]";
   const truncatedPrefix = `${header.join("\n")}\n${notice}\n\n`;
@@ -278,12 +297,11 @@ function result(options: {
     maxBytes: LIMITS.resultBytes - Buffer.byteLength(truncatedPrefix),
     maxLines: LIMITS.resultLines - truncatedPrefix.split("\n").length,
   });
-  return {
-    content: [
-      { type: "text", text: `${truncatedPrefix}${truncatedBody.content}` },
-    ],
-    details: { ...metadata, finalTruncated: true },
-  };
+  return finish(
+    truncatedBody.content,
+    `${truncatedPrefix}${truncatedBody.content}`,
+    true,
+  );
 }
 
 function artifactResult(options: {
@@ -298,10 +316,9 @@ function artifactResult(options: {
     response: options.response,
     contentType: options.artifact.contentType,
     body: options.artifact.preview ?? "",
-    output: options.artifact.kind === "raw-text" ? "raw" : "binary",
+    output: "text",
     profile: options.profile,
     semanticTruncated: options.semanticTruncated,
-    metaRefreshes: 0,
     artifact: options.artifact,
   });
 }
@@ -412,11 +429,14 @@ async function readText(
   return new TextDecoder().decode(output);
 }
 
-function metadataText(value: string): string {
-  const compact = value.replace(/\s+/gu, " ").trim();
+function metadataText(
+  value: string,
+  maximum: number = LIMITS.metadataChars,
+): string {
+  const compact = controlSafeText(value).replace(/\s+/gu, " ").trim();
   const characters = Array.from(compact);
-  return characters.length > LIMITS.metadataChars
-    ? `${characters.slice(0, LIMITS.metadataChars).join("")}…`
+  return characters.length > maximum
+    ? `${characters.slice(0, maximum - 1).join("")}…`
     : compact;
 }
 

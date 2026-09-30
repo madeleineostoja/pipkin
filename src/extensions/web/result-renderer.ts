@@ -10,6 +10,7 @@ export const renderWebFetchResult = toolResultRenderer({
       output,
       contentType,
       typeof characters === "number" ? `${characters} characters` : undefined,
+      details?.truncated === true ? "truncated" : undefined,
     ]
       .filter((part): part is string => part !== undefined)
       .join(" · ");
@@ -21,33 +22,6 @@ export const renderWebFetchResult = toolResultRenderer({
   },
   error(result) {
     return firstText(result.content).split("\n", 1)[0] || "Web Fetch failed.";
-  },
-  content: "markdown",
-});
-
-export const renderBatchWebFetchResult = toolResultRenderer({
-  summary(result) {
-    const details = record(result.details);
-    const total = details?.total;
-    const succeeded = details?.succeeded;
-    const failed = details?.failed;
-    return typeof total === "number" && typeof succeeded === "number"
-      ? `${succeeded}/${total} fetched${typeof failed === "number" && failed > 0 ? ` · ${failed} failed` : ""}`
-      : undefined;
-  },
-  partial(result) {
-    const details = record(result.details);
-    const ordinal = details?.ordinal;
-    const total = details?.total;
-    const phase = text(details?.phase) ?? text(details?.status);
-    return typeof ordinal === "number" && typeof total === "number"
-      ? `Batch target ${ordinal}/${total}${phase ? ` · ${phase}` : ""}.`
-      : "Preparing web requests…";
-  },
-  error(result) {
-    return (
-      firstText(result.content).split("\n", 1)[0] || "Batch Web Fetch failed."
-    );
   },
   content: "markdown",
 });

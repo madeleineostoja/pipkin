@@ -35,6 +35,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import Ajv from "ajv";
+import { executeWebFetch } from "../../src/extensions/web/web-fetch.js";
+import type { WebFetchInput } from "../../src/extensions/web/schema.js";
 import {
   EXPLORE_PROMPT,
   REVIEW_PROMPT,
@@ -1154,6 +1157,113 @@ describe("Pipkin bundle", () => {
     await expect(runner.emitToolResult(event)).resolves.toBeUndefined();
     expect(errors).toEqual([]);
     await runner.emit({ type: "session_shutdown", reason: "quit" });
+  });
+
+  it("selects Web Fetch structured fields through native codemode and validates the registered schema", async () => {
+    const fixture = await loadBundle({ nativeFactories: true });
+    const definition = fixture.result.extensions
+      .flatMap((extension) => [...extension.tools.values()])
+      .find((tool) => tool.definition.name === "web_fetch")!.definition;
+    const execute = definition.execute;
+    const validate = new Ajv().compile(definition.outputSchema!);
+    // Supply a controlled response only for the successful public fixture;
+    // forbidden targets still traverse the registered owner and transport.
+    const captures: unknown[] = [];
+    definition.execute = async (id, input, signal, onUpdate, ctx) => {
+      const request = input as WebFetchInput;
+      const result =
+        request.url === "https://example.com/fixture"
+          ? await executeWebFetch(request, signal, onUpdate, {
+              transport: {
+                profile: { browser: "chrome_147", os: "windows" },
+                fetch: async () => {
+                  const response = new Response('{"answer":42}', {
+                    headers: { "content-type": "application/json" },
+                  });
+                  Object.defineProperty(response, "url", {
+                    value: request.url,
+                  });
+                  return response;
+                },
+              },
+            })
+          : await execute(id, input, signal, onUpdate, ctx);
+      expect(
+        validate(result.structuredContent),
+        JSON.stringify(validate.errors),
+      ).toBe(true);
+      captures.push(result.structuredContent);
+      return result;
+    };
+    const host = await nativeSession(fixture);
+    try {
+      const results = await host.prompt([
+        {
+          name: "tool_search",
+          args: { query: "+web_fetch" },
+          id: "web-search",
+        },
+        {
+          name: "web_fetch",
+          args: { url: "https://example.com/fixture" },
+          id: "web-direct",
+        },
+        {
+          name: "codemode",
+          args: {
+            code: 'const page = await tools.web_fetch({url:"https://example.com/fixture"}); text({format:page.format,answer:JSON.parse(page.text).answer,truncated:page.truncated}); const blocked = await tools.web_fetch({url:"http://127.0.0.1"}); text({ok:blocked.ok,code:blocked.error.code});',
+          },
+          id: "web-nested",
+        },
+      ]);
+      expect(
+        results.find((result) => result.toolCallId === "web-direct"),
+      ).toMatchObject({
+        isError: false,
+        content: [
+          { type: "text", text: expect.stringContaining('"answer": 42') },
+        ],
+      });
+      expect(captures).toEqual([
+        expect.objectContaining({
+          ok: true,
+          format: "json",
+          status: 200,
+          truncated: false,
+        }),
+        expect.objectContaining({
+          ok: true,
+          format: "json",
+          status: 200,
+          truncated: false,
+        }),
+        { ok: false, error: { code: "target", message: expect.any(String) } },
+      ]);
+      const nested = results.find(
+        (result) => result.toolCallId === "web-nested",
+      )!;
+      expect(nested.isError).toBe(false);
+      const text = nested.content
+        .filter((block) => block.type === "text")
+        .map((block) => block.text)
+        .join("\n");
+      expect(
+        text
+          .split("\n")
+          .filter((line) => line.startsWith("{"))
+          .map((line) => JSON.parse(line)),
+      ).toEqual([
+        { format: "json", answer: 42, truncated: false },
+        { ok: false, code: "target" },
+      ]);
+      expect(nested.nestedCalls?.calls).toEqual([
+        expect.objectContaining({ name: "web_fetch", status: "ok" }),
+        expect.objectContaining({ name: "web_fetch", status: "error" }),
+      ]);
+      expect(host.errors).toEqual([]);
+    } finally {
+      await host.dispose();
+    }
   });
 
   it("forwards native screenshot images and inspectable Browser errors through codemode", async () => {

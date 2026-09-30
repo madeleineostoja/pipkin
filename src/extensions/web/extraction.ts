@@ -1,7 +1,6 @@
 import { Defuddle, type DefuddleResponse } from "defuddle/node";
 import { parseHTML } from "linkedom";
 import { assertActive, type Deadline } from "./cancellation.js";
-import type { NormalizedWebFetchInput } from "./schema.js";
 import type { WebTransport } from "./transport.js";
 import { WebError } from "./errors.js";
 
@@ -22,7 +21,6 @@ type ExtractionDependencies = {
 export async function extractHtml(
   html: string,
   url: string,
-  input: NormalizedWebFetchInput,
   dependencies: ExtractionDependencies,
 ): Promise<ExtractedPage> {
   assertActive(dependencies.deadline, dependencies.parentSignal);
@@ -36,8 +34,8 @@ export async function extractHtml(
     extracted = await (dependencies.defuddle ?? Defuddle)(document, url, {
       markdown: true,
       separateMarkdown: false,
-      removeImages: input.removeImages,
-      includeReplies: input.includeReplies,
+      removeImages: true,
+      includeReplies: "extractors",
       fetch: async (request, init) => {
         try {
           return await dependencies.transport.fetch(
@@ -84,7 +82,14 @@ export async function extractHtml(
 
 export function renderJson(text: string): string | undefined {
   try {
-    return JSON.stringify(JSON.parse(text), undefined, 2);
+    return Array.from(JSON.stringify(JSON.parse(text), undefined, 2))
+      .map((character) => {
+        const code = character.codePointAt(0)!;
+        return code >= 127 && code <= 159
+          ? `\\u${code.toString(16).padStart(4, "0")}`
+          : character;
+      })
+      .join("");
   } catch {
     return undefined;
   }
