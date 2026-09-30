@@ -1,5 +1,6 @@
 import { Defuddle, type DefuddleResponse } from "defuddle/node";
 import { parseHTML } from "linkedom";
+import { captureConsole } from "./console-capture.js";
 import { assertActive, type Deadline } from "./cancellation.js";
 import type { WebTransport } from "./transport.js";
 import { WebError } from "./errors.js";
@@ -25,31 +26,35 @@ export async function extractHtml(
 ): Promise<ExtractedPage> {
   assertActive(dependencies.deadline, dependencies.parentSignal);
   const { document } = parseHTML(html);
-  shieldInvalidMetadataUrl(document);
   assertActive(dependencies.deadline, dependencies.parentSignal);
   let nestedFailure: unknown;
   assertActive(dependencies.deadline, dependencies.parentSignal);
   let extracted: DefuddleResponse;
   try {
-    extracted = await (dependencies.defuddle ?? Defuddle)(document, url, {
-      markdown: true,
-      separateMarkdown: false,
-      removeImages: true,
-      includeReplies: "extractors",
-      fetch: async (request, init) => {
-        try {
-          return await dependencies.transport.fetch(
-            request,
-            init,
-            dependencies.parentSignal,
-            dependencies.deadline,
-          );
-        } catch (error) {
-          nestedFailure ??= error;
-          throw error;
-        }
-      },
-    });
+    // Defuddle logs some caught failures directly; keep those out of Pi's TUI.
+    extracted = (
+      await captureConsole(() =>
+        (dependencies.defuddle ?? Defuddle)(document, url, {
+          markdown: true,
+          separateMarkdown: false,
+          removeImages: true,
+          includeReplies: "extractors",
+          fetch: async (request, init) => {
+            try {
+              return await dependencies.transport.fetch(
+                request,
+                init,
+                dependencies.parentSignal,
+                dependencies.deadline,
+              );
+            } catch (error) {
+              nestedFailure ??= error;
+              throw error;
+            }
+          },
+        }),
+      )
+    ).value;
   } catch {
     assertActive(dependencies.deadline, dependencies.parentSignal);
     extracted = { content: "" } as DefuddleResponse;
@@ -97,94 +102,6 @@ export function renderJson(text: string): string | undefined {
 
 export function isHtml(contentType: string): boolean {
   return /(?:^|\/)html(?:;|$)|application\/xhtml\+xml/iu.test(contentType);
-}
-
-function shieldInvalidMetadataUrl(document: Document): void {
-  const candidate = pageMetadataUrl(document);
-  if (!candidate || URL.canParse(candidate)) {
-    return;
-  }
-  // Linkedom omits location. Defuddle otherwise tries this invalid metadata URL,
-  // catches the failure, and writes its stack directly to the process console.
-  Object.defineProperty(document, "location", {
-    configurable: true,
-    value: new URL("about:blank"),
-  });
-}
-
-function pageMetadataUrl(document: Document): string | undefined {
-  const metadata = [...document.querySelectorAll("meta[property]")];
-  const content = (property: string) =>
-    metadata
-      .find((meta) => meta.getAttribute("property")?.toLowerCase() === property)
-      ?.getAttribute("content")
-      ?.trim();
-  const direct = content("og:url") || content("twitter:url");
-  if (direct) {
-    return direct;
-  }
-
-  const schemaUrls = schemaPageUrls(document);
-  if (schemaUrls.length > 0) {
-    return schemaUrls.join(", ");
-  }
-
-  return (
-    document
-      .querySelector('link[rel="canonical"]')
-      ?.getAttribute("href")
-      ?.trim() || undefined
-  );
-}
-
-function schemaPageUrls(document: Document): string[] {
-  const roots: unknown[] = [];
-  for (const script of document.querySelectorAll(
-    'script[type="application/ld+json"]',
-  )) {
-    try {
-      const parsed = JSON.parse(script.textContent ?? "") as unknown;
-      if (
-        parsed &&
-        typeof parsed === "object" &&
-        "@graph" in parsed &&
-        Array.isArray(parsed["@graph"])
-      ) {
-        roots.push(...parsed["@graph"]);
-      } else {
-        roots.push(parsed);
-      }
-    } catch {
-      continue;
-    }
-  }
-
-  const direct = roots.flatMap((root) =>
-    root && typeof root === "object" && !Array.isArray(root) && "url" in root
-      ? schemaStrings(root.url)
-      : [],
-  );
-  const urls = direct.length > 0 ? direct : roots.flatMap(nestedSchemaUrls);
-  return [...new Set(urls.filter(Boolean))];
-}
-
-function nestedSchemaUrls(value: unknown): string[] {
-  if (!value || typeof value !== "object") {
-    return [];
-  }
-  if (Array.isArray(value)) {
-    return value.flatMap(nestedSchemaUrls);
-  }
-  return Object.entries(value).flatMap(([key, child]) =>
-    key === "url" ? schemaStrings(child) : nestedSchemaUrls(child),
-  );
-}
-
-function schemaStrings(value: unknown): string[] {
-  if (typeof value === "string" || typeof value === "number") {
-    return [String(value)];
-  }
-  return Array.isArray(value) ? value.flatMap(schemaStrings) : [];
 }
 
 function fallbackContent(

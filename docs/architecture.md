@@ -67,6 +67,8 @@ Sandbox `bash` is direct. Other public Pipkin operations are deferred and callab
 
 Pi loads entrypoints through separate Jiti instances. Shared pure helpers and typed protocols are safe; mutable module-singleton identity across loader graphs is not.
 
+Web Fetch's scoped console capture uses the process console itself as its explicit identity. Overlapping captures from separate loader graphs share a temporary, reference-counted router on that console; `AsyncLocalStorage` separates operation diagnostics from unrelated output. The last settlement restores console methods and removes the binding. This feature-local containment is not UI-owned or a global logging service; [Web Fetch](features/web-fetch.md#extractor-diagnostics) owns its coverage and limits.
+
 Stateful cross-entrypoint coordination uses an explicit host identity:
 
 - Subagents' coordinator, Sandbox's child-mode handoff, and Personality's Implement naming-ownership claim are keyed by Pi's event bus.

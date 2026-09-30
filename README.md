@@ -64,7 +64,7 @@ Implement coordinates trusted workers in disposable Git worktrees, publishes thr
 
 - **Explore** maps unfamiliar code; **Review** independently assesses a concrete artifact. Both run through `agent_start`, remain recoverable with `agent_list`, and are visible through `/agents`.
 - Research uses user-configured native documentation MCP, existing `gh` authentication, and `npm search --json`; Pipkin has no research credential abstraction.
-- **Web Fetch** retrieves bounded, structured readable content from one public URL without authentication or page JavaScript.
+- **Web Fetch** retrieves bounded, structured readable content from one public URL without authentication or page JavaScript, and contains noisy extractor console output.
 - **Browser** lazily opens an isolated rendered browser with a valid locale for local applications, page state, visual evidence, and navigation.
 - **LSP** provides read-only definitions, references, symbols, types, hover information, and diagnostics for supported languages.
 

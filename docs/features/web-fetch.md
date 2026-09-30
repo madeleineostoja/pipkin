@@ -98,4 +98,12 @@ Web Fetch is trusted extension-owned network and temporary-filesystem egress. Sa
 
 Artifacts live in a private, unpredictable session-temporary directory and are deleted at session shutdown. Unsafe remote filename suggestions, including C0/C1 controls, are rejected before file creation; a safe URL filename or generated name is used instead. A direct `read` can inspect a returned canonical path during the live session. Copy the file elsewhere before shutdown if it must persist; binary bytes never enter tool output.
 
+## Extractor diagnostics
+
+Defuddle sometimes logs caught failures directly to the process console. Web Fetch captures `debug`, `info`, `log`, `warn`, `error`, and `trace` calls in the asynchronous extraction scope, preventing those diagnostics from writing over Pi's terminal UI. Unrelated concurrent console output passes through unchanged; this is not global console suppression.
+
+The capture utility bounds each operation to 16 entries of 1,000 UTF-16 code units, marks clipped entries, and counts omitted entries. Captured text is private, temporary diagnostic data and is discarded by extraction rather than copied into tool results, metadata, or a log file. Return values and exceptions remain unchanged by capture; Web Fetch retains its existing readable-content fallback and typed failure handling, including rejected extractor requests.
+
+Console methods are restored when the last overlapping capture settles, including rejection and cancellation unwind. Direct stdout/stderr writes and unawaited background work are outside this boundary. This containment does not repair extraction bugs or provide general Pi-wide terminal protection.
+
 If `pi-smart-fetch` is separately installed, remove it before reloading Pipkin so its registration does not collide with `web_fetch`.
