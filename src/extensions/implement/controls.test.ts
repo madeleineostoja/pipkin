@@ -36,16 +36,16 @@ describe("retained run listing", () => {
     expect(() => assertNoFailedRuns(root)).not.toThrow();
   });
 
-  it("keeps malformed v10 artifacts historical rather than blocking discovery or admission", () => {
+  it("excludes malformed artifacts from public discovery and leaves them untouched", () => {
     const root = mkdtempSync(join(tmpdir(), "pipkin-implement-controls-"));
     temporaryDirectories.add(root);
     const directory = join(checkoutPaths(root).runs, "old-run");
     mkdirSync(directory, { recursive: true });
     const path = join(directory, "run-state.json");
     for (const value of [
-      { version: 10 },
+      { version: 11 },
       {
-        version: 10,
+        version: 11,
         phase: "planning",
         run: { id: "old-run", checkout: { root } },
       },
@@ -69,7 +69,7 @@ describe("retained run listing", () => {
     }
   });
 
-  it("excludes unowned active-v10 records before version diagnostics, pagination and admission", async () => {
+  it("excludes unowned records before pagination and admission", async () => {
     const f = await createLifecycleFixture();
     temporaryDirectories.add(f.root);
     const state = f.store.read();
@@ -82,7 +82,7 @@ describe("retained run listing", () => {
         checkout: { ...state.run.checkout, root: "/foreign-checkout" },
       },
     ]) {
-      const raw = JSON.stringify({ ...state, version: 10, run });
+      const raw = JSON.stringify({ ...state, run });
       writeFileSync(path, raw);
       expect(inspectImplementRun(f.root, { runId: "run-1" })).toEqual(missing);
       expect(listImplementRuns(f.root, { limit: 1 })).toEqual({
@@ -93,30 +93,5 @@ describe("retained run listing", () => {
       expect(() => assertNoFailedRuns(f.root)).not.toThrow();
       expect(readFileSync(path, "utf8")).toBe(raw);
     }
-  });
-
-  it("preserves active-v10 cutover diagnostics through discovery and new-run preflight without migration", async () => {
-    const f = await createLifecycleFixture();
-    temporaryDirectories.add(f.root);
-    const old = { ...f.store.read(), version: 10, phase: "planning" };
-    const raw = JSON.stringify(old);
-    writeFileSync(f.store.path, raw);
-    const diagnostic =
-      "Active v10 continuation/recovery is unsupported. Finish or stop the run with the old runtime before upgrading.";
-
-    expect(listCheckoutRuns(f.root)).toEqual([
-      { kind: "unsupported_active", runId: "run-1", diagnostic },
-    ]);
-    expect(() => assertNoFailedRuns(f.root)).toThrow(diagnostic);
-    for (const result of [
-      listImplementRuns(f.root, {}),
-      inspectImplementRun(f.root, { runId: "run-1" }),
-    ]) {
-      expect(result).toMatchObject({
-        ok: false,
-        error: { code: "unavailable", message: diagnostic },
-      });
-    }
-    expect(readFileSync(f.store.path, "utf8")).toBe(raw);
   });
 });

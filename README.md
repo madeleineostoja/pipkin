@@ -72,9 +72,9 @@ Implement coordinates trusted workers in disposable Git worktrees, publishes thr
 
 ### Native external capabilities
 
-Native Pi owns MCP configuration, authentication, discovery, and `/mcp`, including unconfigured sessions. Pipkin's adapter and Reference are retired. Personal credentials and historical data remain untouched; live Figma cutover remains blocked/unverified until the authorized operator gate passes.
+Native Pi owns MCP configuration, authentication, discovery, and `/mcp`, including unconfigured sessions. Configure external servers through native Pi.
 
-[Native setup and manual cutover →](docs/configuration.md#mcp-servers)
+[Native MCP setup →](docs/configuration.md#mcp-servers)
 
 ### Session utilities
 
@@ -154,7 +154,7 @@ If `pi-smart-fetch` is separately installed, remove it before reloading Pipkin t
 - [Native research setup](docs/configuration.md#native-research-setup)
 - [Web Fetch](docs/features/web-fetch.md)
 - [Browser](docs/features/browser.md)
-- [Native MCP cutover](docs/configuration.md#mcp-servers)
+- [Native MCP setup](docs/configuration.md#mcp-servers)
 - [Interface and Personality](docs/features/interface-and-personality.md)
 - [Workflow tools](docs/features/workflow-tools.md)
 - [Architecture](docs/architecture.md)

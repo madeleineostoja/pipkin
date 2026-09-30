@@ -44,14 +44,12 @@ At least one discovery path must be active. Pipkin currently checks once at the 
 
 Native Pi exclusively owns MCP configuration, transport, authentication, discovery, and `/mcp`, even with no servers configured. Pipkin has no MCP proxy or `/mcp-auth` command. Configure `mcpServers` in `<getAgentDir()>/mcp.json` or trusted project `.pi/mcp.json`. Native project entries replace same-named global entries wholesale. Native OAuth credentials stay in `<getAgentDir()>/mcp-auth.json`; Pi owns their lifecycle.
 
-### Manual cutover
+### Setup
 
-1. Finish or stop active Implement runs before upgrading.
-2. Manually review old Pipkin `mcp` entries and configure the intended native `mcpServers` entries. Pipkin rejects even an empty old `mcp` field and reports bounded, scope-labelled native-configuration guidance at session start for global and trusted-project configuration. Valid sibling settings still apply; no configuration is translated. Remove that field manually, preserving unrelated settings.
-3. Remove any separately installed adapter extension that claims `/mcp`, and enable native MCP. Run `/reload` or start a new session.
-4. Use native `/mcp` to inspect configuration and connection state. For authorized authentication, use the native manager or `/mcp login <server>` (`pi mcp login <server>` from a shell). Anonymous and API-key servers use ordinary native MCP configuration; OAuth uses native login, not Pipkin credentials.
+1. Configure servers in native `mcp.json`, then run `/reload` or start a new session.
+2. Use `/mcp` to inspect configuration and connection state. For authorized authentication, use the native manager or `/mcp login <server>` (`pi mcp login <server>` from a shell). Anonymous and API-key servers use ordinary native MCP configuration; OAuth uses native login.
 
-Consult [Pi's MCP guide](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md) for exact native settings and authentication procedures. Never put secrets in repository files, URLs, or tool arguments. Pipkin does not edit personal adapter/native configuration, credentials, or historical data. Old adapter identities and credentials are not automatically migrated or deleted.
+Consult [Pi's MCP guide](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md) for exact settings and authentication procedures. Never put secrets in repository files, URLs, or tool arguments. Pipkin does not edit MCP configuration or credentials.
 
 ### Worker documentation
 
@@ -61,7 +59,7 @@ Only native `resolve-library-id` and `query-docs` tools are eligible for deferre
 
 ### Figma operator gate
 
-Live Figma cutover is **blocked/unverified** until the operator, with explicit authorization, registers/configures/logs in using the separately supplied current guide and makes a real permitted Figma tool call through native Pi. Record only pass/fail and a non-secret explanation. Native Pi supports a configured `oauth.clientId` and matching callback URL to skip dynamic registration, but not the adapter's client-name override; use the working name, matching callback, and returned authentication method from that guide. Tests with a local fake server do not verify Figma. Failed or unperformed verification remains blocked/unverified: no proxy, fallback server, credential change, or workaround is authorized by this cutover.
+Live Figma use is **blocked/unverified** until the operator, with explicit authorization, registers/configures/logs in using the separately supplied current guide and makes a real permitted Figma tool call through native Pi. Record only pass/fail and a non-secret explanation. Native Pi supports a configured `oauth.clientId` and matching callback URL to skip dynamic registration; use the working name, matching callback, and returned authentication method from that guide. Tests with a local fake server do not verify Figma. Failed or unperformed verification remains blocked/unverified: no proxy, fallback server, credential change, or workaround is authorized by this gate.
 
 ## Sandbox writable roots
 
@@ -72,7 +70,7 @@ Sandbox reads `sandbox.writable` from both configuration scopes:
 | Global  | `<getAgentDir()>/pipkin/config.json` (normally `~/.pi/agent/pipkin/config.json`)                             | `nickname`, `models`, `implement`, and `sandbox` |
 | Project | `<canonical-workspace>/<CONFIG_DIR_NAME>/pipkin/config.json` (currently `<checkout>/.pi/pipkin/config.json`) | `sandbox`                                        |
 
-Project configuration is anchored to the resolved workspace: the canonical Git worktree root even when Pi starts in a subdirectory, or the canonical current directory outside Git. This also applies to trusted-project retirement diagnostics. Pipkin does not search other ancestors. Put personal persistent roots in the global file, not in a project file or `.pi/settings.json`.
+Project configuration is anchored to the resolved workspace: the canonical Git worktree root even when Pi starts in a subdirectory, or the canonical current directory outside Git. Pipkin does not search other ancestors. Put personal persistent roots in the global file, not in a project file or `.pi/settings.json`.
 
 ```json
 {
@@ -86,7 +84,7 @@ Project configuration is anchored to the resolved workspace: the canonical Git w
 }
 ```
 
-These are external user-configuration migration examples: Pipkin neither creates nor changes those paths. They authorize only the selected children, not `~/.local/state`, its siblings, executables, credentials, Git, or Pipkin configuration.
+These are writable-root examples: Pipkin neither creates nor changes those paths. They authorize only the selected children, not `~/.local/state`, its siblings, executables, credentials, Git, or Pipkin configuration.
 
 An entry is an exact path or has one complete `*` segment before a non-empty literal final directory (`apps/*/.svelte-kit`). Global entries are absolute after an optional leading `~/`; project entries are workspace-relative. `**`, partial wildcards, `?`, classes, braces, extglobs, negation, empty, `.` or `..` segments, controls, and absolute project paths are invalid. Every parent must already be a real directory without symlinks; the final literal directory may be absent. Wildcards expand only existing immediate children and never create authority by themselves.
 
@@ -128,8 +126,6 @@ Publication remains serialized regardless of worker concurrency. See [Implementa
 
 ## Native research setup
 
-Pipkin no longer supplies `docs`, `package_search`, or `code_search`, and never reads `pipkin/auth.json`. Existing credential files and historical results remain untouched; there is no replacement Pipkin credential abstraction.
-
 For parent-session research, manually configure an existing Context7 server in native `mcp.json` and authenticate through native Pi if required. Pipkin never provisions Context7. Use the user's existing `gh` authentication for GitHub work, `npm search --json <query>` for package discovery, and file/LSP capabilities for local source evidence. Web Fetch and Browser retain their distinct public-URL and rendered-state boundaries. Worker documentation inheritance is a separate worker-runtime contract, not implied by parent setup.
 
 ## Durable state
@@ -155,7 +151,3 @@ Checkout-owned state lives under Pi's project configuration directory in `pipkin
 This tree shows the durable ownership layout; terminal cleanup may remove owned worktrees and trash entries.
 
 Implement state belongs to each checkout. Papercuts resolves the canonical primary worktree so linked worktrees share one registry. Its read-only `papercut_list` and `papercut_get` operations never initialize that registry; [Workflow tools](features/workflow-tools.md#papercuts) owns inspection authority and recording contracts. Both arrange local exclusion through the repository's common `.git/info/exclude`; neither changes committed `.gitignore`.
-
-## No legacy migration
-
-Current paths are a hard cutover. Pipkin does not read, copy, migrate, or diagnose old `extensions/pi-*` configuration, root `.pi/implement`, `.pi/papercuts.json`, or `.pi/papercuts.lock`. Existing files at those paths remain available for manual inspection only.

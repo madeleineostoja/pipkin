@@ -156,7 +156,7 @@ describe("checkout store transitions", () => {
     );
   });
 
-  it("rejects retained legacy state", () => {
+  it("rejects unsupported persisted schemas", () => {
     const directory = root();
     const lease = fakeLease(directory);
     const store = createPlanningRun({
@@ -177,11 +177,11 @@ describe("checkout store transitions", () => {
       workerConcurrency: 1,
     });
 
-    for (const version of [8, 7, 4]) {
+    for (const version of [10, 12]) {
       writeFileSync(store.path, JSON.stringify({ ...store.read(), version }));
       expect(() => RunStore.open(lease, store.path)).toThrow(StateError);
       expect(() => RunStore.open(lease, store.path)).toThrow(
-        `legacy schema version ${version}`,
+        "Run state has an unsupported schema.",
       );
     }
   });

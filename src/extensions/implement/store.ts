@@ -744,15 +744,6 @@ export class StateError extends Error {
   }
 }
 
-export class UnsupportedActiveRunVersionError extends StateError {
-  constructor(path: string) {
-    super(
-      "Active v10 continuation/recovery is unsupported. Finish or stop the run with the old runtime before upgrading.",
-      path,
-    );
-  }
-}
-
 export class StaleRevisionError extends StateError {
   constructor(path: string, expected: number, actual: number) {
     super(
@@ -986,7 +977,6 @@ export class RunStore {
       throw new StateError("Canonical run state already exists.", path);
     }
     const state = validateRunState(initial, path);
-    assertWritableVerification(state, path);
     writeAtomicJson(path, state, hooks);
     return new RunStore(lease, path, state, hooks);
   }
@@ -997,7 +987,7 @@ export class RunStore {
     hooks: StoreHooks = {},
   ): RunStore {
     lease.assertOwned();
-    const state = loadRunState(path, true);
+    const state = loadRunState(path);
     assertLeaseRun(lease, state.run.id);
     assertRunStatePath(lease, path, state.run.id);
     return new RunStore(lease, path, state, hooks);
@@ -1008,7 +998,7 @@ export class RunStore {
   }
 
   refresh(): RunState {
-    this.snapshot = loadRunState(this.path, true);
+    this.snapshot = loadRunState(this.path);
     return this.read();
   }
 
@@ -1022,7 +1012,7 @@ export class RunStore {
       .catch(() => undefined)
       .then(() => {
         this.lease.assertOwned();
-        const current = loadRunState(this.path, true);
+        const current = loadRunState(this.path);
         if (current.revision !== expectedRevision) {
           this.snapshot = current;
           throw new StaleRevisionError(
@@ -1050,7 +1040,6 @@ export class RunStore {
             this.path,
           );
         }
-        assertWritableVerification(next, this.path);
         writeAtomicJson(this.path, next, this.hooks);
         this.snapshot = next;
       });
@@ -1130,7 +1119,7 @@ export class RunStore {
     protectedArtifactHashes: Record<string, string>,
   ): Promise<RunState> {
     this.lease.assertOwned();
-    const current = loadRunState(this.path, true);
+    const current = loadRunState(this.path);
     if (current.revision !== expectedRevision) {
       throw new StaleRevisionError(
         this.path,
@@ -1198,7 +1187,6 @@ export class RunStore {
         this.path,
       );
     }
-    assertWritableVerification(next, this.path);
     writeAtomicJson(this.path, next, this.hooks);
     this.snapshot = next;
     return this.read();
@@ -1217,63 +1205,19 @@ export function executionPlanPath(paths: CheckoutPaths, runId: string): string {
 
 export function loadRunState(
   path: string,
-  continuation = false,
   expectedOwner?: { runId: string; checkoutRoot: string },
 ): RunState {
   if (!existsSync(path)) {
     throw new StateError("Run state is missing.", path);
   }
   try {
-    let value = JSON.parse(readFileSync(path, "utf-8"));
+    const value = JSON.parse(readFileSync(path, "utf-8"));
     if (
       expectedOwner &&
       (value?.run?.id !== expectedOwner.runId ||
         value?.run?.checkout?.root !== expectedOwner.checkoutRoot)
     ) {
       throw new StateError("Run is unavailable in the current checkout.", path);
-    }
-    const legacy = versionOf(value) === 10;
-    if (legacy) {
-      value = structuredClone(value);
-      value.version = 11;
-      for (const candidate of Object.values(value.candidates ?? {}) as Array<{
-        implementationEvidence?: { verification: unknown[] };
-      }>) {
-        if (candidate.implementationEvidence) {
-          candidate.implementationEvidence.verification = legacyVerification(
-            candidate.implementationEvidence.verification,
-          );
-        }
-      }
-      for (const review of Object.values(value.reviews ?? {}) as Array<{
-        latestCorrection?: { verification?: unknown[] };
-      }>) {
-        if (review.latestCorrection?.verification) {
-          review.latestCorrection.verification = legacyVerification(
-            review.latestCorrection.verification,
-          );
-        }
-      }
-    }
-    if (legacy) {
-      // Classification needs the persisted shape, not new-runtime scheduler
-      // invariants for an active run that we will never continue.
-      const parsed = RunStateSchema.safeParse(value);
-      if (!parsed.success) {
-        throw new StateError("Historical v10 run state is invalid.", path);
-      }
-      if (
-        !["completed", "failed", "incomplete"].includes(parsed.data.phase) ||
-        Object.keys(parsed.data.processLeases).length > 0
-      ) {
-        throw new UnsupportedActiveRunVersionError(path);
-      }
-      if (continuation) {
-        throw new StateError(
-          "Terminal v10 state is inspection-only; use the old runtime for cleanup. Finish or stop active runs before upgrading.",
-          path,
-        );
-      }
     }
     return validateRunState(value, path);
   } catch (error) {
@@ -1286,31 +1230,6 @@ export function loadRunState(
   }
 }
 
-function legacyVerification(items: unknown[]) {
-  return z
-    .array(nonEmpty)
-    .min(1)
-    .parse(items)
-    .map((text) => ({ kind: "legacy" as const, text }));
-}
-
-function assertWritableVerification(state: RunState, path: string): void {
-  const records = [
-    ...Object.values(state.candidates).flatMap(
-      (item) => item.implementationEvidence?.verification ?? [],
-    ),
-    ...Object.values(state.reviews).flatMap(
-      (item) => item.latestCorrection?.verification ?? [],
-    ),
-  ];
-  if (records.some((item) => item.kind === "legacy")) {
-    throw new StateError(
-      "Legacy verification is reader-only; historical runs cannot be rewritten.",
-      path,
-    );
-  }
-}
-
 export function validateRunState(
   value: unknown,
   path: string,
@@ -1320,11 +1239,9 @@ export function validateRunState(
   if (!parsed.success) {
     const version = versionOf(value);
     const message =
-      version !== undefined && version < 9
-        ? `Run state uses legacy schema version ${version}; settle and clean it with the previous runtime before deploying this version.`
-        : version === undefined || version !== 11
-          ? "Run state has an unsupported schema."
-          : "Run state is invalid.";
+      version !== 11
+        ? "Run state has an unsupported schema."
+        : "Run state is invalid.";
     throw new StateError(
       message,
       path,

@@ -6,58 +6,26 @@ function host() {
 }
 
 describe("Sandbox runtime handoff", () => {
-  it("snapshots a disabled parent mode for a child", () => {
+  it("snapshots parent state and requested write mode once at preparation", () => {
     const parent = host();
     const child = host();
-    const parentBinding = bindSandboxHost(parent, () => false);
-    const pending = prepareSandboxChild(parent, child);
+    let enabled = false;
+    const parentBinding = bindSandboxHost(parent, () => enabled);
+    prepareSandboxChild(parent, child, "repository-read-only");
+    enabled = true;
     const childBinding = bindSandboxHost(child, () => true);
 
-    expect(childBinding.inheritedEnabled).toBe(false);
-    pending?.dispose();
-    childBinding.dispose();
-    parentBinding.dispose();
-  });
-
-  it("snapshots the requested write mode once with the parent state", () => {
-    const parent = host();
-    const child = host();
-    const parentBinding = bindSandboxHost(parent, () => true);
-    prepareSandboxChild(parent, child, "repository-read-only");
-    const snapshot = bindSandboxHost(child, () => false).inherited;
-
-    expect(snapshot).toEqual({
-      enabled: true,
+    expect(childBinding.inherited).toEqual({
+      enabled: false,
       writeMode: "repository-read-only",
     });
     expect(bindSandboxHost(child, () => false).inherited).toBeUndefined();
-    parentBinding.dispose();
-  });
-
-  it("snapshots an enabled parent mode for a child", () => {
-    const parent = host();
-    const child = host();
-    const parentBinding = bindSandboxHost(parent, () => true);
-    prepareSandboxChild(parent, child);
-
-    expect(bindSandboxHost(child, () => false).inheritedEnabled).toBe(true);
+    childBinding.dispose();
     parentBinding.dispose();
   });
 
   it("does not prepare inheritance without a parent binding", () => {
     expect(prepareSandboxChild(host(), host())).toBeUndefined();
-  });
-
-  it("captures the parent mode at preparation time", () => {
-    const parent = host();
-    const child = host();
-    let enabled = false;
-    const parentBinding = bindSandboxHost(parent, () => enabled);
-    prepareSandboxChild(parent, child);
-    enabled = true;
-
-    expect(bindSandboxHost(child, () => enabled).inheritedEnabled).toBe(false);
-    parentBinding.dispose();
   });
 
   it("keeps parallel child handoffs isolated", () => {
@@ -70,10 +38,10 @@ describe("Sandbox runtime handoff", () => {
     enabled = true;
     prepareSandboxChild(parent, secondChild);
 
-    expect(bindSandboxHost(firstChild, () => true).inheritedEnabled).toBe(
+    expect(bindSandboxHost(firstChild, () => true).inherited?.enabled).toBe(
       false,
     );
-    expect(bindSandboxHost(secondChild, () => false).inheritedEnabled).toBe(
+    expect(bindSandboxHost(secondChild, () => false).inherited?.enabled).toBe(
       true,
     );
     parentBinding.dispose();
@@ -88,7 +56,7 @@ describe("Sandbox runtime handoff", () => {
     const child = host();
 
     prepareSandboxChild(parent, child);
-    expect(bindSandboxHost(child, () => false).inheritedEnabled).toBe(true);
+    expect(bindSandboxHost(child, () => false).inherited?.enabled).toBe(true);
     second.dispose();
     second.dispose();
     expect(prepareSandboxChild(parent, host())).toBeUndefined();
@@ -102,7 +70,7 @@ describe("Sandbox runtime handoff", () => {
     const reloaded = await import("./runtime.js");
 
     reloaded.prepareSandboxChild(parent, child);
-    expect(reloaded.bindSandboxHost(child, () => true).inheritedEnabled).toBe(
+    expect(reloaded.bindSandboxHost(child, () => true).inherited?.enabled).toBe(
       false,
     );
     parentBinding.dispose();

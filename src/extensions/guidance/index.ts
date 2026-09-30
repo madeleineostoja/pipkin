@@ -1,15 +1,11 @@
-import {
-  getAgentDir,
-  type ExtensionAPI,
-} from "@earendil-works/pi-coding-agent";
-import { reportConfiguration, reportSetupWarning } from "./setup.ts";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { reportSetupWarning } from "./setup.ts";
 import { DISCOVERY_SETUP, EXTERNAL_AUTHORITY, STRATEGY } from "./strategy.ts";
 
 export default function (pi: ExtensionAPI): void {
   let checkedDiscovery = false;
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", () => {
     checkedDiscovery = false;
-    await reportConfiguration(ctx, getAgentDir());
   });
   pi.on("before_agent_start", (event) => {
     event.systemPromptOptions.sections.pipkin_strategy = STRATEGY;

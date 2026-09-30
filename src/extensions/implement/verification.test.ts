@@ -6,7 +6,6 @@ import {
   type LifecycleFixture,
 } from "./lifecycle-test-support.js";
 import { loadRunState, validateRunState } from "./store.js";
-import { verificationText } from "./verification.js";
 import {
   workstreamImplementerResultSchema,
   repositoryStateReviewSchema,
@@ -54,7 +53,7 @@ async function fixture() {
 }
 
 describe("typed persisted verification", () => {
-  it("roundtrips v11 distinctions, denies malformed evidence and legacy new writes", async () => {
+  it("roundtrips typed verification and rejects uncaptured execution and untyped evidence", async () => {
     const f = await fixture();
     expect(loadRunState(f.store.path)).toEqual(f.store.read());
     expect(f.store.read().version).toBe(11);
@@ -70,17 +69,12 @@ describe("typed persisted verification", () => {
     expect(() => validateRunState(invalid, f.store.path)).toThrow();
     await expect(
       f.store.update(f.store.read().revision, (state) => {
-        state.candidates.legacy = {
-          ...state.candidates.candidate!,
-          id: "legacy",
-          implementationEvidence: {
-            summary: "Reported",
-            verification: [{ kind: "legacy", text: "tests passed" }],
-          },
-        };
+        state.candidates.candidate!.implementationEvidence!.verification = [
+          "tests passed",
+        ] as never;
         return state;
       }),
-    ).rejects.toThrow("reader-only");
+    ).rejects.toThrow("Run state is invalid");
     const inspection = inspectImplementRun(f.root, { runId: "run-1" });
     expect(Check(InspectResultSchema, inspection)).toBe(true);
     expect(inspection).toMatchObject({
@@ -100,44 +94,19 @@ describe("typed persisted verification", () => {
     });
   });
 
-  it("normalizes terminal v10 in memory without rewriting or fabricating receipts, and denies continuation", async () => {
+  it("rejects unsupported persisted schemas without rewriting them", async () => {
     const f = await fixture();
-    const old = f.store.read() as any;
-    old.version = 10;
-    old.phase = "failed";
-    old.failure = {
-      category: "runtime",
-      reason: "Stopped",
-      originPhase: "running",
-      at: old.updatedAt,
-    };
-    old.candidates.candidate.implementationEvidence.verification = [
-      "npm test passed",
-    ];
-    const raw = JSON.stringify(old);
+    const raw = JSON.stringify({ ...f.store.read(), version: 10 });
     writeFileSync(f.store.path, raw);
-    const state = loadRunState(f.store.path);
-    const evidence =
-      state.candidates.candidate!.implementationEvidence!.verification;
-    expect(evidence).toEqual([{ kind: "legacy", text: "npm test passed" }]);
-    expect(verificationText(evidence[0]!)).toContain("no capture");
-    const inspection = inspectImplementRun(f.root, { runId: "run-1" });
-    expect(inspection).toMatchObject({
-      ok: true,
-      run: { verification: [{ kind: "legacy" }] },
+    expect(() => loadRunState(f.store.path)).toThrow("unsupported schema");
+    expect(inspectImplementRun(f.root, { runId: "run-1" })).toMatchObject({
+      ok: false,
+      error: { code: "not_found" },
     });
-    expect(JSON.stringify(inspection)).not.toContain("outputRef");
     expect(readFileSync(f.store.path, "utf8")).toBe(raw);
-    expect(() => loadRunState(f.store.path, true)).toThrow("Finish or stop");
-    old.phase = "running";
-    delete old.failure;
-    writeFileSync(f.store.path, JSON.stringify(old));
-    expect(() => loadRunState(f.store.path)).toThrow(
-      "Active v10 continuation/recovery is unsupported",
-    );
   });
 
-  it("accepts inspection-only workers, rejects prose/legacy and leaves reviewers verification-free", () => {
+  it("accepts inspection-only workers, rejects prose and leaves reviewers verification-free", () => {
     const base = { outcome: "changed", summary: "Implemented" };
     expect(
       Check(workstreamImplementerResultSchema, {
@@ -151,11 +120,7 @@ describe("typed persisted verification", () => {
         ],
       }),
     ).toBe(true);
-    for (const verification of [
-      [],
-      ["passed"],
-      [{ kind: "legacy", text: "passed" }],
-    ]) {
+    for (const verification of [[], ["passed"]]) {
       expect(
         Check(workstreamImplementerResultSchema, { ...base, verification }),
       ).toBe(false);

@@ -203,7 +203,7 @@ const verification = () =>
     minItems: 1,
     maxItems: 100,
     description:
-      "Selected execution references, reported inspections, or checks not run. Legacy prose is not accepted. Host validates and saves execution evidence before delivery.",
+      "Selected execution references, reported inspections, or checks not run. Host validates and saves execution evidence before delivery.",
   });
 const uncertainty = () =>
   Type.Optional(

@@ -47,7 +47,6 @@ export const VerificationDescriptorSchema = Type.Object(
       Type.Literal("execution"),
       Type.Literal("inspection"),
       Type.Literal("not_run"),
-      Type.Literal("legacy"),
     ]),
     candidateId: text,
     context: Type.Union([

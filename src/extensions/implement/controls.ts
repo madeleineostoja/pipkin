@@ -7,7 +7,6 @@ import {
   checkoutPaths,
   loadRunState,
   RunStore,
-  UnsupportedActiveRunVersionError,
   type CheckoutLeaseCapability,
   type RunState,
 } from "./store.js";
@@ -21,8 +20,7 @@ import {
 
 export type RunListing =
   | { kind: "run"; runId: string; state: RunState }
-  | { kind: "historical"; runId: string }
-  | { kind: "unsupported_active"; runId: string; diagnostic: string };
+  | { kind: "historical"; runId: string };
 
 export function listCheckoutRuns(checkoutRoot: string): RunListing[] {
   const runs = checkoutPaths(checkoutRoot).runs;
@@ -51,10 +49,7 @@ export function enumerateCheckoutRuns(checkoutRoot: string): {
 function checkoutRunListing(checkoutRoot: string, runId: string): RunListing {
   try {
     return { kind: "run", runId, state: loadCheckoutRun(checkoutRoot, runId) };
-  } catch (error) {
-    if (error instanceof UnsupportedActiveRunVersionError) {
-      return { kind: "unsupported_active", runId, diagnostic: error.message };
-    }
+  } catch {
     return { kind: "historical", runId };
   }
 }
@@ -254,7 +249,7 @@ export function loadCheckoutRun(checkoutRoot: string, runId: string): RunState {
   if (lstatSync(join(path, "run-state.json")).isSymbolicLink()) {
     throw new Error("Run state is symlinked.");
   }
-  const state = loadRunState(join(path, "run-state.json"), false, {
+  const state = loadRunState(join(path, "run-state.json"), {
     runId,
     checkoutRoot,
   });
@@ -480,10 +475,6 @@ export async function terminalizeInterruptedRun(
 
 export function assertNoFailedRuns(checkoutRoot: string): void {
   const runs = listCheckoutRuns(checkoutRoot);
-  const unsupported = runs.find((run) => run.kind === "unsupported_active");
-  if (unsupported?.kind === "unsupported_active") {
-    throw new Error(`Run ${unsupported.runId}: ${unsupported.diagnostic}`);
-  }
   const retained = runs.find(
     (run) => run.kind === "run" && run.state.phase !== "completed",
   );

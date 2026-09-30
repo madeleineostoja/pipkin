@@ -7,7 +7,6 @@ import {
 } from "#lib/ui/tool-result-renderer";
 import { enumerateCheckoutRuns, loadCheckoutRun } from "./controls.js";
 import { ExecGitClient } from "./git.js";
-import { UnsupportedActiveRunVersionError } from "./store.js";
 import { projectRunSurface, runSummary } from "./run-surface.js";
 import {
   InspectResultSchema,
@@ -60,15 +59,6 @@ export function listImplementRuns(
   }
   const { offset = 0, limit = 25 } = input;
   const enumeration = enumerateCheckoutRuns(checkoutRoot);
-  const unsupported = enumeration.runs.find(
-    (entry) => entry.kind === "unsupported_active",
-  );
-  if (unsupported?.kind === "unsupported_active") {
-    return {
-      ok: false,
-      error: { code: "unavailable", message: unsupported.diagnostic },
-    };
-  }
   // Authorization precedes pagination; historical/unowned IDs are never public.
   const runs = enumeration.runs.flatMap((entry) =>
     entry.kind === "run" ? [runSummary(entry.state)] : [],
@@ -101,16 +91,13 @@ export function inspectImplementRun(
   try {
     const state = loadCheckoutRun(checkoutRoot, input.runId);
     return { ok: true, run: projectRunSurface(checkoutRoot, state) };
-  } catch (error) {
+  } catch {
     return {
       ok: false,
-      error:
-        error instanceof UnsupportedActiveRunVersionError
-          ? { code: "unavailable", message: error.message }
-          : {
-              code: "not_found",
-              message: "Run is unavailable in the current checkout.",
-            },
+      error: {
+        code: "not_found",
+        message: "Run is unavailable in the current checkout.",
+      },
     };
   }
 }
@@ -170,7 +157,7 @@ export function registerImplementInspectionTool(pi: ExtensionAPI): void {
     namespace,
     annotations,
     description:
-      "Inspect one known current-checkout Implement run. Returns bounded state, reported/legacy verification and durable run-owned artifact descriptors. Discover artifacts here before reading retained files; this operation never controls a run or mutates artifacts.",
+      "Inspect one known current-checkout Implement run. Returns bounded state, typed verification and durable run-owned artifact descriptors. Discover artifacts here before reading retained files; this operation never controls a run or mutates artifacts.",
     parameters: InspectParams,
     outputSchema: InspectResultSchema,
     async execute(_id, input, _signal, _update, ctx) {

@@ -505,7 +505,6 @@ describe("Pipkin bundle", () => {
     expect(provenanceMap(fixture.result.extensions, "entryRenderers")).toEqual(
       expectedProvenance({
         "pipkin.context.compaction-failure.v1": "context",
-        "pipkin.context.epoch.v1": "context",
         "pipkin.context.pruning.v1": "context",
         "pipkin.implement.terminal-handoff": "implement",
       }),
@@ -1027,7 +1026,7 @@ describe("Pipkin bundle", () => {
     }
   });
 
-  it("reports retired configuration by scope without losing valid settings or changing files", async () => {
+  it("does not emit migration notices for unsupported configuration or change files", async () => {
     const fixture = await loadBundle({ nativeFactories: true });
     const globalPath = join(fixture.agentDir, "pipkin/config.json");
     const projectPath = join(fixture.cwd, ".pi/pipkin/config.json");
@@ -1049,23 +1048,10 @@ describe("Pipkin bundle", () => {
     );
     const host = await nativeSession(fixture);
     try {
-      const warnings = host.notices.filter((notice) =>
-        notice.startsWith("Pipkin configuration:"),
-      );
-      expect(warnings).toHaveLength(2);
-      expect(warnings[0]).toContain("global mcp is retired");
-      expect(warnings[1]).toContain("project mcp is retired");
-      for (const warning of warnings) {
-        expect(warning).toContain("mcp.json");
-        expect(warning).toContain("/mcp");
-      }
+      expect(host.notices).toEqual([]);
       await host.prompt([]);
-      expect(
-        host.notices.filter((notice) =>
-          notice.startsWith("Pipkin configuration:"),
-        ),
-      ).toEqual(warnings);
-      const { mcp: _retiredGlobal, ...validGlobal } = global;
+      expect(host.notices).toEqual([]);
+      const { mcp: _unsupportedGlobal, ...validGlobal } = global;
       expect(loadPipkinConfig(fixture.agentDir).config).toEqual(validGlobal);
       expect(loadProjectPipkinConfig(fixture.cwd).config).toEqual({
         sandbox: project.sandbox,
@@ -1134,13 +1120,7 @@ describe("Pipkin bundle", () => {
             .filter((line) => line.includes("Pipkin's deferred tools")),
         ).toHaveLength(1);
         expect(stderr).toContain('"defaultTools":["+codemode","+tool_search"]');
-        expect(
-          stderr
-            .split("\n")
-            .filter((line) => line.includes("global mcp is retired")),
-        ).toHaveLength(1);
-        expect(stderr).toContain("mcp.json");
-        expect(stderr).toContain("/mcp");
+        expect(stderr).not.toContain("Pipkin configuration:");
         if (mode === "json") {
           const events = stdout
             .trim()

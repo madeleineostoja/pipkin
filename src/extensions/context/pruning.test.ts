@@ -5,7 +5,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
-import { EPOCH_TYPE, PRUNING_TYPE, type PruningMilestone } from "./policy.ts";
+import { PRUNING_TYPE, type PruningMilestone } from "./policy.ts";
 import { createPruningFlow } from "./pruning.ts";
 
 function runtime(manager: SessionManager) {
@@ -182,7 +182,7 @@ describe("canonical pruning authority", () => {
     expect(runtime(manager).boundary()).toBeUndefined();
   });
 
-  it("restores warm policy from branch-local milestones across resume and forks, never legacy decisions", () => {
+  it("restores warm policy from branch-local milestones across resume and forks", () => {
     const manager = SessionManager.inMemory("/work");
     const { id, source } = stale(manager, 150_000, 8);
     const before = manager.getLeafId()!;
@@ -204,18 +204,6 @@ describe("canonical pruning authority", () => {
     }
     expect(runtime(restored).boundary()).toBeUndefined();
     restored.branch(before);
-    expect(runtime(restored).boundary()?.entries).toHaveLength(2);
-    restored.appendCustomEntry(EPOCH_TYPE, {
-      kind: "warm",
-      decisions: [
-        {
-          sourceToolCallId: "source",
-          reason: "standard-stale",
-          stub: '[tool result elided: stale. Call context_recall("source") to retrieve.]',
-        },
-      ],
-    });
-    expect(restored.buildSessionProjection().messages[0]).toEqual(source);
     expect(runtime(restored).boundary()?.entries).toHaveLength(2);
   });
 });

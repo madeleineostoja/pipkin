@@ -256,7 +256,7 @@ function parsePipkinValue(
   if (root) {
     for (const key of Object.keys(root)) {
       if (!["models", "implement", "nickname", "sandbox"].includes(key)) {
-        issue(key, unsupportedField(key));
+        issue(key, "is not supported");
       }
     }
   }
@@ -282,7 +282,7 @@ function parseProjectValue(
   if (root) {
     for (const key of Object.keys(root)) {
       if (key !== "sandbox") {
-        issue(key, unsupportedField(key, true));
+        issue(key, "is not supported in project configuration");
       }
     }
   }
@@ -346,15 +346,6 @@ function parseSandbox(value: unknown, issue: Issue): SandboxConfig {
     }
   }
   return freeze({ writable });
-}
-
-function unsupportedField(key: string, project = false): string {
-  if (key === "mcp") {
-    return "is retired; configure mcpServers in native Pi's agent-directory mcp.json or trusted project .pi/mcp.json, then use /mcp and /reload (see docs/configuration.md)";
-  }
-  return project
-    ? "is not supported in project configuration"
-    : "is not supported";
 }
 
 function parseNickname(value: unknown, issue: Issue): string | undefined {

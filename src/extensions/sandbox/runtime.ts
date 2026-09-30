@@ -7,8 +7,6 @@ export type SandboxHost = ExtensionAPI["events"];
 
 export type SandboxHostBinding = {
   inherited: SandboxChildSnapshot | undefined;
-  /** @deprecated Use the complete immutable child snapshot. */
-  inheritedEnabled: boolean | undefined;
   dispose: () => void;
 };
 
@@ -71,7 +69,6 @@ export function bindSandboxHost(
   });
   return {
     inherited: pending?.snapshot,
-    inheritedEnabled: pending?.snapshot.enabled,
     dispose() {
       unsubscribe?.();
       if (manager.hosts.get(host)?.token === token) {

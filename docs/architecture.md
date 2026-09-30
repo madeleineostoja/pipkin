@@ -57,7 +57,7 @@ UI owns generic presentation, not producer state, cleanup, or terminal delivery.
 
 ## Native capabilities and discovery
 
-Native Pi exclusively owns MCP, including `/mcp` in unconfigured sessions, native `mcp.json`, discovery, and authentication. Pipkin has no adapter, credential abstraction, synthetic identity, environment bridge, or replacement research dispatcher. [Configuration](configuration.md#manual-cutover) owns manual cutover and the live Figma operator gate.
+Native Pi exclusively owns MCP, including `/mcp` in unconfigured sessions, native `mcp.json`, discovery, and authentication. Pipkin has no adapter, credential abstraction, synthetic identity, environment bridge, or replacement research dispatcher. [Configuration](configuration.md#mcp-servers) owns native setup and the live Figma operator gate.
 
 LSP registers nine deferred `lsp_*` operations with closed inputs and schema-matched structured results, not a dispatcher alias. Registration/projection belongs to `lsp/tool.ts` and `lsp/contracts.ts`; normalization, document synchronization, protocol cancellation, workspace/server routing, and the shared lazy pool remain single runtime owners. No operation registers background diagnostic delivery or on-save checks. [Workflow tools](features/workflow-tools.md#lsp) owns coordinates, freshness, limits, and error codes.
 

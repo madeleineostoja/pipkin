@@ -151,7 +151,7 @@ export async function spawnValidatedWorker<
     );
   }
   const verificationContract =
-    "Report verification as execution {kind,label,outputRef,claimedOutcome}, inspection {kind,label,evidence}, or not_run {kind,label,reason}. Execution references must come from terminal captured commands in this attempt and assigned worktree. Inspection is worker-reported, not host-attested execution. Passing evidence does not attest later candidate changes. Free text and legacy inputs are not accepted.";
+    "Report verification as execution {kind,label,outputRef,claimedOutcome}, inspection {kind,label,evidence}, or not_run {kind,label,reason}. Execution references must come from terminal captured commands in this attempt and assigned worktree. Inspection is worker-reported, not host-attested execution. Passing evidence does not attest later candidate changes. Free text is not accepted.";
   const prompt = `${args.render(packet)}${completion.role === "implementer" ? `\n\n${verificationContract}` : ""}${completion.readOnly ? `\n\n${REPOSITORY_PRESERVING_ROLE_CONTRACT}` : ""}\n\n${MANAGED_COMPLETION_FINAL_ACTION} The supplied pi_managed_complete definition is the required structured result for this completion kind.\n\npapercut_record is the sole allowed personal-metadata write for qualifying incidental friction; it does not permit source or Git changes.`;
   return args.subagents.spawn({
     type: role.type,

@@ -139,7 +139,7 @@ Each checkout owns its Implement state:
 
 One OS-backed lease protects each checkout's active run and destructive cleanup. Linked checkouts own independent state and may run separately; a second run in the same checkout is rejected. Retained-run cleanup is rejected immediately when another run in the current session owns the checkout. If an external owner blocks bulk cleanup, Implement reports its recorded run and process identity when available, then stops the batch after the first lease timeout instead of repeating that timeout for every remaining run.
 
-New writes use RunState **v11**. Terminal v10 runs are inspected by normalizing historical free-text verification to reader-only `legacy` records in memory. Inspection never rewrites old files or invents execution references. Active v10 continuation and recovery are unsupported: finish or stop those runs with the old runtime before upgrading. Discovery preserves this diagnostic, human inspection/cleanup surfaces it, and an active v10 run blocks starting another run in the checkout. Historical v10 state cannot be opened for mutation. Older incompatible lifecycle versions retain their existing rejection behavior.
+Implement reads and writes RunState **v11**. Other schemas are rejected, not converted. Invalid or incompatible artifacts are excluded from model-facing discovery and require manual inspection or removal.
 
 ### Verification and execution artifacts
 
@@ -150,7 +150,6 @@ Implementation, revision, reconciliation, and whole-plan repair completions requ
 | `execution`  | Worker selects `label`, `outputRef`, and `claimedOutcome: passed\|failed`; host validates and derives the durable descriptor |
 | `inspection` | `label` and concrete `evidence`, explicitly worker-reported rather than host-attested execution                              |
 | `not_run`    | `label` and concrete `reason` a check was not performed                                                                      |
-| `legacy`     | Reader-only historical prose, never accepted from new workers                                                                |
 
 Passing claims require completed zero-exit captures from the expected attempt and assigned worktree. Failed claims must match captured failures. Missing/corrupt references, sibling-worker output, wrong worktrees, running snapshots, intentional stops, and false outcome claims reject completion; they are never downgraded to prose.
 

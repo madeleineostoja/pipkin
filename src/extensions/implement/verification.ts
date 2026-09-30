@@ -19,7 +19,6 @@ const relativeArtifact = z
   .regex(/^artifacts\/verification\/[a-f0-9]{64}\.json$/);
 export const verificationSchema = z.union([
   reportedVerificationSchema,
-  z.object({ kind: z.literal("legacy"), text: z.string().min(1) }).strict(),
   z
     .object({
       kind: z.literal("execution"),
@@ -156,8 +155,6 @@ export async function promoteVerification(args: {
 
 export function verificationText(record: Verification): string {
   switch (record.kind) {
-    case "legacy":
-      return `Legacy reported text (no capture): ${record.text}`;
     case "inspection":
       return `Worker-reported inspection — ${record.label}: ${record.evidence}`;
     case "not_run":

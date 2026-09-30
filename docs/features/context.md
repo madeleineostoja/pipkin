@@ -14,7 +14,7 @@ Context captures the active canonical session projection, including native omiss
 
 Context stores checkpoint metadata append-only with Pi's normal compaction entry. Reload, resume, and a fork containing that entry reconstruct its authority; a fork before it has none. Replay derives the exact marker-and-kept-tail segment from the canonical projection at the checkpoint entry. Only one uniquely matching provider-input segment is replaced; later turns remain outside it. Checkpoint-era content changes or omissions that invalidate this segment abort replay instead of discarding native edits. Automatic pruning protects that opaque replay segment and can prune later output. `read_output` continues to retrieve authorized original results across textual and native compaction.
 
-Fixture tests cover no-network payload capture, strict route identity, continuation/artifact preservation, canonical omission/replacement replay, resume/fork, and safe initial fallback versus authoritative refusal. They do not prove the private remote trigger is currently available. No live provider smoke was performed for this migration; that requires separate operator authorization and disposable synthetic context.
+Fixture tests cover no-network payload capture, strict route identity, continuation/artifact preservation, canonical omission/replacement replay, resume/fork, and safe initial fallback versus authoritative refusal. They do not prove the private remote trigger is currently available. No live provider smoke was performed; that requires separate operator authorization and disposable synthetic context.
 
 ## Pruning behavior
 
@@ -51,7 +51,7 @@ Each accepted batch includes a quiet Context-owned milestone with only kind, cou
 Context pruned: ~18k tokens (6 results)
 ```
 
-Expanding it shows the reason breakdown. These custom entries stay outside model context. Resume/fork restores warm-policy counters from active-branch milestones; native edits alone own the visible stubs. Historical epoch entries remain renderable, including ones without savings, but their old decisions are neither reapplied nor migrated.
+Expanding it shows the reason breakdown. These custom entries stay outside model context. Resume/fork restores warm-policy counters from active-branch milestones; native edits alone own the visible stubs.
 
 ## Retained output
 

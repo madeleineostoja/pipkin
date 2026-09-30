@@ -80,54 +80,6 @@ describe("Pipkin config", () => {
     }
   });
 
-  it("rejects retired MCP configuration in both scopes with native setup guidance", () => {
-    for (const [scope, parse] of [
-      ["global", parsePipkinConfig],
-      ["project", parseProjectPipkinConfig],
-    ] as const) {
-      for (const mcp of [{}, { old: { url: "https://example.test/mcp" } }]) {
-        const snapshot = parse(
-          JSON.stringify({
-            models,
-            nickname: "Mads",
-            implement: { workerConcurrency: 2 },
-            sandbox: { writable: ["build"] },
-            mcp,
-          }),
-        );
-        expect(snapshot.config).not.toHaveProperty("mcp");
-        expect(snapshot.config.sandbox?.writable).toEqual(["build"]);
-        expect(snapshot.issues).toContainEqual(
-          expect.objectContaining({
-            path: "mcp",
-            scope,
-            message: expect.stringContaining("mcp.json"),
-          }),
-        );
-        expect(
-          snapshot.issues.find((issue) => issue.path === "mcp")?.message,
-        ).toContain("/mcp");
-        if (scope === "global") {
-          expect(snapshot.config).toMatchObject({
-            models,
-            nickname: "Mads",
-            implement: { workerConcurrency: 2 },
-          });
-        }
-      }
-    }
-  });
-
-  it("rejects removed context policy configuration", () => {
-    const snapshot = parsePipkinConfig(
-      JSON.stringify({ models, context: { staleTurns: 6 } }),
-    );
-    expect(snapshot.config).not.toHaveProperty("context");
-    expect(snapshot.issues).toContainEqual(
-      expect.objectContaining({ path: "context", message: "is not supported" }),
-    );
-  });
-
   it("reports malformed and oversized input with immutable snapshots", () => {
     const snapshot = parsePipkinConfig("{ nope");
     expect(snapshot.issues[0]?.message).toContain("malformed JSON");
