@@ -7,13 +7,17 @@ Pipkin's interface features stay quiet: UI keeps operational state visible, whil
 The footer presents a width-aware subset of:
 
 - current directory and Git branch;
-- selected model and thinking level;
+- selected model and thinking level, plus the latest successful physical response and its recorded thinking level under a virtual selection;
 - active-branch cost across model switches;
 - prompt-cache hit rate;
 - context-window usage; and
 - ordered extension status such as Readonly mode, Sandbox mode, pending Papercuts, or active Implement cleanup.
 
-Cost includes assistant usage and prompt-cache read/write pricing on the active branch. Subscription-auth responses are excluded; cost disappears when the branch contains only subscription usage. Cache hit rate appears after cache activity exists.
+Metrics use recorded usage on the active branch, including assistant responses, tool/model calls, compaction and branch summaries, and standalone usage such as cache warming. Pi's top-level tool usage already includes nested calls; UI counts it once, never reconstructing usage from renderer details or child-call metadata. Recorded total costs are authoritative, including prompt-cache charges and zero-cost responses; UI does not estimate prices from the selected model. Model-attributed subscription-auth usage is excluded from cost, while unattributed tool/summary costs remain included. Cost disappears when the branch contains only subscription usage (or before first usage with a physical subscription model selected).
+
+Cache hit rate appears after cache activity exists. It is the token-weighted branch average: cache-read tokens divided by input plus cache-read plus cache-write tokens across those recorded usage categories, not an average of per-request percentages. Reasoning tokens are already included in output and are not added again. Context usage comes from Pi's runtime, which uses the latest physical response's limits under virtual selection; an unknown window stays unknown. The virtual selector itself is not treated as a physical model with prices or known limits.
+
+The Catppuccin semantic colors and custom footer field placement remain Pipkin-owned. Pi settings do not recreate this layout.
 
 A long Git branch yields to the complete model/cost/cache/context segment before the optional context-window detail is removed. Sandbox, Readonly, Papercuts, and Implement publish source-owned `normal`, `warning`, or `error` statuses. Papercuts keeps its open-finding footer count and `/papercuts` browser; its [typed tools](workflow-tools.md#papercuts) do not turn that status into an authorized work queue. Implement shows the short warning-yellow `cleaning` status only while cleanup or post-run resource release is pending. Sandbox becomes warning-yellow and shows its active-runtime denial count after a confirmed direct-tool or kernel Bash write denial.
 

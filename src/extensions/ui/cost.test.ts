@@ -1,231 +1,283 @@
 import { describe, expect, it } from "vitest";
+import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
+import {
+  SessionManager,
+  type SessionEntry,
+  type SessionMessageEntry,
+} from "@earendil-works/pi-coding-agent";
 import { getAverageCacheHitRate, getFooterCostInfo } from "./cost.js";
 
-function assistantEntry(args: {
-  provider?: string;
-  model?: string;
-  input?: number;
-  output?: number;
-  cacheRead?: number;
-  cacheWrite?: number;
-  cost?: {
-    input?: number;
-    output?: number;
-    cacheRead?: number;
-    cacheWrite?: number;
-    total?: number;
-  };
-}) {
+function usage(
+  args: Partial<Omit<Usage, "cost">> & { cost?: Partial<Usage["cost"]> } = {},
+): Usage {
   return {
-    type: "message",
-    message: {
-      role: "assistant",
-      provider: args.provider ?? "openai",
-      model: args.model ?? "gpt-test",
-      usage: {
-        input: args.input ?? 0,
-        output: args.output ?? 0,
-        cacheRead: args.cacheRead ?? 0,
-        cacheWrite: args.cacheWrite ?? 0,
-        cost: args.cost ?? {
-          input: 0,
-          output: 0,
-          cacheRead: 0,
-          cacheWrite: 0,
-          total: 0,
-        },
-      },
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 0,
+    ...args,
+    cost: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      total: 0,
+      ...args.cost,
     },
   };
 }
 
-function registry(options?: { subscriptionProviders?: string[] }) {
-  const subscriptionProviders = new Set(options?.subscriptionProviders ?? []);
+function assistantEntry(
+  args: {
+    provider?: string;
+    model?: string;
+    responseModel?: string;
+    usage?: Usage;
+  } = {},
+): SessionMessageEntry & { message: AssistantMessage } {
+  const session = SessionManager.inMemory();
+  session.appendMessage({
+    role: "assistant",
+    provider: args.provider ?? "openai",
+    model: args.model ?? "gpt-test",
+    responseModel: args.responseModel,
+    api: "openai-responses",
+    content: [],
+    stopReason: "stop",
+    timestamp: 0,
+    usage: args.usage ?? usage(),
+  });
+  return session.getBranch()[0] as SessionMessageEntry & {
+    message: AssistantMessage;
+  };
+}
+
+function registry(subscriptionProviders: string[] = []) {
   return {
-    find(provider: string, modelId: string) {
+    find(provider: string, id: string) {
       return {
         provider,
-        id: modelId,
-        cost: {
-          input: provider === "anthropic" ? 3 : 10,
-          output: provider === "anthropic" ? 15 : 20,
-          cacheRead: provider === "anthropic" ? 0.3 : 1,
-          cacheWrite: provider === "anthropic" ? 3.75 : 5,
-        },
+        id,
+        cost: { input: 100, output: 100, cacheRead: 100, cacheWrite: 100 },
       };
     },
     isUsingOAuth(model: { provider?: string }) {
-      return model.provider ? subscriptionProviders.has(model.provider) : false;
+      return subscriptionProviders.includes(model.provider ?? "");
     },
   };
 }
 
-describe("getFooterCostInfo", () => {
-  it("uses persisted cost components including prompt cache cost", () => {
-    const result = getFooterCostInfo(
-      [
-        assistantEntry({
-          input: 1000,
-          output: 1000,
-          cacheRead: 10_000,
-          cacheWrite: 500,
-          cost: {
-            input: 0.01,
-            output: 0.02,
-            cacheRead: 0.01,
-            cacheWrite: 0.0025,
-            total: 999,
-          },
-        }),
+function mixedBranch(): SessionEntry[] {
+  const session = SessionManager.inMemory();
+  const assistant = assistantEntry({
+    usage: usage({
+      input: 90,
+      cacheRead: 10,
+      output: 30,
+      reasoning: 20,
+      cost: { total: 0.1 },
+    }),
+  });
+  session.appendMessage(assistant.message);
+  session.appendMessage({
+    role: "toolResult",
+    toolCallId: "call",
+    toolName: "codemode",
+    content: [],
+    isError: false,
+    timestamp: 0,
+    usage: usage({ input: 20, cacheRead: 80, cost: { total: 0.2 } }),
+    details: { usage: { ...usage({ input: 9000, cost: { total: 99 } }) } },
+    nestedCalls: {
+      complete: true,
+      calls: [
+        {
+          id: "call/1",
+          name: "model_tool",
+          status: "ok",
+          arguments: { usage: { input: 9000 } },
+        },
       ],
-      registry(),
-      undefined,
-    );
+    },
+  });
+  session.appendCompaction(
+    "summary",
+    null,
+    1000,
+    { usage: usage({ cost: { total: 99 } }) },
+    false,
+    usage({ input: 50, cacheRead: 30, cacheWrite: 20, cost: { total: 0.3 } }),
+  );
+  session.branchWithSummary(
+    session.getLeafId(),
+    "branch summary",
+    undefined,
+    false,
+    usage({ input: 100, cost: { total: 0.4 } }),
+  );
+  session.appendUsage(
+    "cache_warm",
+    "openai",
+    "gpt-test",
+    usage({ cacheRead: 100, cost: { total: 0.5 } }),
+  );
+  session.appendUsage(
+    "future_category",
+    "openai",
+    "gpt-test",
+    usage({ cacheWrite: 100, cost: { total: 0.6 } }),
+  );
+  return session.getBranch();
+}
 
-    expect(result).toEqual({ totalCost: 0.0425, hideCost: false });
+describe("recorded branch accounting", () => {
+  it("includes all native usage categories once, ignoring renderer and nested-call data", () => {
+    const branch = mixedBranch();
+    expect(getFooterCostInfo(branch, registry(), undefined)).toEqual({
+      totalCost: 2.1,
+      hideCost: false,
+    });
+    // 220 cache-read / 600 prompt tokens, including warm/summary/tool usage.
+    expect(getAverageCacheHitRate(branch)).toBeCloseTo((220 / 600) * 100);
   });
 
-  it("estimates from the response model when stored costs are zero", () => {
-    const result = getFooterCostInfo(
-      [assistantEntry({ input: 1000, output: 1000, cacheRead: 10_000 })],
-      registry(),
-      undefined,
-    );
-
-    expect(result.totalCost).toBeCloseTo(0.04);
-    expect(result.hideCost).toBe(false);
-  });
-
-  it("only includes the supplied active branch entries", () => {
+  it("uses actual total costs even when components or catalog prices disagree", () => {
     const branch = [
       assistantEntry({
-        cost: {
-          input: 0.01,
-          output: 0,
-          cacheRead: 0,
-          cacheWrite: 0,
-          total: 0.01,
-        },
+        usage: usage({
+          input: 1000,
+          output: 1000,
+          cost: { input: 999, total: 0.07 },
+        }),
       }),
     ];
-
-    const result = getFooterCostInfo(branch, registry(), undefined);
-
-    expect(result.totalCost).toBe(0.01);
+    expect(getFooterCostInfo(branch, registry(), undefined).totalCost).toBe(
+      0.07,
+    );
+    expect(
+      getFooterCostInfo(
+        [assistantEntry({ usage: usage({ input: 1000 }) })],
+        registry(),
+        undefined,
+      ).totalCost,
+    ).toBe(0);
   });
 
-  it("keeps model-switched costs separate from current subscription state", () => {
-    const result = getFooterCostInfo(
-      [
-        assistantEntry({
-          provider: "openai",
-          model: "gpt-test",
-          cost: {
-            input: 0.03,
-            output: 0,
-            cacheRead: 0,
-            cacheWrite: 0,
-            total: 0.03,
-          },
-        }),
-        assistantEntry({
-          provider: "anthropic",
-          model: "claude-test",
-          cost: {
-            input: 0.5,
-            output: 0,
-            cacheRead: 0,
-            cacheWrite: 0,
-            total: 0.5,
-          },
-        }),
-      ],
-      registry({ subscriptionProviders: ["anthropic"] }),
-      { provider: "anthropic", id: "claude-test" },
-    );
-
-    expect(result).toEqual({ totalCost: 0.03, hideCost: false });
+  it("does not require a resolved response model to use its recorded cost", () => {
+    expect(
+      getFooterCostInfo(
+        [
+          assistantEntry({
+            responseModel: "unknown",
+            usage: usage({ cost: { total: 0.07 } }),
+          }),
+        ],
+        { find: () => undefined, isUsingOAuth: () => false },
+        undefined,
+      ),
+    ).toEqual({ totalCost: 0.07, hideCost: false });
   });
 
-  it("hides cost when current usage is subscription-only", () => {
-    const result = getFooterCostInfo(
-      [assistantEntry({ provider: "anthropic", model: "claude-test" })],
-      registry({ subscriptionProviders: ["anthropic"] }),
-      { provider: "anthropic", id: "claude-test" },
+  it("keeps cost and cache scope on the supplied branch, including compacted history", () => {
+    const session = SessionManager.inMemory();
+    session.appendUsage(
+      "cache_warm",
+      "openai",
+      "gpt-test",
+      usage({ input: 90, cacheRead: 10, cost: { total: 0.1 } }),
     );
-
-    expect(result).toEqual({ totalCost: 0, hideCost: true });
+    const fork = session.getLeafId()!;
+    session.appendUsage(
+      "cache_warm",
+      "openai",
+      "gpt-test",
+      usage({ cacheRead: 1000, cost: { total: 99 } }),
+    );
+    session.branch(fork);
+    session.appendCompaction("summary", null, 1000);
+    expect(
+      getFooterCostInfo(session.getBranch(), registry(), undefined).totalCost,
+    ).toBe(0.1);
+    expect(getAverageCacheHitRate(session.getBranch())).toBe(10);
   });
 
-  it("hides zero cost before first usage when the current model is subscription auth", () => {
-    const result = getFooterCostInfo(
-      [],
-      registry({ subscriptionProviders: ["anthropic"] }),
-      { provider: "anthropic", id: "claude-test" },
+  it("excludes model-attributed subscription usage without hiding billable costs after a switch", () => {
+    const session = SessionManager.inMemory();
+    session.appendUsage(
+      "cache_warm",
+      "anthropic",
+      "claude-test",
+      usage({ cacheRead: 100, cost: { total: 0.5 } }),
     );
-
-    expect(result).toEqual({ totalCost: 0, hideCost: true });
+    const branch = [
+      assistantEntry({ usage: usage({ cost: { total: 0.03 } }) }),
+      assistantEntry({
+        provider: "anthropic",
+        usage: usage({ cost: { total: 0.5 } }),
+      }),
+      ...session.getBranch(),
+    ];
+    expect(
+      getFooterCostInfo(branch, registry(["anthropic"]), {
+        provider: "anthropic",
+        id: "claude-test",
+      }),
+    ).toEqual({ totalCost: 0.03, hideCost: false });
+    expect(getAverageCacheHitRate(branch)).toBe(100);
   });
 
-  it("falls back to persisted total for unresolved models", () => {
-    const result = getFooterCostInfo(
-      [
-        assistantEntry({
-          provider: "unknown",
-          model: "unknown",
-          cost: { total: 0.07 },
-        }),
-      ],
-      { find: () => undefined, isUsingOAuth: () => false },
-      undefined,
-    );
-
-    expect(result).toEqual({ totalCost: 0.07, hideCost: false });
+  it("hides cost for subscription-only usage and before first physical subscription usage", () => {
+    const model = { provider: "anthropic", id: "claude-test" };
+    const models = registry(["anthropic"]);
+    expect(
+      getFooterCostInfo(
+        [assistantEntry({ provider: "anthropic" })],
+        models,
+        model,
+      ),
+    ).toEqual({ totalCost: 0, hideCost: true });
+    expect(getFooterCostInfo([], models, model).hideCost).toBe(true);
+    expect(
+      getFooterCostInfo([], models, { ...model, api: "pi-virtual" }).hideCost,
+    ).toBe(false);
   });
 });
 
 describe("getAverageCacheHitRate", () => {
-  it("returns undefined when there is no cache activity", () => {
+  it("stays token-weighted rather than averaging request percentages", () => {
+    expect(
+      getAverageCacheHitRate([
+        assistantEntry({ usage: usage({ input: 90, cacheRead: 10 }) }),
+        assistantEntry({ usage: usage({ cacheRead: 900, cacheWrite: 100 }) }),
+      ]),
+    ).toBeCloseTo((910 / 1100) * 100);
+  });
+
+  it("omits the metric without cache activity and includes cache writes in the denominator", () => {
     expect(getAverageCacheHitRate([])).toBeUndefined();
     expect(
-      getAverageCacheHitRate([assistantEntry({ input: 100, output: 50 })]),
+      getAverageCacheHitRate([
+        assistantEntry({ usage: usage({ input: 100, output: 50 }) }),
+      ]),
     ).toBeUndefined();
-  });
-
-  it("computes a token-weighted average across assistant messages", () => {
-    const result = getAverageCacheHitRate([
-      assistantEntry({ input: 90, cacheRead: 10, cacheWrite: 0 }),
-      assistantEntry({ input: 0, cacheRead: 90, cacheWrite: 10 }),
-    ]);
-    expect(result).toBeCloseTo(50);
-  });
-
-  it("includes cacheWrite in the denominator", () => {
-    const result = getAverageCacheHitRate([
-      assistantEntry({ input: 50, cacheRead: 30, cacheWrite: 20 }),
-    ]);
-    expect(result).toBeCloseTo(30);
-  });
-
-  it("returns 0 when prompt tokens are non-zero but cacheRead is zero", () => {
-    const result = getAverageCacheHitRate([
-      assistantEntry({ input: 0, cacheRead: 0, cacheWrite: 10 }),
-    ]);
-    expect(result).toBeCloseTo(0);
-  });
-
-  it("ignores non-assistant and non-message entries", () => {
-    const result = getAverageCacheHitRate([
-      { type: "message", message: { role: "user" } },
-      assistantEntry({ input: 100, cacheRead: 50, cacheWrite: 0 }),
-    ]);
-    expect(result).toBeCloseTo(33.333);
-  });
-
-  it("shows rate when only cacheWrite exists", () => {
-    const result = getAverageCacheHitRate([
-      assistantEntry({ input: 100, cacheRead: 0, cacheWrite: 10 }),
-    ]);
-    expect(result).toBeCloseTo(0);
+    expect(
+      getAverageCacheHitRate([
+        assistantEntry({ usage: usage({ cacheWrite: 10 }) }),
+      ]),
+    ).toBe(0);
+    expect(
+      getAverageCacheHitRate([
+        assistantEntry({
+          usage: usage({
+            input: 50,
+            cacheRead: 30,
+            cacheWrite: 20,
+            output: 100,
+            reasoning: 90,
+          }),
+        }),
+      ]),
+    ).toBe(30);
   });
 });

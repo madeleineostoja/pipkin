@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import {
   buildFooterLines,
   buildFooterLeftSegment,
@@ -171,6 +172,62 @@ describe("footer segments", () => {
     expect(subscription).toContain("Claude Sonnet 4.6 (high)");
     expect(subscription).not.toContain("$");
     expect(subscription).toContain("12% (200k)");
+  });
+
+  it("keeps routed identity in the model field with existing colors and width bounds", () => {
+    const theme = makeSpyTheme();
+    const model = {
+      name: "Auto",
+      dispatched: {
+        id: "physical",
+        name: "Physical",
+        provider: "test",
+        thinkingLevel: "medium" as const,
+      },
+    };
+    const right = buildRightSegment(
+      model,
+      "high",
+      0.04,
+      { percent: 12, contextWindow: 272000 },
+      false,
+      theme,
+      true,
+    );
+    const compact = buildRightSegment(
+      model,
+      "high",
+      0.04,
+      { percent: 12, contextWindow: 272000 },
+      false,
+      theme,
+      false,
+    );
+    expect(right).toContain(
+      "[fg:muted:Auto] [fg:thinkingHigh:(high)] [fg:dim:→] [fg:muted:Physical] [fg:thinkingMedium:(medium)]",
+    );
+    expect(theme.calls).toContainEqual({
+      method: "fg",
+      color: "muted",
+      text: "Physical",
+    });
+    expect(theme.calls).toContainEqual({
+      method: "fg",
+      color: "thinkingMedium",
+      text: "(medium)",
+    });
+    for (const width of [25, 70, 120]) {
+      const lines = buildFooterLines(
+        width,
+        "pipkin on  main",
+        right,
+        compact,
+        new Map(),
+        theme,
+      );
+      expect(lines).toHaveLength(1);
+      expect(visibleWidth(lines[0])).toBeLessThanOrEqual(width);
+    }
   });
 
   it("can omit context window and provider details", () => {

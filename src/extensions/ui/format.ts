@@ -13,7 +13,17 @@ export type ThinkingLevel =
   | "xhigh"
   | "max";
 export type FooterModel =
-  | { name?: string; id?: string; provider?: string }
+  | {
+      name?: string;
+      id?: string;
+      provider?: string;
+      dispatched?: {
+        name?: string;
+        id: string;
+        provider: string;
+        thinkingLevel?: ThinkingLevel;
+      };
+    }
   | undefined;
 export type ContextUsageInfo =
   | { percent: number | null; contextWindow: number }
@@ -112,9 +122,14 @@ export function buildRightSegment(
   cacheHitRate?: number,
 ): string {
   const parts: string[] = [];
-  parts.push(
-    `${theme.fg("muted", formatModelName(model, includeProvider))} ${formatThinking(thinkingLevel, theme)}`,
-  );
+  let modelPart = `${theme.fg("muted", formatModelName(model, includeProvider))} ${formatThinking(thinkingLevel, theme)}`;
+  if (model?.dispatched) {
+    modelPart += ` ${theme.fg("dim", "→")} ${theme.fg("muted", formatModelName(model.dispatched, includeProvider))}`;
+    if (model.dispatched.thinkingLevel) {
+      modelPart += ` ${formatThinking(model.dispatched.thinkingLevel, theme)}`;
+    }
+  }
+  parts.push(modelPart);
 
   if (!hideCost) {
     parts.push(theme.fg("muted", formatUsdCost(cost)));

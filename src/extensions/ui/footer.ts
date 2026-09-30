@@ -4,6 +4,7 @@ import type {
   SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import { getAverageCacheHitRate, getFooterCostInfo } from "./cost.js";
+import { getFooterModel } from "./model.js";
 import {
   buildFooterLines,
   buildFooterLeftSegment,
@@ -37,9 +38,11 @@ export function installFooter(pi: ExtensionAPI): void {
               model,
             );
             const contextUsage = ctx.getContextUsage();
-            const footerModel = model
-              ? { name: model.name, id: model.id, provider: model.provider }
-              : undefined;
+            const footerModel = getFooterModel(
+              model,
+              branchEntries,
+              ctx.modelRegistry,
+            );
             const cacheHitRate = getAverageCacheHitRate(branchEntries);
 
             const rightWithWindow = buildRightSegment(
