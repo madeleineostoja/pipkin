@@ -266,14 +266,22 @@ describe("SubagentRuntime", () => {
 
     const waiting = runtime.wait(queued.id);
     const completed = runtime.complete(queued.id, { text: "done" });
-    await expect(waiting).resolves.toEqual(completed);
+    await expect(waiting).resolves.toEqual({
+      ...completed,
+      cleanupComplete: true,
+    });
     expect(completed).toMatchObject({
       status: "completed",
       result: { text: "done" },
     });
     expect(completed.timestamps.completedAt).toEqual(expect.any(String));
-    expect(runtime.snapshot(queued.id)).toEqual(completed);
-    expect(runtime.snapshots()).toEqual([completed]);
+    expect(runtime.snapshot(queued.id)).toEqual({
+      ...completed,
+      cleanupComplete: true,
+    });
+    expect(runtime.snapshots()).toEqual([
+      { ...completed, cleanupComplete: true },
+    ]);
     expect(runtime.inspect(queued.id)?.records).toContainEqual(
       expect.objectContaining({
         kind: "message",
@@ -521,11 +529,12 @@ describe("SubagentRuntime", () => {
 
     const live = await runtime.publicResult(started.id, false, true);
     expect(live.snapshot.status).toBe("running");
-    expect(live.progress).toContain("Checked the runtime owner.");
-    expect(live.progress).toContain("bash: completed");
-    expect(live.progress).not.toContain("private task prompt");
-    expect(live.progress).not.toContain("private command");
-    expect(live.progress).not.toContain("private raw output");
+    expect(live.progress?.truncated).toBe(false);
+    expect(live.progress?.text).toContain("Checked the runtime owner.");
+    expect(live.progress?.text).toContain("bash: completed");
+    expect(live.progress?.text).not.toContain("private task prompt");
+    expect(live.progress?.text).not.toContain("private command");
+    expect(live.progress?.text).not.toContain("private raw output");
 
     const internal = runtime.queue({
       owner: "internal",
@@ -578,7 +587,10 @@ describe("SubagentRuntime", () => {
     abortDone.resolve();
     await expect(frozen).resolves.toMatchObject({
       snapshot: { status: "stopped" },
-      progress: expect.stringContaining("Terminal cancellation work."),
+      progress: {
+        text: expect.stringContaining("Terminal cancellation work."),
+        truncated: false,
+      },
     });
     promptDone.resolve();
   });
@@ -2111,9 +2123,9 @@ describe("SubagentRuntime", () => {
       "browser_snapshot",
       "inspect_implement_run",
       "record_papercut",
-      "Agent",
-      "get_subagent_result",
-      "steer_subagent",
+      "agent_start",
+      "agent_wait",
+      "agent_steer",
       "edit",
       "write",
       "inherited_extension_tool",
@@ -2150,20 +2162,24 @@ describe("SubagentRuntime", () => {
       return (options as unknown as { tools: string[] }).tools;
     };
     expect(selected(0)).toEqual(
-      activeTools.filter(
-        (name) =>
-          ![
-            "Agent",
-            "get_subagent_result",
-            "steer_subagent",
-            "edit",
-            "write",
-          ].includes(name),
+      expect.arrayContaining(
+        activeTools.filter(
+          (name) =>
+            ![
+              "agent_start",
+              "agent_wait",
+              "agent_steer",
+              "edit",
+              "write",
+            ].includes(name),
+        ),
       ),
     );
+    expect(selected(0)).not.toContain("agent_start");
+    expect(selected(0)).not.toContain("edit");
     expect(selected(0)).not.toContain("explore");
     expect(selected(0)).not.toContain("parent_inactive_tool");
-    expect(selected(1)).toEqual([...selected(0), "explore"]);
+    expect([...selected(1)].sort()).toEqual([...selected(0), "explore"].sort());
     expect(explore.setActiveToolsByName).toHaveBeenCalledWith(selected(0));
     expect(review.setActiveToolsByName).toHaveBeenCalledWith(selected(1));
   });
@@ -2188,9 +2204,9 @@ describe("SubagentRuntime", () => {
         "lsp_definition",
         "edit",
         "write",
-        "Agent",
-        "get_subagent_result",
-        "steer_subagent",
+        "agent_start",
+        "agent_wait",
+        "agent_steer",
         "process_start",
         "read_output",
         "output_list",
@@ -2198,12 +2214,22 @@ describe("SubagentRuntime", () => {
     });
 
     expect(createSession).toHaveBeenCalledWith(
-      expect.objectContaining({ tools: ["read", "lsp_definition"] }),
+      expect.objectContaining({
+        tools: expect.arrayContaining([
+          "read",
+          "lsp_definition",
+          "codemode",
+          "tool_search",
+        ]),
+      }),
     );
-    expect(session.setActiveToolsByName).toHaveBeenCalledWith([
-      "read",
-      "lsp_definition",
-    ]);
+    const tools = (
+      createSession.mock.calls[0] as unknown as [{ tools: string[] }]
+    )[0].tools;
+    expect(tools).not.toEqual(
+      expect.arrayContaining(["edit", "write", "agent_start", "process_start"]),
+    );
+    expect(session.setActiveToolsByName).toHaveBeenCalledWith(tools);
   });
 
   it("records explicitly supplied model and thinking metadata", () => {

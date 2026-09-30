@@ -11,9 +11,12 @@ export type ResolveChildToolNamesInput = {
 };
 
 const publicAgentTools = new Set([
-  "Agent",
-  "get_subagent_result",
-  "steer_subagent",
+  "agent_start",
+  "agent_list",
+  "agent_inspect",
+  "agent_wait",
+  "agent_steer",
+  "agent_stop",
 ]);
 const activeGatedTools = new Set([
   "bash",
@@ -66,6 +69,13 @@ export function resolveChildToolNames(
   const active = (name: string) =>
     candidates.includes(name) &&
     !excluded.has(name) &&
+    // Documentation is separately admitted from validated native metadata.
+    !name.startsWith("mcp__") &&
+    ![
+      "list_mcp_resources",
+      "list_mcp_resource_templates",
+      "read_mcp_resource",
+    ].includes(name) &&
     // These companion tools and LSP depend on parent registration. Other
     // explicit tool overrides intentionally retain their established behavior.
     (!activeGatedTools.has(name) ||

@@ -41,9 +41,9 @@ describe("managed Pipkin Implement worker tools", () => {
       "web_fetch",
       "browser_snapshot",
       "inspect_implement_run",
-      "Agent",
-      "get_subagent_result",
-      "steer_subagent",
+      "agent_start",
+      "agent_wait",
+      "agent_steer",
     ];
     const sessions = Array.from(
       { length: 2 },
@@ -93,29 +93,6 @@ describe("managed Pipkin Implement worker tools", () => {
       readOnly: true,
     });
 
-    const selected = (index: number) => {
-      const options = createSession.mock.calls[index]?.[0];
-      if (!options) {
-        throw new Error(`Missing child session ${index}`);
-      }
-      return (options as unknown as { tools: string[] }).tools;
-    };
-    expect(selected(0)).toEqual([
-      "read",
-      "edit",
-      "write",
-      "docs",
-      "web_fetch",
-      "browser_snapshot",
-      "explore",
-    ]);
-    expect(selected(1)).toEqual([
-      "read",
-      "docs",
-      "web_fetch",
-      "browser_snapshot",
-      "explore",
-    ]);
     await expect(client.waitFor(mutable)).resolves.toEqual({
       status: "completed",
       result: "done",
@@ -124,6 +101,41 @@ describe("managed Pipkin Implement worker tools", () => {
       status: "completed",
       result: "done",
     });
+    const selected = (index: number) => {
+      const options = createSession.mock.calls[index]?.[0];
+      if (!options) {
+        throw new Error(`Missing child session ${index}`);
+      }
+      return (options as unknown as { tools: string[] }).tools;
+    };
+    expect(selected(0)).toEqual(
+      expect.arrayContaining([
+        "read",
+        "edit",
+        "write",
+        "web_fetch",
+        "browser_snapshot",
+        "explore",
+        "codemode",
+        "tool_search",
+      ]),
+    );
+    expect(selected(1)).toEqual(
+      expect.arrayContaining([
+        "read",
+        "web_fetch",
+        "browser_snapshot",
+        "explore",
+        "codemode",
+        "tool_search",
+      ]),
+    );
+    expect(selected(1)).not.toContain("edit");
+    expect(selected(1)).not.toContain("write");
+    for (const tools of [selected(0), selected(1)]) {
+      expect(tools).not.toContain("agent_start");
+      expect(tools).not.toContain("inspect_implement_run");
+    }
   });
 
   it("keeps managed runtime ownership in the Implement adapter", () => {

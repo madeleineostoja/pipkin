@@ -94,7 +94,14 @@ export function truncateUtf8(
   return `${encoded.subarray(0, end).toString("utf8")}${suffix}`;
 }
 
-export function renderPublicProgress(inspection: RuntimeInspection): string {
+export type PublicProgress = {
+  text: string;
+  truncated: boolean;
+};
+
+export function renderPublicProgress(
+  inspection: RuntimeInspection,
+): PublicProgress {
   const eligible = inspection.records.flatMap((record) => {
     if (record.kind === "message") {
       if (record.role !== "assistant") {
@@ -181,7 +188,13 @@ export function renderPublicProgress(inspection: RuntimeInspection): string {
     }
     rendered = lines.join("\n");
   }
-  return rendered;
+  return {
+    text: rendered,
+    truncated:
+      omittedRecords ||
+      recent.some((record) => record.truncated) ||
+      sectionTruncated,
+  };
 }
 
 function normalizePublicProgressText(value: string): string {

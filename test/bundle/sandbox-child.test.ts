@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createEventBus,
+  SessionManager,
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
@@ -25,7 +26,23 @@ import { SubagentRuntime } from "../../src/extensions/subagents/runtime.ts";
 import { RuntimeSubagentClient } from "../../src/extensions/implement/subagents.ts";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { bindOutputScope, createOutputScope } from "#context/retained-output";
 const directories: string[] = [];
+const parentOutputReleases: Array<() => void> = [];
+function parentEventBus() {
+  const bus = createEventBus();
+  const root = mkdtempSync(join(tmpdir(), "pipkin-child-outputs-"));
+  directories.push(root);
+  const scope = createOutputScope(root, {
+    sessionManager: SessionManager.inMemory(),
+  } as never);
+  const off = bindOutputScope(bus, scope);
+  parentOutputReleases.push(() => {
+    off();
+    scope.release();
+  });
+  return bus;
+}
 
 function captureChildSandboxMode(value: {
   mode?: { enabled: boolean; writeMode: string };
@@ -46,6 +63,9 @@ function captureChildSandboxMode(value: {
 }
 
 afterEach(async () => {
+  for (const release of parentOutputReleases.splice(0)) {
+    release();
+  }
   while (directories.length) {
     rmSync(directories.pop()!, { force: true, recursive: true });
   }
@@ -56,7 +76,7 @@ describe("Sandbox child binding", () => {
     const workspace = mkdtempSync(join(tmpdir(), "pipkin-sandbox-child-"));
     directories.push(workspace);
     const canonicalWorkspace = realpathSync(workspace);
-    const parentBus = createEventBus();
+    const parentBus = parentEventBus();
     const parentMode = bindSandboxHost(parentBus, () => false);
     const parentExecutor = bindSandboxManagedExecutor(parentBus, async () => ({
       pid: 999,
@@ -246,7 +266,7 @@ describe("Sandbox child binding", () => {
       join(tmpdir(), "pipkin-sandbox-readonly-child-"),
     );
     directories.push(workspace);
-    const parentBus = createEventBus();
+    const parentBus = parentEventBus();
     const parentMode = bindSandboxHost(parentBus, () => true);
     const childSandbox = {} as {
       mode?: { enabled: boolean; writeMode: string };
@@ -298,7 +318,7 @@ describe("Sandbox child binding", () => {
     const workspace = mkdtempSync(join(tmpdir(), "pipkin-process-adoption-"));
     directories.push(workspace);
     const canonicalWorkspace = realpathSync(workspace);
-    const parentBus = createEventBus();
+    const parentBus = parentEventBus();
     const parentMode = bindSandboxHost(parentBus, () => false);
     const childModes: Array<{ enabled: boolean; writeMode: string }> = [];
     const captureMode = (pi: ExtensionAPI): void => {
@@ -423,7 +443,7 @@ describe("Sandbox child binding", () => {
 
       const parent = runtime.queue({
         owner: "public-tool",
-        type: "Worker",
+        type: "General",
         description: "nested parent",
         cwd: workspace,
       });

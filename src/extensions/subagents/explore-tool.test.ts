@@ -1,13 +1,18 @@
 import {
+  createCodemodeExtension,
   DEFAULT_MAX_BYTES,
+  DEFAULT_MAX_LINES,
   type AgentSession,
 } from "@earendil-works/pi-coding-agent";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import { createManagedSessionHarness } from "#test/managed-session";
+import { Value } from "typebox/value";
 import { describe, expect, it, vi } from "vitest";
 
 const lowPreset = { low: { model: "ctx/default", thinking: "low" as const } };
 import { SubagentRuntime } from "./runtime.js";
 
-function makePi(activeTools = ["read", "bash", "Agent", "edit"]) {
+function makePi(activeTools = ["read", "bash", "agent_start", "edit"]) {
   return {
     getActiveTools: () => activeTools,
     sendMessage: vi.fn(),
@@ -78,7 +83,7 @@ describe("runtime-injected explore tool", () => {
     const runtime = new SubagentRuntime(makePi() as never);
     const parent = runtime.queue({
       owner: "public-tool",
-      type: "Worker",
+      type: "General",
       description: "general",
       cwd: "/workspace",
     });
@@ -96,7 +101,7 @@ describe("runtime-injected explore tool", () => {
   });
 
   it("injects explore only into eligible non-Explore agents", async () => {
-    const pi = makePi(["read", "bash", "Agent", "edit"]);
+    const pi = makePi(["read", "bash", "agent_start", "edit"]);
     const sessions = [
       makeSession("general"),
       makeSession("internal"),
@@ -198,8 +203,8 @@ describe("runtime-injected explore tool", () => {
       "find",
       "ls",
       "explore",
-      "Agent",
-      "steer_subagent",
+      "agent_start",
+      "agent_steer",
     ];
 
     await runtime.runManagedAgent({
@@ -233,37 +238,29 @@ describe("runtime-injected explore tool", () => {
         namespace: { name: "agents", description: expect.any(String) },
       }),
     ]);
-    expect(reviewerOptions.tools).toEqual([
-      "read",
-      "bash",
-      "grep",
-      "find",
-      "ls",
-      "explore",
-    ]);
-    expect(reviewer.setActiveToolsByName).toHaveBeenCalledWith([
-      "read",
-      "bash",
-      "grep",
-      "find",
-      "ls",
-      "explore",
-    ]);
+    expect(reviewerOptions.tools).toEqual(
+      expect.arrayContaining([
+        "read",
+        "bash",
+        "explore",
+        "codemode",
+        "tool_search",
+      ]),
+    );
+    expect(reviewerOptions.tools).not.toEqual(
+      expect.arrayContaining(["agent_start"]),
+    );
+    expect(reviewer.setActiveToolsByName).toHaveBeenCalledWith(
+      reviewerOptions.tools,
+    );
     expect(exploreOptions.customTools).toBeUndefined();
-    expect(exploreOptions.tools).toEqual([
-      "read",
-      "bash",
-      "grep",
-      "find",
-      "ls",
-    ]);
-    expect(explore.setActiveToolsByName).toHaveBeenCalledWith([
-      "read",
-      "bash",
-      "grep",
-      "find",
-      "ls",
-    ]);
+    expect(exploreOptions.tools).toEqual(
+      expect.arrayContaining(["read", "bash", "codemode", "tool_search"]),
+    );
+    expect(exploreOptions.tools).not.toContain("explore");
+    expect(explore.setActiveToolsByName).toHaveBeenCalledWith(
+      exploreOptions.tools,
+    );
   });
 
   it("creates nested Explore metadata with inherited cwd, owner, model, thinking, and read-only tools", async () => {
@@ -271,9 +268,9 @@ describe("runtime-injected explore tool", () => {
       "read",
       "bash",
       "lsp_definition",
-      "Agent",
-      "get_subagent_result",
-      "steer_subagent",
+      "agent_start",
+      "agent_wait",
+      "agent_steer",
       "edit",
       "write",
       "explore",
@@ -304,20 +301,37 @@ describe("runtime-injected explore tool", () => {
       makeCtx() as never,
     );
 
-    expect(result.content[0]).toMatchObject({ text: "nested result" });
+    expect(result.content).toEqual([{ type: "text", text: "nested result" }]);
+    expect(
+      Value.Check(
+        runtime.createExploreTool(parent).outputSchema!,
+        result.structuredContent,
+      ),
+    ).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      ok: true,
+      status: "completed",
+      text: "nested result",
+      truncated: false,
+    });
+    expect(result.structuredContent).not.toHaveProperty("progress");
     expect(createSession).toHaveBeenCalledWith(
       expect.objectContaining({
         cwd: "/task-worktree",
         model: { provider: "configured", id: "explore" },
         thinkingLevel: "low",
-        tools: ["read", "bash", "lsp_definition"],
+        tools: expect.arrayContaining([
+          "read",
+          "bash",
+          "lsp_definition",
+          "codemode",
+          "tool_search",
+        ]),
       }),
     );
-    expect(child.setActiveToolsByName).toHaveBeenCalledWith([
-      "read",
-      "bash",
-      "lsp_definition",
-    ]);
+    expect(child.setActiveToolsByName).toHaveBeenCalledWith(
+      expect.arrayContaining(["read", "bash", "lsp_definition"]),
+    );
     expect(child.prompt).toHaveBeenCalledWith(
       expect.stringMatching(
         /LSP operations when available[\s\S]*broad, literal, or non-semantic[\s\S]*fall back to search and reads/,
@@ -363,9 +377,9 @@ describe("runtime-injected explore tool", () => {
           "read",
           "docs",
           "inspect_implement_run",
-          "Agent",
-          "get_subagent_result",
-          "steer_subagent",
+          "agent_start",
+          "agent_wait",
+          "agent_steer",
           "edit",
           "write",
         ],
@@ -399,7 +413,14 @@ describe("runtime-injected explore tool", () => {
     );
 
     expect(createSession.mock.calls[1]?.[0] as unknown).toEqual(
-      expect.objectContaining({ tools: ["read", "docs"] }),
+      expect.objectContaining({
+        tools: expect.arrayContaining([
+          "read",
+          "docs",
+          "codemode",
+          "tool_search",
+        ]),
+      }),
     );
     runtime.stop(parent.id);
     parentPrompt.resolve();
@@ -415,7 +436,7 @@ describe("runtime-injected explore tool", () => {
     });
     const parent = runtime.queue({
       owner: "public-tool",
-      type: "Worker",
+      type: "General",
       description: "general",
       cwd: "/workspace",
     });
@@ -429,14 +450,96 @@ describe("runtime-injected explore tool", () => {
     const text =
       result.content[0]?.type === "text" ? result.content[0].text : "";
     expect(Buffer.byteLength(text)).toBeLessThanOrEqual(DEFAULT_MAX_BYTES);
-    expect(text).toContain("[Explore output truncated.");
+    expect(text).toContain("[Agent output truncated.");
     expect(result.details).toMatchObject({ truncated: true });
   });
 
-  it("bounds failed nested Explore output and reports truncation", async () => {
+  it.each([
+    {
+      label: "complete short excerpt",
+      count: 1,
+      text: "Found the owner.",
+      truncated: false,
+    },
+    {
+      label: "clipped assistant excerpt",
+      count: 1,
+      text: "é".repeat(2_000),
+      truncated: true,
+    },
+    {
+      label: "omitted eligible records",
+      count: 13,
+      text: "Found the owner.",
+      truncated: true,
+    },
+    {
+      label: "clipped total section",
+      count: 12,
+      text: "x".repeat(1_000),
+      truncated: true,
+    },
+  ])(
+    "preserves $label and truncation for direct callers and nested result data",
+    async ({ count, text, truncated }) => {
+      const child = makeSession();
+      child.state = { errorMessage: "provider failed" } as never;
+      child.messages.push(
+        ...Array.from({ length: count }, () => ({
+          role: "assistant",
+          content: [{ type: "text", text }],
+        })),
+      );
+      const runtime = new SubagentRuntime(makePi() as never, {
+        modelPresets: lowPreset,
+        createSession: vi.fn(async () => ({ session: child })),
+      });
+      const parent = runtime.queue({
+        owner: "public-tool",
+        type: "General",
+        description: "general",
+        cwd: "/workspace",
+      });
+      const tool = runtime.createExploreTool(parent);
+      const result = await tool.execute(
+        "call",
+        { question: "map files" },
+        undefined,
+        undefined,
+        makeCtx() as never,
+      );
+      expect(Value.Check(tool.outputSchema!, result.structuredContent)).toBe(
+        true,
+      );
+      const data = result.structuredContent as {
+        status: string;
+        text: string;
+        progress: { text: string; truncated: boolean; partial: boolean };
+      };
+      expect(data).toMatchObject({
+        status: "failed",
+        progress: { truncated, partial: true },
+      });
+      expect(data.text).toContain("provider failed");
+      expect(data.progress.text).toContain("untrusted child-generated content");
+      expect(Buffer.byteLength(data.progress.text)).toBeLessThanOrEqual(
+        8 * 1024,
+      );
+      expect(result.content).toEqual([
+        { type: "text", text: data.text },
+        { type: "text", text: data.progress.text },
+      ]);
+      runtime.stop(parent.id);
+      await runtime.dispose();
+    },
+  );
+
+  it("returns failed Explore progress as schema-valid data through native codemode", async () => {
     const child = makeSession();
-    Object.defineProperty(child, "state", {
-      value: { errorMessage: "😀".repeat(20_000) },
+    child.state = { errorMessage: "provider failed" } as never;
+    child.messages.push({
+      role: "assistant",
+      content: [{ type: "text", text: "Partial research. ".repeat(300) }],
     });
     const runtime = new SubagentRuntime(makePi() as never, {
       modelPresets: lowPreset,
@@ -444,31 +547,145 @@ describe("runtime-injected explore tool", () => {
     });
     const parent = runtime.queue({
       owner: "public-tool",
-      type: "Worker",
+      type: "General",
       description: "general",
       cwd: "/workspace",
     });
-
-    const result = await runtime.runExploreTool(
-      parent,
-      { question: "map files" },
-      makeCtx() as never,
+    const tool = runtime.createExploreTool(parent);
+    const harness = await createManagedSessionHarness(
+      [
+        fauxAssistantMessage([
+          fauxToolCall("codemode", {
+            code: 'text(await tools.explore({question:"map files"}));',
+          }),
+        ]),
+        fauxAssistantMessage("done"),
+      ],
+      {
+        extensionFactories: [
+          {
+            name: "codemode",
+            factory: createCodemodeExtension({ mode: "on" }),
+          },
+        ],
+      },
     );
-
-    const text =
-      result.content[0]?.type === "text" ? result.content[0].text : "";
-    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(DEFAULT_MAX_BYTES);
-    expect(text).toContain("explore failed:");
-    expect(text).toContain("[Explore output truncated.");
-    expect(result.details).toMatchObject({ status: "failed", truncated: true });
-    expect(
-      Buffer.byteLength((result.details as { error?: string }).error ?? ""),
-    ).toBeLessThanOrEqual(DEFAULT_MAX_BYTES);
+    runtime.setModelPresets({
+      low: {
+        model: `${harness.model.provider}/${harness.model.id}`,
+        thinking: "low",
+      },
+    });
+    const { session } = await harness.createSession({
+      tools: ["codemode", "explore"],
+      customTools: [tool],
+    });
+    try {
+      await session.bindExtensions({ mode: "print" });
+      await session.prompt("exercise nested research");
+      const output = session.messages.find(
+        (message) =>
+          message.role === "toolResult" && message.toolName === "codemode",
+      );
+      expect(output).toMatchObject({ isError: false });
+      if (output?.role !== "toolResult" || output.content[1]?.type !== "text") {
+        throw new Error("Missing codemode text output");
+      }
+      const data = JSON.parse(output.content[1].text);
+      expect(Value.Check(tool.outputSchema!, data)).toBe(true);
+      expect(data).toMatchObject({
+        ok: false,
+        status: "failed",
+        progress: {
+          partial: true,
+          truncated: true,
+          text: expect.stringContaining("Partial research."),
+        },
+      });
+      expect(data.progress.text).toContain("untrusted child-generated content");
+      expect(Buffer.byteLength(data.progress.text)).toBeLessThanOrEqual(
+        8 * 1024,
+      );
+    } finally {
+      session.dispose();
+      runtime.stop(parent.id);
+      await runtime.dispose();
+    }
   });
+
+  it.each(["😀", "😀\n"])(
+    "bounds failed nested Explore output with partial progress (%j)",
+    async (errorLine) => {
+      const child = makeSession();
+      child.messages.push({
+        role: "assistant",
+        content: [{ type: "text", text: "Partial map. ".repeat(200) }],
+      });
+      Object.defineProperty(child, "state", {
+        value: { errorMessage: errorLine.repeat(20_000) },
+      });
+      const runtime = new SubagentRuntime(makePi() as never, {
+        modelPresets: lowPreset,
+        createSession: vi.fn(async () => ({ session: child })),
+      });
+      const parent = runtime.queue({
+        owner: "public-tool",
+        type: "General",
+        description: "general",
+        cwd: "/workspace",
+      });
+
+      const result = await runtime.runExploreTool(
+        parent,
+        { question: "map files" },
+        makeCtx() as never,
+      );
+
+      const text =
+        result.content[0]?.type === "text" ? result.content[0].text : "";
+      expect(Buffer.byteLength(text)).toBeLessThanOrEqual(DEFAULT_MAX_BYTES);
+      const directText = result.content
+        .map((block) => (block.type === "text" ? block.text : ""))
+        .join("\n");
+      expect(Buffer.byteLength(directText)).toBeLessThanOrEqual(
+        DEFAULT_MAX_BYTES,
+      );
+      expect(directText.split("\n").length).toBeLessThanOrEqual(
+        DEFAULT_MAX_LINES,
+      );
+      expect(
+        Value.Check(
+          runtime.createExploreTool(parent).outputSchema!,
+          result.structuredContent,
+        ),
+      ).toBe(true);
+      expect(text).toContain("explore failed:");
+      expect(text).toContain("[Agent output truncated.");
+      expect(result.details).toMatchObject({
+        status: "failed",
+        truncated: true,
+      });
+      expect(
+        Buffer.byteLength(
+          (result.details as { error?: { message: string } }).error?.message ??
+            "",
+        ),
+      ).toBeLessThanOrEqual(DEFAULT_MAX_BYTES);
+    },
+  );
 
   it("propagates parent cancellation to the nested Explore child", async () => {
     const pi = makePi();
     const child = makeSession("never");
+    child.messages.push({
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          text: "Located the runtime owner before cancellation.",
+        },
+      ],
+    });
     child.prompt = vi.fn(async () => {
       await new Promise<void>((resolve) => {
         child.abort.mockImplementation(async () => {
@@ -483,7 +700,7 @@ describe("runtime-injected explore tool", () => {
     });
     const parent = runtime.queue({
       owner: "public-tool",
-      type: "Worker",
+      type: "General",
       description: "general",
       cwd: "/workspace",
     });
@@ -498,13 +715,31 @@ describe("runtime-injected explore tool", () => {
     await vi.waitFor(() => expect(child.prompt).toHaveBeenCalled());
     controller.abort();
 
-    await expect(resultPromise).resolves.toMatchObject({
-      content: [expect.objectContaining({ text: expect.any(String) })],
-    });
+    const result = await resultPromise;
     expect(child.abort).toHaveBeenCalled();
-    expect((await resultPromise).content[0]).toMatchObject({
-      text: expect.stringContaining("explore stopped or timed out"),
+    expect(
+      Value.Check(
+        runtime.createExploreTool(parent).outputSchema!,
+        result.structuredContent,
+      ),
+    ).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      status: "stopped",
+      progress: {
+        text: expect.stringContaining(
+          "Located the runtime owner before cancellation.",
+        ),
+        partial: true,
+        truncated: false,
+      },
     });
+    expect(result.content).toEqual([
+      {
+        type: "text",
+        text: expect.stringContaining("explore stopped or timed out"),
+      },
+      { type: "text", text: (result.structuredContent as any).progress.text },
+    ]);
   });
 
   it("aborts nested Explore after sustained inactivity", async () => {
@@ -533,7 +768,7 @@ describe("runtime-injected explore tool", () => {
       });
       const parent = runtime.queue({
         owner: "public-tool",
-        type: "Worker",
+        type: "General",
         description: "general",
         cwd: "/workspace",
       });
@@ -551,6 +786,9 @@ describe("runtime-injected explore tool", () => {
         content: [
           expect.objectContaining({
             text: expect.stringContaining("explore stopped or timed out"),
+          }),
+          expect.objectContaining({
+            text: expect.stringContaining("assistant: starting"),
           }),
         ],
       });
@@ -581,7 +819,7 @@ describe("runtime-injected explore tool", () => {
       });
       const parent = runtime.queue({
         owner: "public-tool",
-        type: "Worker",
+        type: "General",
         description: "general",
         cwd: "/workspace",
       });
@@ -599,6 +837,9 @@ describe("runtime-injected explore tool", () => {
         content: [
           expect.objectContaining({
             text: expect.stringContaining("explore stopped or timed out"),
+          }),
+          expect.objectContaining({
+            text: expect.stringContaining("No inspectable progress yet."),
           }),
         ],
       });
@@ -625,7 +866,7 @@ describe("runtime-injected explore tool", () => {
       });
       const parent = runtime.queue({
         owner: "public-tool",
-        type: "Worker",
+        type: "General",
         description: "general",
         cwd: "/workspace",
       });
@@ -687,7 +928,7 @@ describe("runtime-injected explore tool", () => {
       });
       const parent = runtime.queue({
         owner: "public-tool",
-        type: "Worker",
+        type: "General",
         description: "general",
         cwd: "/workspace",
       });
@@ -748,7 +989,7 @@ describe("runtime-injected explore tool", () => {
     });
     const nestedParent = runtime.queue({
       owner: { kind: "nested", parentId: exploreParent.id, tool: "explore" },
-      type: "Worker",
+      type: "General",
       description: "nested",
       cwd: "/workspace",
     });
@@ -760,7 +1001,10 @@ describe("runtime-injected explore tool", () => {
         makeCtx() as never,
       ),
     ).resolves.toMatchObject({
-      details: { status: "failed", error: "recursion prevented" },
+      details: {
+        status: "failed",
+        error: { code: "unavailable", message: "recursion prevented" },
+      },
     });
     await expect(
       runtime.runExploreTool(
@@ -769,7 +1013,10 @@ describe("runtime-injected explore tool", () => {
         makeCtx() as never,
       ),
     ).resolves.toMatchObject({
-      details: { status: "failed", error: "recursion prevented" },
+      details: {
+        status: "failed",
+        error: { code: "unavailable", message: "recursion prevented" },
+      },
     });
     expect(createSession).not.toHaveBeenCalled();
   });

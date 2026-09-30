@@ -1,4 +1,3 @@
-import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import {
   compactDisplayText,
   toolCallRenderer,
@@ -22,49 +21,10 @@ type AgentToolDetails = Pick<
   delivery?: "queued" | "handled";
   progress?: string;
 };
-type AgentToolResultWithStatus = AgentToolResult<AgentToolDetails> & {
-  isError: boolean;
-};
-
-export function toolResult(
-  snapshot: RuntimeSnapshot,
-  presentation: AgentPresentation = "status",
-  progress?: string,
-  delivery?: "queued" | "handled",
-): AgentToolResultWithStatus {
-  const content = resultContent(snapshot, presentation, delivery);
-  return {
-    content: [
-      { type: "text", text: progress ? `${content}\n${progress}` : content },
-    ],
-    details: {
-      ...presentationDetails(snapshot, presentation, progress),
-      ...(delivery ? { delivery } : {}),
-    },
-    isError: snapshot.status === "failed" || snapshot.status === "stopped",
-  } satisfies AgentToolResultWithStatus;
-}
-
-export function cancelledWaitResult(
-  snapshot: RuntimeSnapshot,
-): AgentToolResultWithStatus & { terminate: true } {
-  return {
-    content: [
-      {
-        type: "text",
-        text: `Waiting for subagent ${snapshot.id} was cancelled. The subagent is still ${snapshot.status}; join it later if needed.`,
-      },
-    ],
-    details: presentationDetails(snapshot, "status"),
-    isError: false,
-    terminate: true,
-  };
-}
-
 export const renderAgentCall = toolCallRenderer<PublicAgentParams>({
-  name: "Agent",
+  name: "agent_start",
   detail: (args) =>
-    `${args.subagent_type} · ${args.description ?? previewText(args.prompt, 120) ?? "subagent"}`,
+    `${args.type} · ${args.description ?? previewText(args.prompt, 120) ?? "subagent"}`,
   pending: "Starting subagent…",
 });
 
@@ -200,7 +160,7 @@ function isAgentToolDetails(value: unknown): value is AgentToolDetails {
   );
 }
 
-function presentationDetails(
+export function presentationDetails(
   snapshot: RuntimeSnapshot,
   presentation: AgentPresentation,
   progress?: string,
@@ -309,43 +269,6 @@ function errorVerb(
   return snapshot?.status === "stopped"
     ? "Subagent stopped"
     : "Subagent failed";
-}
-
-function resultContent(
-  snapshot: RuntimeSnapshot,
-  presentation: AgentPresentation,
-  delivery?: "queued" | "handled",
-): string {
-  if (snapshot.status === "completed") {
-    if (presentation === "start") {
-      return [
-        `Started managed subagent ${snapshot.id} (${snapshot.type}).`,
-        `Call get_subagent_result with id "${snapshot.id}" and wait:true when its result becomes a dependency.`,
-      ].join("\n");
-    }
-    if (presentation === "steer") {
-      return steeringSummary(snapshot.id, delivery);
-    }
-    return resultText(snapshot.result);
-  }
-  if (snapshot.status === "failed" || snapshot.status === "stopped") {
-    const reason = snapshot.error ?? `${snapshot.status}.`;
-    return `Subagent ${snapshot.id} (${snapshot.type}) ${snapshot.status}: ${reason}`;
-  }
-  if (presentation === "start") {
-    return [
-      `Started managed subagent ${snapshot.id} (${snapshot.type}).`,
-      "Continue useful independent work when available.",
-      `When its result becomes a dependency, use get_subagent_result with id "${snapshot.id}" and wait:true. Do not poll.`,
-    ].join("\n");
-  }
-  if (presentation === "steer") {
-    return steeringSummary(snapshot.id, delivery);
-  }
-  return [
-    `Subagent ${snapshot.id} (${snapshot.type}) is ${snapshot.status}.`,
-    `Use get_subagent_result with id "${snapshot.id}" to retrieve the final result.`,
-  ].join("\n");
 }
 
 function steeringSummary(id: string, delivery?: "queued" | "handled"): string {

@@ -356,9 +356,9 @@ describe("Implement managed runtime integration", () => {
         "read_output",
         "edit",
         "write",
-        "Agent",
-        "get_subagent_result",
-        "steer_subagent",
+        "agent_start",
+        "agent_wait",
+        "agent_steer",
         "record_papercut",
       ],
     };

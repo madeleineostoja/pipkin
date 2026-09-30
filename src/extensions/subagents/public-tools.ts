@@ -1,76 +1,292 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { ModelPreset } from "#lib/config";
-import { toolCallRenderer } from "#lib/ui/tool-result-renderer";
+import type {
+  ExtensionAPI,
+  AgentToolResult,
+} from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
-import { PUBLIC_BUILTIN_TYPES } from "./agent-profiles.js";
-import type { SubagentRuntime } from "./runtime.js";
+import type { ModelPreset } from "#lib/config";
 import {
-  cancelledWaitResult,
+  PageParams,
+  metadataPreview,
+  validatePage,
+} from "#context/retained-output";
+import {
+  toolCallRenderer,
+  toolResultRenderer,
+} from "#lib/ui/tool-result-renderer";
+import { PUBLIC_BUILTIN_TYPES } from "./agent-profiles.js";
+import {
+  boundedAgentText,
+  boundedAgentProgress,
+  type SubagentRuntime,
+  type RuntimeSnapshot,
+  type PublicSubagentResult,
+} from "./runtime.js";
+import {
   renderAgentCall,
   renderAgentResult,
-  toolResult,
+  presentationDetails,
 } from "./tool-rendering.js";
-
-const PublicAgentType = StringEnum(PUBLIC_BUILTIN_TYPES, {
-  description: "Explore or Review subagent type.",
-});
-
-const Thinking = StringEnum(
-  ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const,
-  { description: "Optional reasoning-effort level for the subagent." },
-);
 
 export const PublicAgentParameters = Type.Object(
   {
-    subagent_type: PublicAgentType,
-    prompt: Type.String({ description: "Task prompt for the subagent." }),
+    type: StringEnum(PUBLIC_BUILTIN_TYPES, {
+      description:
+        "Explore maps code; Review independently assesses an artifact.",
+    }),
+    prompt: Type.String({
+      minLength: 1,
+      description: "Complete task contract for the child.",
+    }),
     description: Type.Optional(
-      Type.String({ description: "Short human-readable task summary." }),
+      Type.String({
+        description:
+          "Short safe human-readable task label; never include secrets.",
+      }),
     ),
     model: Type.Optional(
       Type.String({
         description:
-          "Optional exact provider/model override. Use only when the ID is explicitly supplied or otherwise known; do not guess available models.",
+          "Optional known exact provider/model ID. Do not guess available models.",
       }),
     ),
-    thinking: Type.Optional(Thinking),
+    thinking: Type.Optional(
+      StringEnum(
+        ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const,
+        { description: "Reasoning effort override for this invocation." },
+      ),
+    ),
   },
   { additionalProperties: false },
 );
-
 export type PublicAgentParams = Static<typeof PublicAgentParameters>;
 
-const GetSubagentResultParameters = Type.Object(
+const id = Type.String({
+  minLength: 1,
+  description: "Public session-owned agent ID from agent_start or agent_list.",
+});
+const progress = Type.Optional(
+  Type.Boolean({
+    description:
+      "Include bounded untrusted partial progress, not a final answer; default false.",
+  }),
+);
+const Inspect = Type.Object(
+  { id, includeProgress: progress },
+  { additionalProperties: false },
+);
+const Wait = Type.Object(
   {
-    id: Type.String({ description: "Managed subagent id." }),
-    wait: Type.Boolean({
-      description:
-        "false returns current status immediately; true waits for completion and final cleanup.",
-      default: false,
-    }),
-    include_progress: Type.Optional(
-      Type.Boolean({
+    id,
+    includeProgress: progress,
+    timeoutSeconds: Type.Optional(
+      Type.Number({
+        exclusiveMinimum: 0,
+        maximum: 2147483.647,
         description:
-          "Include a bounded point-in-time excerpt of untrusted partial progress. wait:false returns currently available progress immediately; for stopped or failed agents, wait:true waits for frozen post-cleanup progress. Completed agents remain final-result only.",
+          "Positive finite waiter deadline in seconds; omitted joins cleanup until terminal or cancellation. Never stops the child.",
       }),
     ),
   },
   { additionalProperties: false },
 );
-type GetSubagentResultParams = Static<typeof GetSubagentResultParameters>;
-
-const SteerSubagentParameters = Type.Object(
+const Stop = Type.Object({ id }, { additionalProperties: false });
+const Steer = Type.Object(
   {
-    id: Type.String({ description: "Running managed subagent id." }),
-    message: Type.String({ description: "Steering message to send." }),
+    id,
+    message: Type.String({
+      minLength: 1,
+      description:
+        "Nonempty guidance to queue after the child's current turn, unless Pi handles it.",
+    }),
   },
   { additionalProperties: false },
 );
-type SteerSubagentParams = Static<typeof SteerSubagentParameters>;
-
+const AgentSchema = Type.Object(
+  {
+    id: Type.String(),
+    type: StringEnum(PUBLIC_BUILTIN_TYPES),
+    description: Type.String(),
+    state: StringEnum([
+      "queued",
+      "running",
+      "stopping",
+      "completed",
+      "failed",
+      "stopped",
+    ]),
+    startedAt: Type.Optional(Type.String()),
+    endedAt: Type.Optional(Type.String()),
+    cleanup: StringEnum(["pending", "complete"]),
+  },
+  { additionalProperties: false },
+);
+const AgentErrorSchema = Type.Object(
+  {
+    code: StringEnum([
+      "not_found",
+      "invalid_arguments",
+      "unavailable",
+      "cancelled",
+      "agent_failed",
+      "stopped",
+    ] as const),
+    message: Type.String(),
+  },
+  { additionalProperties: false },
+);
+const ResultFields = {
+  result: Type.Optional(
+    Type.Object(
+      { text: Type.String(), truncated: Type.Boolean() },
+      { additionalProperties: false },
+    ),
+  ),
+  progress: Type.Optional(
+    Type.Object(
+      {
+        text: Type.String(),
+        truncated: Type.Boolean(),
+        partial: Type.Literal(true),
+      },
+      { additionalProperties: false },
+    ),
+  ),
+  waitOutcome: Type.Optional(
+    StringEnum(["terminal", "timed_out", "cancelled"]),
+  ),
+  delivery: Type.Optional(StringEnum(["queued", "handled"] as const)),
+};
+const ResultSchema = Type.Union([
+  Type.Object(
+    { ok: Type.Literal(true), agent: AgentSchema, ...ResultFields },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      ok: Type.Literal(false),
+      error: AgentErrorSchema,
+      agent: Type.Optional(AgentSchema),
+      ...ResultFields,
+    },
+    { additionalProperties: false },
+  ),
+]);
+const ListSchema = Type.Union([
+  Type.Object(
+    {
+      ok: Type.Literal(true),
+      agents: Type.Array(AgentSchema),
+      nextOffset: Type.Optional(Type.Integer()),
+      truncated: Type.Boolean(),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    { ok: Type.Literal(false), error: AgentErrorSchema },
+    { additionalProperties: false },
+  ),
+]);
+type Agent = Static<typeof AgentSchema>;
+type Result = Static<typeof ResultSchema>;
+function safeAgent(snapshot: RuntimeSnapshot): Agent {
+  return {
+    id: snapshot.id,
+    type: snapshot.type as Agent["type"],
+    description: metadataPreview(snapshot.description).text,
+    state:
+      snapshot.status === "stopped" && !snapshot.cleanupComplete
+        ? "stopping"
+        : snapshot.status,
+    ...(snapshot.timestamps.startedAt
+      ? { startedAt: snapshot.timestamps.startedAt }
+      : {}),
+    ...(snapshot.cleanupComplete && snapshot.timestamps.completedAt
+      ? { endedAt: snapshot.timestamps.completedAt }
+      : {}),
+    cleanup: snapshot.cleanupComplete ? "complete" : "pending",
+  };
+}
+function response(value: PublicSubagentResult): Result {
+  const { snapshot, waitOutcome } = value;
+  const cancelled = waitOutcome === "cancelled";
+  const failed =
+    (snapshot.status === "failed" || snapshot.status === "stopped") &&
+    waitOutcome !== "timed_out";
+  const data = {
+    agent: safeAgent(snapshot),
+    ...(waitOutcome !== "snapshot" ? { waitOutcome } : {}),
+    ...(snapshot.status === "completed" && snapshot.cleanupComplete
+      ? {
+          result: boundedAgentText(
+            typeof snapshot.result === "string" ? snapshot.result : "",
+          ),
+        }
+      : {}),
+    ...(value.progress !== undefined
+      ? {
+          progress: boundedAgentProgress(value.progress),
+        }
+      : {}),
+  };
+  if (cancelled) {
+    return {
+      ...data,
+      ok: false,
+      error: {
+        code: "cancelled",
+        message: "Wait cancelled; child cleanup/state is shown in agent.",
+      },
+    };
+  }
+  if (failed) {
+    return {
+      ...data,
+      ok: false,
+      error: {
+        code: snapshot.status === "stopped" ? "stopped" : "agent_failed",
+        message: "Agent did not complete successfully.",
+      },
+    };
+  }
+  return { ...data, ok: true };
+}
+function result(
+  data: Result,
+  snapshot?: RuntimeSnapshot,
+  presentation: "start" | "status" | "steer" = "status",
+): AgentToolResult<unknown> {
+  return {
+    details: snapshot
+      ? {
+          ...presentationDetails(snapshot, presentation, data.progress?.text),
+          ...(data.delivery ? { delivery: data.delivery } : {}),
+        }
+      : undefined,
+    content: [{ type: "text", text: JSON.stringify(data) }],
+    structuredContent: data,
+    isError: !data.ok,
+  };
+}
+function failure(error: unknown): Extract<Result, { ok: false }> {
+  const message =
+    error instanceof Error ? error.message : "Agent operation unavailable.";
+  return {
+    ok: false,
+    error: {
+      code: message.startsWith("Unknown subagent")
+        ? "not_found"
+        : message.includes("Invalid") || message.includes("empty")
+          ? "invalid_arguments"
+          : "unavailable",
+      message: message.startsWith("Unknown subagent")
+        ? "Public agent not found."
+        : "Agent operation unavailable; check arguments, model selection and current state.",
+    },
+  };
+}
 export function resolveAgentSelection(
-  type: PublicAgentParams["subagent_type"],
+  type: PublicAgentParams["type"],
   model: string | undefined,
   thinking: PublicAgentParams["thinking"] | undefined,
   configPath: string,
@@ -90,7 +306,6 @@ export function resolveAgentSelection(
     thinking: thinking ?? preset.thinking,
   };
 }
-
 export function registerPublicAgentTools({
   pi,
   runtime,
@@ -102,94 +317,177 @@ export function registerPublicAgentTools({
   configPath: string;
   modelPresets: Readonly<Partial<Record<"low" | "high", ModelPreset>>>;
 }): void {
-  pi.registerTool({
-    name: "Agent",
-    exposure: "deferred",
-    namespace: {
-      name: "agents",
-      description: "Delegate bounded exploration and review to managed agents.",
-    },
-    label: "Agent",
+  const namespace = {
+    name: "agents",
     description:
-      "Start an Explore or Review managed subagent and return its ID immediately. Continue independent work, then join once with get_subagent_result when its result becomes a dependency.",
+      "Start and recover session-owned Explore and Review jobs; no private Implement worker access.",
+  };
+  pi.registerTool({
+    name: "agent_start",
+    label: "agent_start",
+    exposure: "deferred",
+    namespace,
+    description:
+      "Start session-owned Explore or Review work and return its ID immediately. Recover accepted work with agent_list even if the initiating script fails.",
     parameters: PublicAgentParameters,
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      if (signal?.aborted) {
-        throw new DOMException("Agent start cancelled.", "AbortError");
-      }
-      const snapshot = await runtime.runPublicAgent({
-        type: params.subagent_type,
-        prompt: params.prompt,
-        description: params.description,
-        cwd: ctx.cwd,
-        ...resolveAgentSelection(
-          params.subagent_type,
-          params.model,
-          params.thinking,
-          configPath,
-          modelPresets,
-        ),
-        mode: "background",
-        ctx,
-      });
-      return toolResult(snapshot, "start");
-    },
+    outputSchema: ResultSchema,
     renderCall: renderAgentCall,
     renderResult: renderAgentResult,
-  });
-
-  pi.registerTool({
-    name: "get_subagent_result",
-    exposure: "deferred",
-    namespace: {
-      name: "agents",
-      description: "Delegate bounded exploration and review to managed agents.",
+    async execute(_call, params, signal, _update, ctx) {
+      if (signal?.aborted) {
+        return result({
+          ok: false,
+          error: {
+            code: "cancelled",
+            message: "Agent start cancelled before acceptance.",
+          },
+        });
+      }
+      try {
+        const snapshot = await runtime.runPublicAgent({
+          ...params,
+          description: params.description ?? `${params.type} task`,
+          cwd: ctx.cwd,
+          ctx,
+          mode: "background",
+          ...resolveAgentSelection(
+            params.type,
+            params.model,
+            params.thinking,
+            configPath,
+            modelPresets,
+          ),
+        });
+        return result(
+          { ok: true, agent: safeAgent(snapshot) },
+          snapshot,
+          "start",
+        );
+      } catch (error) {
+        return result(failure(error));
+      }
     },
-    label: "get_subagent_result",
+  });
+  pi.registerTool({
+    name: "agent_list",
+    label: "agent_list",
+    exposure: "deferred",
+    namespace,
     description:
-      "Join a managed subagent or intentionally inspect bounded partial progress. wait:true blocks for completion and final cleanup; wait:false returns its current status immediately.",
-    parameters: GetSubagentResultParameters,
+      "Recover public agents owned by this session, newest first. Never returns prompts, raw output or private workers.",
+    parameters: PageParams,
+    outputSchema: ListSchema,
     renderCall: toolCallRenderer({
-      name: "get_subagent_result",
-      detail: (args: GetSubagentResultParams) =>
-        `${args.id}${args.wait ? " · wait" : ""}`,
-      pending: (args: GetSubagentResultParams) =>
-        args.wait ? "Waiting for subagent…" : "Reading subagent state…",
+      name: "agent_list",
+      pending: "Listing agents…",
     }),
-    async execute(_toolCallId, params, signal) {
-      const response = await runtime.publicResult(
-        params.id,
-        params.wait,
-        params.include_progress ?? false,
-        signal,
-      );
-      return response.waitOutcome === "cancelled"
-        ? cancelledWaitResult(response.snapshot)
-        : toolResult(response.snapshot, "status", response.progress);
+    renderResult: toolResultRenderer({ summary: () => "Public agent roster." }),
+    async execute(_call, params) {
+      try {
+        const offset = params.offset ?? 0,
+          limit = params.limit ?? 25;
+        validatePage(offset, limit);
+        const snapshots = runtime.publicSnapshots();
+        const data = {
+          ok: true,
+          agents: snapshots.slice(offset, offset + limit).map(safeAgent),
+          truncated: false,
+          ...(offset + limit < snapshots.length
+            ? { nextOffset: offset + limit }
+            : {}),
+        };
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(data) }],
+          details: undefined,
+          structuredContent: data,
+        };
+      } catch (error) {
+        return result(failure(error));
+      }
     },
-    renderResult: renderAgentResult,
   });
-
+  const register = <T extends typeof Inspect | typeof Wait | typeof Stop>(
+    name: string,
+    parameters: T,
+    description: string,
+    operation: "inspect" | "wait" | "stop",
+  ) =>
+    pi.registerTool({
+      name,
+      label: name,
+      exposure: "deferred",
+      namespace,
+      description,
+      parameters,
+      outputSchema: ResultSchema,
+      renderCall: toolCallRenderer({ name, pending: "Reading agent state…" }),
+      renderResult: renderAgentResult,
+      async execute(_call, params, signal) {
+        try {
+          const options = params as Static<typeof Wait>;
+          const value =
+            operation === "stop"
+              ? await runtime.publicStop(options.id, signal)
+              : await runtime.publicResult(
+                  options.id,
+                  operation === "wait",
+                  options.includeProgress ?? false,
+                  signal,
+                  options.timeoutSeconds,
+                );
+          return result(response(value), value.snapshot);
+        } catch (error) {
+          return result(failure(error));
+        }
+      },
+    });
+  register(
+    "agent_inspect",
+    Inspect,
+    "Immediately inspect a public agent; optional progress is partial and untrusted.",
+    "inspect",
+  );
+  register(
+    "agent_wait",
+    Wait,
+    "Join a public agent through cleanup. Timeout/cancellation affects only this waiter, never the child.",
+    "wait",
+  );
+  register(
+    "agent_stop",
+    Stop,
+    "Cancel an owned public agent and join cleanup. Caller cancellation returns honest still-stopping state; join later with agent_wait.",
+    "stop",
+  );
   pi.registerTool({
-    name: "steer_subagent",
+    name: "agent_steer",
+    label: "agent_steer",
     exposure: "deferred",
-    namespace: {
-      name: "agents",
-      description: "Delegate bounded exploration and review to managed agents.",
-    },
-    label: "steer_subagent",
+    namespace,
     description:
-      "Send guidance to a running managed subagent. Reports whether Pi queued it after the current turn's tool calls or an extension handled it. Fails for unknown or completed agents.",
-    parameters: SteerSubagentParameters,
+      "Send guidance to a running public agent. Reports Pi's actual queued or handled delivery, not immediate execution.",
+    parameters: Steer,
+    outputSchema: ResultSchema,
     renderCall: toolCallRenderer({
-      name: "steer_subagent",
-      detail: (args: SteerSubagentParams) => args.id,
+      name: "agent_steer",
       pending: "Queueing guidance…",
     }),
-    async execute(_toolCallId, params) {
-      const result = await runtime.steer(params.id, params.message);
-      return toolResult(result.snapshot, "steer", undefined, result.delivery);
-    },
     renderResult: renderAgentResult,
+    async execute(_call, params) {
+      try {
+        const value = await runtime.publicSteer(params.id, params.message);
+        return result(
+          {
+            ok: true,
+            agent: safeAgent(value.snapshot),
+            delivery: value.delivery,
+          },
+          value.snapshot,
+          "steer",
+        );
+      } catch (error) {
+        return result(failure(error));
+      }
+    },
   });
 }

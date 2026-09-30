@@ -1,23 +1,34 @@
+import { randomUUID } from "node:crypto";
+import { stripVTControlCharacters } from "node:util";
 import type {
   AgentSession,
   AgentToolResult,
   ExtensionAPI,
   ExtensionContext,
-  EventBus,
   SessionStats,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import {
   createAgentSession,
   createEventBus,
-  DefaultResourceLoader,
+  SettingsManager,
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
-  getAgentDir,
   SessionManager,
   truncateHead,
 } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
+import {
+  outputScope,
+  prepareOutputChild,
+  type PromotionLease,
+} from "#context/retained-output";
+import { WORKER_DOC_TOOLS } from "./worker-docs.js";
+import { createChildResourceLoader } from "./worker-resources.js";
+import {
+  toolCallRenderer,
+  toolResultRenderer,
+} from "#lib/ui/tool-result-renderer";
 import { parseModelRef } from "#lib/model-ref";
 import { prepareSandboxChild, type SandboxWriteMode } from "#sandbox/runtime";
 import type { ModelPreset, ThinkingLevel } from "#lib/config";
@@ -41,6 +52,7 @@ import {
   retainActivity,
   truncateUtf8,
   type InspectionActivity,
+  type PublicProgress,
   type RuntimeInspection,
 } from "./inspection.js";
 export type { ThinkingLevel } from "#lib/config";
@@ -136,6 +148,7 @@ export type RuntimeSnapshot<TResult = unknown> = {
   thinking?: ThinkingLevel;
   effectiveThinking?: ThinkingLevel;
   extensionBinding: ExtensionBindingStatus;
+  cleanupComplete?: boolean;
   canSteer?: boolean;
   timestamps: RuntimeTimestamps;
   health?: RuntimeHealth;
@@ -157,12 +170,16 @@ export type QueueSubagentInput = {
 
 export type ManagedAgentMode = "foreground" | "background";
 
-export type PublicSubagentWaitOutcome = "snapshot" | "terminal" | "cancelled";
+export type PublicSubagentWaitOutcome =
+  | "snapshot"
+  | "terminal"
+  | "timed_out"
+  | "cancelled";
 
 export type PublicSubagentResult = {
   snapshot: RuntimeSnapshot;
   waitOutcome: PublicSubagentWaitOutcome;
-  progress?: string;
+  progress?: PublicProgress;
 };
 
 export type ExploreBreadth = "quick" | "medium" | "very thorough";
@@ -199,6 +216,10 @@ export type RunManagedAgentInput<
   systemPrompt?: string;
   systemPromptMode?: PromptMode;
   sandboxWriteMode?: SandboxWriteMode;
+  finalizeOutput?: (
+    snapshot: RuntimeSnapshot,
+    lease: PromotionLease,
+  ) => Promise<void>;
   completion?: ManagedCompletion<
     TSchemaValue extends TSchema ? TSchemaValue : TSchema
   >;
@@ -229,6 +250,8 @@ type RuntimeRecord = Omit<RuntimeSnapshot, "timestamps"> &
     initialization?: Promise<void>;
     resolveInitialization?: () => void;
     finalization?: Promise<RuntimeSnapshot>;
+    outputChild?: ReturnType<typeof prepareOutputChild>;
+    finalizeOutput?: RunManagedAgentInput["finalizeOutput"];
     completion?: {
       definition: ManagedCompletion;
       accepted: boolean;
@@ -291,8 +314,8 @@ const retirementShutdownReasons = new Set(["quit", "new", "resume", "fork"]);
 const defaultSystemPromptMode: PromptMode = "append";
 const EXPLORE_TOOL_INACTIVITY_MS = 120_000;
 const EXPLORE_TOOL_INACTIVITY_POLL_MS = 10_000;
-const EXPLORE_OUTPUT_TRUNCATION_NOTICE =
-  "\n\n[Explore output truncated. Continue with direct reads/searches.]";
+const AGENT_OUTPUT_TRUNCATION_NOTICE =
+  "\n\n[Agent output truncated. Continue with direct reads/searches.]";
 export const MANAGED_COMPLETION_TOOL_NAME = "pi_managed_complete";
 const exploreEligibleTypes = new Set([
   "General",
@@ -425,6 +448,7 @@ function projectSnapshot(record: RuntimeRecord): RuntimeSnapshot {
       ? {}
       : { effectiveThinking: record.effectiveThinking }),
     extensionBinding: record.extensionBinding,
+    cleanupComplete: record.cleanupComplete ?? false,
     ...(record.canSteer === undefined ? {} : { canSteer: record.canSteer }),
     timestamps: {
       queuedAt: record.queuedAt,
@@ -626,26 +650,6 @@ function resolveSystemPromptInput<TSchemaValue extends TSchema | undefined>(
   };
 }
 
-async function createChildResourceLoader(options: {
-  cwd: string;
-  promptInput?: { prompt: string; mode: PromptMode };
-  eventBus: EventBus;
-}): Promise<{ agentDir: string; resourceLoader: DefaultResourceLoader }> {
-  const agentDir = getAgentDir();
-  const resourceLoader = new DefaultResourceLoader({
-    cwd: options.cwd,
-    agentDir,
-    eventBus: options.eventBus,
-    ...(options.promptInput === undefined
-      ? {}
-      : options.promptInput.mode === "replace"
-        ? { systemPrompt: options.promptInput.prompt }
-        : { appendSystemPrompt: [options.promptInput.prompt] }),
-  });
-  await resourceLoader.reload();
-  return { agentDir, resourceLoader };
-}
-
 function resolveModelRef(
   ctx: ExtensionContext,
   modelRef: string | undefined,
@@ -711,56 +715,121 @@ function resultText(value: unknown): string {
   }
 }
 
-function truncateText(text: string): { text: string; truncated: boolean } {
-  const truncation = truncateHead(text, {
-    maxLines: DEFAULT_MAX_LINES,
-    maxBytes: DEFAULT_MAX_BYTES,
-  });
+export function boundedAgentText(
+  text: string,
+  limits = { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES },
+): {
+  text: string;
+  truncated: boolean;
+} {
+  const original = text;
+  text = stripVTControlCharacters(text).replace(/\p{C}/gu, (char) =>
+    char === "\n" || char === "\t" ? char : "",
+  );
+  const truncation = truncateHead(text, limits);
   if (!truncation.truncated) {
-    return { text, truncated: false };
+    return { text, truncated: text !== original };
   }
   const content = truncateHead(text, {
-    maxLines: DEFAULT_MAX_LINES,
+    maxLines:
+      limits.maxLines - (AGENT_OUTPUT_TRUNCATION_NOTICE.split("\n").length - 1),
     maxBytes:
-      DEFAULT_MAX_BYTES - Buffer.byteLength(EXPLORE_OUTPUT_TRUNCATION_NOTICE),
+      limits.maxBytes - Buffer.byteLength(AGENT_OUTPUT_TRUNCATION_NOTICE),
   }).content;
   return {
-    text: `${content}${EXPLORE_OUTPUT_TRUNCATION_NOTICE}`,
+    text: `${content}${AGENT_OUTPUT_TRUNCATION_NOTICE}`,
     truncated: true,
   };
 }
 
+export function boundedAgentProgress(progress: PublicProgress) {
+  const bounded = boundedAgentText(progress.text);
+  return {
+    ...bounded,
+    truncated: progress.truncated || bounded.truncated,
+    partial: true as const,
+  };
+}
+
+const ExploreResultSchema = Type.Object(
+  {
+    ok: Type.Boolean(),
+    status: StringEnum(["completed", "failed", "stopped"] as const),
+    id: Type.Optional(Type.String()),
+    text: Type.String(),
+    truncated: Type.Boolean(),
+    error: Type.Optional(
+      Type.Object(
+        { code: Type.String(), message: Type.String() },
+        { additionalProperties: false },
+      ),
+    ),
+    progress: Type.Optional(
+      Type.Object(
+        {
+          text: Type.String(),
+          truncated: Type.Boolean(),
+          partial: Type.Literal(true),
+        },
+        { additionalProperties: false },
+      ),
+    ),
+  },
+  { additionalProperties: false },
+);
+function exploreResult(
+  data: Static<typeof ExploreResultSchema>,
+): AgentToolResult<unknown> {
+  return {
+    content: [
+      { type: "text", text: data.text },
+      ...(data.progress
+        ? [{ type: "text" as const, text: data.progress.text }]
+        : []),
+    ],
+    details: data,
+    structuredContent: data,
+    isError: !data.ok,
+  };
+}
 function exploreToolResult(
   snapshot: RuntimeSnapshot,
+  progress?: PublicProgress,
 ): AgentToolResult<unknown> {
-  if (snapshot.status === "completed") {
-    const truncated = truncateText(resultText(snapshot.result));
-    return {
-      content: [{ type: "text", text: truncated.text }],
-      details: {
-        id: snapshot.id,
-        status: snapshot.status,
-        truncated: truncated.truncated,
-      },
-    };
-  }
-  const error =
-    snapshot.error === undefined ? undefined : truncateText(snapshot.error);
-  const reason = error?.text ?? `${snapshot.status}.`;
-  const text =
-    snapshot.status === "stopped"
-      ? `explore stopped or timed out: ${reason} Continue with direct reads/searches.`
-      : `explore ${snapshot.status}: ${reason} Continue with direct reads/searches.`;
-  const truncated = truncateText(text);
-  return {
-    content: [{ type: "text", text: truncated.text }],
-    details: {
-      id: snapshot.id,
-      status: snapshot.status,
-      error: error?.text,
-      ...(truncated.truncated || error?.truncated ? { truncated: true } : {}),
-    },
-  };
+  const completed = snapshot.status === "completed";
+  const reason = boundedAgentText(snapshot.error ?? snapshot.status);
+  const text = completed
+    ? resultText(snapshot.result)
+    : `explore ${snapshot.status === "stopped" ? "stopped or timed out" : snapshot.status}: ${reason.text}. Continue with direct reads/searches.`;
+  const partialProgress = progress ? boundedAgentProgress(progress) : undefined;
+  // Reserve space for the same partial excerpt in the direct result.
+  const bounded = boundedAgentText(text, {
+    maxBytes:
+      DEFAULT_MAX_BYTES -
+      (partialProgress ? Buffer.byteLength(partialProgress.text) + 1 : 0),
+    maxLines:
+      DEFAULT_MAX_LINES - (partialProgress?.text.split("\n").length ?? 0),
+  });
+  return exploreResult({
+    ok: completed,
+    id: snapshot.id,
+    status: completed
+      ? "completed"
+      : snapshot.status === "stopped"
+        ? "stopped"
+        : "failed",
+    ...bounded,
+    truncated: bounded.truncated || (!completed && reason.truncated),
+    ...(!completed
+      ? {
+          error: {
+            code: snapshot.status === "stopped" ? "cancelled" : "agent_failed",
+            message: "Explore did not complete successfully.",
+          },
+        }
+      : {}),
+    ...(partialProgress ? { progress: partialProgress } : {}),
+  });
 }
 
 export class SubagentRuntime {
@@ -906,6 +975,7 @@ export class SubagentRuntime {
     return this.runManagedAgent({
       ...input,
       owner: input.owner ?? "public-tool",
+      description: input.description ?? `${input.type} task`,
     });
   }
 
@@ -935,6 +1005,7 @@ export class SubagentRuntime {
         accepted: false,
       };
     }
+    record.finalizeOutput = input.finalizeOutput;
     record.callerExcludedTools = [...new Set(input.excludeTools)];
     this.start(record.id);
     const running = this.#runRecord(record, input);
@@ -963,17 +1034,25 @@ export class SubagentRuntime {
       label: "explore",
       description:
         "Ask a nested repository-preserving Explore child to answer a bounded codebase discovery question synchronously. Use it for multi-step tracing or mapping where keeping the search trail in separate context is useful, not for one targeted semantic lookup or one or two direct reads. The child follows repository-preserving instructions while combining LSP with search and source reads when useful; it cannot spawn agents or invoke explore recursively. Continue with direct discovery if the result is stopped, failed, timed out, or truncated.",
-      parameters: Type.Object({
-        question: Type.String({
-          description: "Specific codebase exploration question to answer.",
-        }),
-        breadth: Type.Optional(
-          StringEnum(["quick", "medium", "very thorough"] as const, {
-            description:
-              "Requested exploration depth; use quick for a narrow trace and very thorough for broad multi-step mapping.",
-          }),
-        ),
+      outputSchema: ExploreResultSchema,
+      renderCall: toolCallRenderer({ name: "explore", pending: "Exploring…" }),
+      renderResult: toolResultRenderer({
+        summary: () => "Explore research/status returned.",
       }),
+      parameters: Type.Object(
+        {
+          question: Type.String({
+            description: "Specific codebase exploration question to answer.",
+          }),
+          breadth: Type.Optional(
+            StringEnum(["quick", "medium", "very thorough"] as const, {
+              description:
+                "Requested exploration depth; use quick for a narrow trace and very thorough for broad multi-step mapping.",
+            }),
+          ),
+        },
+        { additionalProperties: false },
+      ),
       executionMode: "sequential",
       execute: async (_toolCallId, params, signal, _onUpdate, ctx) =>
         this.runExploreTool(parent, params as ExploreToolParams, ctx, signal),
@@ -986,24 +1065,23 @@ export class SubagentRuntime {
     ctx: ExtensionContext,
     signal?: AbortSignal,
   ): Promise<AgentToolResult<unknown>> {
-    if (parent.type === "Explore" || isNestedOwner(parent.owner)) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: "explore is unavailable from Explore agents or nested child agents. Use direct read/search tools instead.",
-          },
-        ],
-        details: { status: "failed", error: "recursion prevented" },
-      };
+    if (!isExploreEligible(parent.type) || isNestedOwner(parent.owner)) {
+      return exploreResult({
+        ok: false,
+        status: "failed",
+        text: "explore is unavailable from Explore agents or nested child agents. Use direct read/search tools instead.",
+        truncated: false,
+        error: { code: "unavailable", message: "recursion prevented" },
+      });
     }
     if (params.question.trim() === "") {
-      return {
-        content: [
-          { type: "text", text: "explore question must not be empty." },
-        ],
-        details: { status: "failed", error: "empty question" },
-      };
+      return exploreResult({
+        ok: false,
+        status: "failed",
+        text: "explore question must not be empty.",
+        truncated: false,
+        error: { code: "invalid_arguments", message: "empty question" },
+      });
     }
 
     const timeout = new AbortController();
@@ -1075,7 +1153,25 @@ export class SubagentRuntime {
         }
       }, EXPLORE_TOOL_INACTIVITY_POLL_MS);
       const finalSnapshot = await this.wait(started.id);
-      return exploreToolResult(finalSnapshot);
+      return exploreToolResult(
+        finalSnapshot,
+        finalSnapshot.status === "completed"
+          ? undefined
+          : renderPublicProgress(
+              this.#inspection(this.#requireRecord(started.id)),
+            ),
+      );
+    } catch {
+      return exploreResult({
+        ok: false,
+        status: "failed",
+        text: "Explore unavailable; continue with direct reads/searches.",
+        truncated: false,
+        error: {
+          code: "unavailable",
+          message: "Check the low model preset and worker initialization.",
+        },
+      });
     } finally {
       if (inactivityTimer !== undefined) {
         clearInterval(inactivityTimer);
@@ -1173,18 +1269,37 @@ export class SubagentRuntime {
     wait: boolean,
     includeProgress = false,
     signal?: AbortSignal,
+    timeoutSeconds?: number,
   ): Promise<PublicSubagentResult> {
     const record = this.#requirePublicRecord(id);
+    if (
+      timeoutSeconds !== undefined &&
+      (!Number.isFinite(timeoutSeconds) ||
+        timeoutSeconds <= 0 ||
+        timeoutSeconds > 2147483.647)
+    ) {
+      throw new Error("Invalid wait timeout");
+    }
+    const deadline = new AbortController();
+    const timer =
+      wait && timeoutSeconds !== undefined
+        ? setTimeout(() => deadline.abort(), timeoutSeconds * 1000)
+        : undefined;
+    const waitSignal = signal
+      ? AbortSignal.any([signal, deadline.signal])
+      : deadline.signal;
     let waitOutcome: PublicSubagentWaitOutcome = "snapshot";
     if (wait) {
       try {
-        await this.#waitForRecord(record, signal);
+        await this.#waitForRecord(record, waitSignal);
         waitOutcome = "terminal";
       } catch (error) {
         if (!(error instanceof PublicWaitCancelledError)) {
           throw error;
         }
-        waitOutcome = "cancelled";
+        waitOutcome = signal?.aborted ? "cancelled" : "timed_out";
+      } finally {
+        clearTimeout(timer);
       }
     }
     if (!this.#isCurrentRecord(record)) {
@@ -1192,11 +1307,7 @@ export class SubagentRuntime {
     }
     refreshHealth(record);
     const snapshot = projectSnapshot(record);
-    if (
-      waitOutcome === "cancelled" ||
-      !includeProgress ||
-      snapshot.status === "completed"
-    ) {
+    if (!includeProgress || snapshot.status === "completed") {
       return { snapshot, waitOutcome };
     }
     return {
@@ -1204,6 +1315,36 @@ export class SubagentRuntime {
       waitOutcome,
       progress: renderPublicProgress(this.#inspection(record)),
     };
+  }
+
+  publicSnapshots(): RuntimeSnapshot[] {
+    return this.snapshots()
+      .filter(
+        (snapshot) =>
+          snapshot.owner === "public-tool" &&
+          isPublicBuiltinType(snapshot.type),
+      )
+      .sort(
+        (a, b) =>
+          b.timestamps.queuedAt.localeCompare(a.timestamps.queuedAt) ||
+          a.id.localeCompare(b.id),
+      );
+  }
+
+  publicSteer(id: string, message: string): Promise<RuntimeSteeringResult> {
+    this.#requirePublicRecord(id);
+    return this.steer(id, message);
+  }
+
+  async publicStop(
+    id: string,
+    signal?: AbortSignal,
+  ): Promise<PublicSubagentResult> {
+    const record = this.#requirePublicRecord(id);
+    if (!isTerminal(record.status)) {
+      this.stop(id);
+    }
+    return this.publicResult(id, true, false, signal);
   }
 
   async result<TResult = unknown>(
@@ -1355,11 +1496,25 @@ export class SubagentRuntime {
     let releaseSandboxChild: { dispose: () => void } | undefined;
     try {
       const { model } = resolveModelRef(input.ctx, record.model);
-      const parentActiveTools =
-        input.inheritedActiveTools ?? this.pi.getActiveTools?.();
+      const parentActiveTools = input.inheritedActiveTools ?? [
+        ...(this.pi.getActiveTools?.() ?? []),
+        ...(this.pi.getAllTools?.() ?? [])
+          .filter(
+            (tool) =>
+              tool.exposure === "deferred" || tool.exposure === "codemode",
+          )
+          .map((tool) => tool.name),
+      ];
       const nested = isNestedOwner(record.owner);
       const promptInput = resolveSystemPromptInput(input);
       const childEventBus = createEventBus();
+      if (this.pi.events) {
+        record.outputChild = prepareOutputChild(
+          outputScope(this.pi.events),
+          childEventBus,
+          randomUUID(),
+        );
+      }
       releaseSandboxChild = this.pi.events
         ? prepareSandboxChild(
             this.pi.events,
@@ -1370,21 +1525,18 @@ export class SubagentRuntime {
                 : "workspace-write"),
           )
         : undefined;
-      const resources =
-        promptInput || releaseSandboxChild
-          ? await createChildResourceLoader({
-              cwd: record.cwd,
-              promptInput,
-              eventBus: childEventBus,
-            })
-          : undefined;
+      const resources = await createChildResourceLoader({
+        cwd: record.cwd,
+        promptInput,
+        eventBus: childEventBus,
+      });
       const allowExplore = isExploreEligible(record.type) && !nested;
       const toolAccess =
         input.toolAccess ??
         (publicAgentProfile(record.type) || nested
           ? "repository-read-only"
           : "inherit");
-      const selectedTools = input.noTools
+      let selectedTools = input.noTools
         ? record.completion
           ? [MANAGED_COMPLETION_TOOL_NAME]
           : []
@@ -1397,7 +1549,28 @@ export class SubagentRuntime {
             allowPapercut: isPapercutEligible(record.type),
             completion: record.completion !== undefined,
           });
-      record.selectedToolNames = [...selectedTools];
+      if (!input.noTools) {
+        selectedTools.push(
+          ...["codemode", "tool_search"].filter(
+            (name) => !record.callerExcludedTools.includes(name),
+          ),
+        );
+        selectedTools.push(
+          ...WORKER_DOC_TOOLS.filter(
+            (name) => !record.callerExcludedTools.includes(name),
+          ),
+        );
+      }
+      selectedTools = [...new Set(selectedTools)];
+      record.selectedToolNames = selectedTools;
+      const settingsManager = SettingsManager.create(
+        record.cwd,
+        resources.agentDir,
+      );
+      settingsManager.applyOverrides({
+        defaultTools: ["+codemode", "+tool_search"],
+        codemode: { mode: "on" },
+      });
       const createSessionOptions = {
         cwd: record.cwd,
         model,
@@ -1405,12 +1578,9 @@ export class SubagentRuntime {
         ...(record.thinking === undefined
           ? {}
           : { thinkingLevel: record.thinking }),
-        ...(resources === undefined
-          ? {}
-          : {
-              agentDir: resources.agentDir,
-              resourceLoader: resources.resourceLoader,
-            }),
+        agentDir: resources.agentDir,
+        resourceLoader: resources.resourceLoader,
+        settingsManager,
         tools: selectedTools,
         customTools: this.#customToolsFor(record),
       };
@@ -1670,7 +1840,7 @@ export class SubagentRuntime {
 
   #customToolsFor(record: RuntimeRecord): ToolDefinition[] | undefined {
     const tools: ToolDefinition[] = [];
-    if (isExploreEligible(record.type)) {
+    if (isExploreEligible(record.type) && !isNestedOwner(record.owner)) {
       tools.push(this.createExploreTool(projectSnapshot(record)));
     }
     if (record.completion) {
@@ -1688,8 +1858,6 @@ export class SubagentRuntime {
       name: MANAGED_COMPLETION_TOOL_NAME,
       label: completion.definition.label ?? "Complete managed task",
       description: completion.definition.description,
-      promptSnippet:
-        "Complete the managed task with its required structured result.",
       parameters: completion.definition.schema,
       executionMode: "sequential",
       exposure: "model-only",
@@ -1721,7 +1889,10 @@ export class SubagentRuntime {
     };
   }
 
-  async #disposeSession(session: AgentSession): Promise<void> {
+  async #disposeSession(
+    session: AgentSession,
+    record?: RuntimeRecord,
+  ): Promise<void> {
     try {
       if (session.extensionRunner.hasHandlers("session_shutdown")) {
         await session.extensionRunner.emit({
@@ -1732,7 +1903,28 @@ export class SubagentRuntime {
     } catch {
       // Child shutdown is best-effort; disposal must still complete.
     } finally {
-      session.dispose();
+      try {
+        if (record?.finalizeOutput && record.outputChild) {
+          await record.finalizeOutput(
+            projectSnapshot(record),
+            record.outputChild.takeLease(),
+          );
+        }
+      } catch {
+        if (record) {
+          record.status = "failed";
+          record.error = "Worker output handoff failed.";
+        }
+      } finally {
+        try {
+          session.dispose();
+        } finally {
+          record?.outputChild?.dispose();
+          if (record) {
+            record.outputChild = undefined;
+          }
+        }
+      }
     }
   }
 
@@ -2028,12 +2220,19 @@ export class SubagentRuntime {
         compactedHistory: (record.health?.compactions ?? 0) > 0,
       });
       if (session) {
-        await this.#disposeSession(session);
+        await this.#disposeSession(session, record);
         if (record.session === session) {
           record.session = undefined;
         }
       }
-      const finalSnapshot = record.retainedInspection.snapshot;
+      record.outputChild?.dispose();
+      record.outputChild = undefined;
+      record.cleanupComplete = true;
+      const finalSnapshot = projectSnapshot(record);
+      record.retainedInspection = immutableInspection({
+        ...record.retainedInspection,
+        snapshot: finalSnapshot,
+      });
       if (!options.clearInspectListeners) {
         this.#notifyInspectListeners(record, {
           allowRetired: options.allowRetiredNotification,

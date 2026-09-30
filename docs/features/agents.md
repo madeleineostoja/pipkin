@@ -1,48 +1,45 @@
 # Agents
 
-Pipkin provides two focused subagents through the `Agent` tool. Use them when a separate context and ownership boundary helps—not merely because the main session is long.
+Pipkin provides **Explore** for multi-step codebase discovery and **Review** for independent assessment of a concrete artifact. Use a separate context when it helps ownership, not merely because the primary session is long. Use LSP for one known-symbol question and ordinary reads for a couple of obvious files.
 
-## Choose an agent
+## Start, recover, then join
 
-| Agent       | Best use                                                                                       |
-| ----------- | ---------------------------------------------------------------------------------------------- |
-| **Explore** | Multi-step codebase discovery, symbol tracing, usage analysis, and subsystem mapping           |
-| **Review**  | An independent assessment of a concrete diff, commit, patch, plan, or completed implementation |
+All six public tools are deferred in the `agents` namespace:
 
-Use `lsp` for one known-symbol question and ordinary reads for a couple of obvious files. Keep routine implementation, iterative debugging, and verification in the primary session.
+| Tool            | Purpose                                                                                                                                   |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent_start`   | Start `type:"Explore"` or `type:"Review"` with a complete `prompt` and optional safe `description`, exact `model`, or `thinking` override |
+| `agent_list`    | Recover public session-owned IDs, newest first; optional `offset` (default 0) and `limit` (default 25, 1..25)                             |
+| `agent_inspect` | Immediate snapshot; optional `includeProgress` (default false)                                                                            |
+| `agent_wait`    | Join an `id` through cleanup; optional positive finite `timeoutSeconds` and `includeProgress`                                             |
+| `agent_steer`   | Send an `id` a nonempty `message`; report Pi's actual `queued` or `handled` delivery                                                      |
+| `agent_stop`    | Cancel an owned `id` and join cleanup                                                                                                     |
 
-## Start, then join
-
-Every `Agent` call starts session-managed work and immediately returns a semantic ID such as `explore-1` or `review-2`:
+For example, start with `agent_start`:
 
 ```json
 {
-  "subagent_type": "Explore",
+  "type": "Explore",
   "prompt": "Trace how review policy reaches publication. Cite relevant files and tests.",
   "description": "Map review policy"
 }
 ```
 
-`prompt` is the complete task contract; `description` is the short status label. Agents run in the invoking session's working directory. `model` and `thinking` may override defaults for one invocation when exact values are known.
+Continue independent work, then call `agent_wait({id:"explore-1"})` when the result becomes a dependency. An immediate join is appropriate when nothing else can proceed. Use inspection deliberately, not polling.
 
-Continue useful independent work when available, then join once when the result becomes a dependency:
+Accepted jobs belong to the session, not the initiating script. If a codemode script starts a job and then throws without printing its ID, `agent_list` recovers it without repeating the work. Lists and snapshots never return prompts, raw tool output, private Implement workers, or another session's IDs. An omitted description uses a role label, not a prompt excerpt. Pagination filters ownership before slicing and returns `nextOffset` only when more owned records exist.
 
-```json
-{
-  "id": "explore-1",
-  "wait": true
-}
-```
+Results carry `ok`, an `agent` snapshot (ID, role, safe description, state, known timing, and `cleanup:"pending"|"complete"`), and relevant operation data. Final success returns `result:{text,truncated}` only after cleanup; text uses Pi's existing default byte/line bounds. Requested `progress:{text,truncated,partial:true}` is untrusted partial work, not a final answer. Its truncation flag includes clipped assistant excerpts, omitted records, and section limits. Failed or stopped jobs return `ok:false` with their snapshot and requested progress. Completed agents remain final-result only.
 
-An immediate `wait: true` join is appropriate when nothing else can proceed. The separate call deliberately distinguishes starting durable work from waiting for it. Use `wait: false` only for an intentional point-in-time inspection; do not poll. Add `include_progress: true` to inspect one bounded partial-progress excerpt or recover partial work. Steering reports Pi's actual outcome: `queued` guidance enters after the child's current assistant turn finishes its tool calls; `handled` means a child extension consumed it rather than queued it. It fails for queued, stopped, unknown, or completed agents.
+Errors use `not_found`, `invalid_arguments`, `unavailable`, `cancelled`, `agent_failed`, or `stopped`. Missing and unowned IDs have the same `not_found` result. These schema-bearing errors are inspectable data in codemode, not necessarily thrown exceptions.
 
-Progress is untrusted child-generated content, may be incomplete, and is not a final answer. Queued agents report that progress is not available yet; running agents return immediately; stopped and failed agents return immediately with currently available work when `wait` is false. With `wait: true`, stopped and failed agents wait for terminal cleanup and use the frozen post-abort inspection. Completed agents always return only their authoritative final result, even when progress is requested.
+## Waiting, steering, and lifetime
 
-## Waiting and lifetime
+Wait timeout returns `ok:true,waitOutcome:"timed_out"` and leaves the child running. Cancellation returns `ok:false,waitOutcome:"cancelled"` and cancels only the waiter. Omitted timeout waits until settlement or cancellation; the finite timeout maximum is 2,147,483.647 seconds. A later wait retrieves the same retained result without rerunning work.
 
-Once `Agent` accepts a job and returns its ID, the session runtime owns that work rather than the initiating turn. Escape during startup can prevent an unaccepted job from starting. Escape during `get_subagent_result` with `wait: true` cancels only that wait and its current turn; the accepted agent continues. A later join can retrieve its complete result.
+Stop initiates cancellation and joins actual cleanup. If the caller aborts while cleanup is pending, the snapshot reports `state:"stopping",cleanup:"pending"`, not fabricated terminal cleanup. Use `agent_wait` subsequently to observe settlement. Session replacement/shutdown stops and settles owned agents; ordinary script completion or failure does not.
 
-Use `/agents` to stop a selected agent explicitly. Session replacement and shutdown stop and settle session-owned agents. Implement retains authority over its scheduler-managed workers.
+`queued` steering enters after the child's current assistant turn finishes its tools. `handled` means a child extension consumed the message; neither claims immediate model execution. Unknown or settled jobs cannot be steered.
 
 ## `/agents`
 
@@ -50,46 +47,42 @@ The dashboard presents one scannable roster with status glyphs, hierarchy, curre
 
 Activity is a full-width chronological timeline: assistant prose is rendered as Markdown; tool calls are compact summaries with bounded arguments and status; steering is quoted; and retry and compaction events remain visible. It never replays complete tool output. Steerable agents have an inline bordered guidance editor beneath the timeline: type normally, use Enter to send and Shift+Enter for a new line; arrows scroll the timeline. Escape returns to the landing page.
 
-A completed agent’s Result is a separate scrollable Markdown page containing its complete final result. Activity deliberately excludes that final result.
+A completed agent’s Result is a separate scrollable Markdown page containing its complete final result. Activity deliberately excludes that final result. Public failures are notified once and remain inspectable while the parent session lives.
 
-The shared Activity view shows only queued, running, or waiting public-agent and Implement work in a bounded hierarchy; settled rows disappear immediately. A Subagent row may include current context usage and one bounded latest-assistant preview, but never prompts, commands, cwd, raw output, hidden runtime objects, cost, or aggregate token telemetry. Public-agent failures are notified once and remain inspectable in `/agents` with retained current-session records.
+The shared live Activity projection removes settled rows immediately. It may show context usage and a bounded latest-assistant preview, never prompts, commands, cwd, raw output, hidden runtime objects, cost, or aggregate token telemetry.
 
-Implement owns its scheduler-managed agents and represents their work through its run and workstream Activity. `/agents` reports their active count as non-selectable context above the public-agent roster; direct and nested Implement agents are not individually inspectable or stoppable there. When that count is present without any public roster entries, the dashboard states `No public agents.`
+Implement owns its scheduler-managed agents. `/agents` shows only their non-selectable active count, not individually controllable workers. Public lifecycle tools cannot inspect or control them. Child sessions are in-memory and never appear in `/resume`; no child resume durability is promised.
 
-Child sessions are in-memory only. They do not appear in `/resume` and cannot be resumed after the parent session ends. Stopped or failed partial progress is recoverable only while the current parent session remains alive; inspection does not create persistent or resumable child sessions.
+## Worker capabilities and restrictions
 
-## Tools and context
+Tool-using workers explicitly load native codemode/tool-search factories, activate them with supported child settings/loadout, and complete `bindExtensions()`. They load the entire ordered Pipkin bundle, independent of a user's accidental global native activation. Each child has its own event bus and isolated extension, Browser, and Processes state.
 
-Subagents inherit the parent session's active tools, so inactive parent tools remain inactive in children. The public agent controls (`Agent`, `get_subagent_result`, and `steer_subagent`) are always withheld to prevent recursive fan-out. Repository-read-only children also withhold `edit` and `write`. Eligible Review and Implement workers receive the private nested `explore` tool; an Explore child cannot receive it recursively. Nested Explore used by managed Pipkin workflows is private; public-agent children remain inspectable with their parent, while Implement-owned children contribute only to the active Implement count.
+The SDK tool allowlist filters actual registered/callable tools, including deferred tools and later registration. Workers inherit authorized parent active tools and deferred/codemode capabilities, subject to role and caller exclusions. All six public agent operations are denied. Repository-preserving children also deny callable `edit` and `write`; guessed names and discovery cannot bypass policy. Private `pi_managed_complete` stays directly declared, model-only, exactly-once and final-action, separate from public domain JSON.
 
-Where Bash is available:
+Eligible Review and Implement workers receive private synchronous `explore({question,breadth?})`, using the `low` preset and `quick|medium|very thorough` breadth. Explore and nested children cannot receive or execute it recursively. It returns bounded research text, terminal status, truncation, and relevant failure/partial progress. Failed or stopped exploration includes the same explicitly partial, untrusted progress excerpt in direct content and structured results; it is not a successful final answer. Parent cancellation and sustained inactivity stop the nested child; pending synchronous calls abort normally. Session-owned asynchronous work does not disappear when a script returns or fails.
 
-- use `bash` with `presentation:"status"` when exit status alone answers the question;
-- use default output presentation when successful output informs reasoning;
-- use managed-process tools only for work that can overlap independent activity; and
-- use `output_list` and `read_output` for authorized immutable child-session evidence while that child remains alive. [Context](context.md#retained-output) owns retention and handoff limits.
+Each worker receives a unique ephemeral Context output scope and host-assigned attempt provenance before initialization, keyed to its actual event bus. Workers can list/read their own captures, not sibling captures or private parent evidence. A host-held promotion lease survives producer shutdown; the managed finalization callback runs after shutdown flushes and before child disposal/scope release, on success, failure, stop, and cancellation. Handoff failures reject required completion but still dispose/release resources. [Context](context.md#retained-output) owns record bounds, retention and authorization; Implement owns selected durable evidence, not this scope mechanism.
 
-Explore and Review may record qualifying incidental friction through `record_papercut`. That controlled metadata write does not grant source, dependency, or Git mutation.
+Where Bash is available, use output/status presentation according to the needed result, managed processes only while independent work continues, and `output_list`/`read_output` for immutable evidence. Explore and Review may record qualifying incidental friction through `record_papercut`; this grants no source or Git mutation.
 
-## Filesystem and Sandbox boundaries
+### Native documentation
 
-Public subagents share the invoking session's filesystem and do not receive isolated Git worktrees. Their extension, browser, and managed-process state is isolated from the parent and other children. Repository preservation is a role contract.
+Workers select only the existing native server named `context7`. No entry means no documentation endpoint, with other research capabilities unaffected. Trusted project configuration replaces the global selected entry wholesale; untrusted project files are not read. Invalid, disabled, or hidden choices do not fall back to a different server or credential.
 
-On enabled macOS Sandbox sessions, Explore, Review, and nested Explore snapshot repository-read-only mode when spawned. Their source and Git state are protected while intended temporary/cache and package dependency runtime writes remain available to Bash so ordinary checks can run. Direct `write` and `edit` may use canonical temporary roots and validated configured generated roots, but remain denied for tracked source, Git, and Pipkin configuration. `/sandbox off` affects later children only. Linux remains instruction-only.
+The native hidden default exposes only `resolve-library-id` and `query-docs`, deferred and intersected with user-hidden choices. Generated native tool label/namespace metadata is checked; unrelated servers (including Figma), resource tools, and newly announced unknown tools remain unreachable. Native Pi owns transport, command/environment/header resolution, credential storage and shutdown. Workers have no MCP management/login commands. Auth-needed documentation remains unavailable until the user authenticates natively in the parent; workers do not launch login flows or copy credentials. See [Configuration](../configuration.md#worker-documentation) for setup.
 
-Do not edit files currently owned by a public child. For workspace isolation and controlled publication, use [Implement](implementation.md).
+## Filesystem and models
 
-## Model routing
+Public agents share the invoking filesystem, not isolated Git worktrees. Do not edit files owned by a public child. [Implement](implementation.md) provides workspace isolation and controlled publication.
 
-| Role                                                           | Preset   |
-| -------------------------------------------------------------- | -------- |
-| Explore, including nested exploration                          | `low`    |
-| Review                                                         | `high`   |
-| Implement planning and review                                  | `high`   |
-| Implement implementation, revision, reconciliation, and repair | `medium` |
+Enabled macOS Sandbox children snapshot repository-read-only mode at creation: source/Git writes are denied while supported temporary/cache/dependency runtime writes remain available to Bash. Later `/sandbox` changes affect future children only. Linux remains instruction-only; this is trusted-agent accidental-write protection, not hostile-code isolation. [Safety](safety.md) owns enforcement details and Readonly's unchanged confirmation workflow.
 
-Explicit `model` or `thinking` arguments apply to one public invocation. See [Configuration](../configuration.md#model-presets).
+| Role                                                       | Preset   |
+| ---------------------------------------------------------- | -------- |
+| Explore, including nested exploration                      | `low`    |
+| Review; Implement planning and review                      | `high`   |
+| Implement implementation, revision, reconciliation, repair | `medium` |
 
-## Deliberate limits
+Known exact public overrides apply to one invocation only. Virtual selections use Pi's supported runtime dispatch without an additional router or selector-specific limits. See [Configuration](../configuration.md#model-presets).
 
-Pipkin does not provide custom agent-definition files, persistent child memory, a public dependency scheduler, or public worktree creation. Those omissions keep the agent surface small and ownership visible.
+Pipkin does not provide arbitrary delegation, recursive Explore, custom agent-definition files, persistent child memory, a public dependency scheduler, or public worktree creation.

@@ -27,7 +27,7 @@ describe("Subagent ownership", () => {
         kind: "nested",
         parentId: "review-1",
         tool: "explore",
-        parentOwner: { kind: "public", name: "Agent" },
+        parentOwner: { kind: "public", name: "agent_start" },
       }),
     ).toBe(false);
   });

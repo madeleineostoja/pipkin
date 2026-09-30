@@ -62,7 +62,7 @@ Implement coordinates trusted workers in disposable Git worktrees, publishes thr
 
 ### Agents and research
 
-- **Explore** maps unfamiliar code; **Review** independently assesses a concrete artifact. Both run through `Agent` and remain visible through `/agents`.
+- **Explore** maps unfamiliar code; **Review** independently assesses a concrete artifact. Both run through `agent_start`, remain recoverable with `agent_list`, and are visible through `/agents`.
 - Research uses user-configured native documentation MCP, existing `gh` authentication, and `npm search --json`; Pipkin has no research credential abstraction.
 - **Web Fetch** retrieves bounded, structured readable content from one public URL without authentication or page JavaScript.
 - **Browser** lazily opens an isolated rendered browser with a valid locale for local applications, page state, visual evidence, and navigation.
@@ -122,9 +122,12 @@ These tools are called by the agent rather than typed as slash commands. They us
 | `process_inspect`                                                       | Immediately capture current process output/state                                    |
 | `process_wait`                                                          | Join finite work without killing it on wait timeout/cancellation                    |
 | `process_stop`                                                          | Stop unneeded work and join cleanup                                                 |
-| `Agent`                                                                 | Start an Explore or Review managed subagent and return its ID                       |
-| `get_subagent_result`                                                   | Join or inspect a managed subagent                                                  |
-| `steer_subagent`                                                        | Queue guidance for a running managed subagent                                       |
+| `agent_start`                                                           | Start a session-owned Explore or Review job                                         |
+| `agent_list`                                                            | Recover owned public job IDs, including after script failure                        |
+| `agent_inspect`                                                         | Immediately inspect state and optional partial progress                             |
+| `agent_wait`                                                            | Join through cleanup without stopping work on waiter timeout/cancellation           |
+| `agent_steer`                                                           | Report actual queued or handled guidance delivery                                   |
+| `agent_stop`                                                            | Stop owned public work and join cleanup                                             |
 | `inspect_implement_run`                                                 | List or inspect durable Implement runs and artifact paths                           |
 | `web_fetch`                                                             | Retrieve bounded readable content from one public URL                               |
 | [Browser observations](docs/features/browser.md#observation-operations) | Inspect isolated rendered pages and forward native images                           |

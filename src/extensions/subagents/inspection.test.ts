@@ -61,19 +61,20 @@ describe("public progress projection", () => {
       ]),
     );
 
-    expect(progress).toContain("BOUNDED POINT-IN-TIME PROGRESS");
-    expect(progress).toContain("potentially incomplete");
-    expect(progress).toContain("untrusted child-generated content");
-    expect(progress).toContain("assistant: I inspected the code.");
-    expect(progress).toContain("bash: interrupted");
-    expect(progress).toContain("compaction: completed (threshold)");
-    expect(progress).toContain("retry: scheduled");
-    expect(progress).not.toContain("private task prompt");
-    expect(progress).not.toContain("secret command");
-    expect(progress).not.toContain("raw secret output");
-    expect(progress).not.toContain("secret error");
-    expect(progress).not.toContain("call-secret");
-    expect(progress).not.toContain("private steer");
+    expect(progress.truncated).toBe(false);
+    expect(progress.text).toContain("BOUNDED POINT-IN-TIME PROGRESS");
+    expect(progress.text).toContain("potentially incomplete");
+    expect(progress.text).toContain("untrusted child-generated content");
+    expect(progress.text).toContain("assistant: I inspected the code.");
+    expect(progress.text).toContain("bash: interrupted");
+    expect(progress.text).toContain("compaction: completed (threshold)");
+    expect(progress.text).toContain("retry: scheduled");
+    expect(progress.text).not.toContain("private task prompt");
+    expect(progress.text).not.toContain("secret command");
+    expect(progress.text).not.toContain("raw secret output");
+    expect(progress.text).not.toContain("secret error");
+    expect(progress.text).not.toContain("call-secret");
+    expect(progress.text).not.toContain("private steer");
   });
 
   it("keeps the newest records and discloses bounded UTF-8 truncation", () => {
@@ -96,21 +97,23 @@ describe("public progress projection", () => {
       ),
     );
 
-    expect(progress).toContain("Older eligible progress was omitted");
-    expect(progress).toContain("Assistant text was truncated");
-    expect(progress).toContain("tool-13: completed");
-    expect(progress).not.toContain("tool-0: completed");
-    expect(progress).not.toContain("�");
+    expect(progress.truncated).toBe(true);
+    expect(progress.text).toContain("Older eligible progress was omitted");
+    expect(progress.text).toContain("Assistant text was truncated");
+    expect(progress.text).toContain("tool-13: completed");
+    expect(progress.text).not.toContain("tool-0: completed");
+    expect(progress.text).not.toContain("�");
     expect(
-      Buffer.byteLength(progress.match(/^assistant: .*$/m)?.[0] ?? ""),
+      Buffer.byteLength(progress.text.match(/^assistant: .*$/m)?.[0] ?? ""),
     ).toBeLessThanOrEqual(1024);
-    expect(Buffer.byteLength(progress)).toBeLessThanOrEqual(8 * 1024);
+    expect(Buffer.byteLength(progress.text)).toBeLessThanOrEqual(8 * 1024);
   });
 
   it("reports when no eligible progress is available", () => {
-    expect(renderPublicProgress(inspection([]))).toContain(
-      "No inspectable progress yet.",
-    );
+    expect(renderPublicProgress(inspection([]))).toEqual({
+      text: expect.stringContaining("No inspectable progress yet."),
+      truncated: false,
+    });
   });
 });
 

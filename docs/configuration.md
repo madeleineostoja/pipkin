@@ -53,6 +53,12 @@ Native Pi exclusively owns MCP configuration, transport, authentication, discove
 
 Consult [Pi's MCP guide](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md) for exact native settings and authentication procedures. Never put secrets in repository files, URLs, or tool arguments. Pipkin does not edit personal adapter/native configuration, credentials, or historical data. Old adapter identities and credentials are not automatically migrated or deleted.
 
+### Worker documentation
+
+Tool-using SDK workers explicitly load and activate native codemode/tool-search and the full Pipkin bundle. They select only `mcpServers.context7` from the actual agent-directory `mcp.json`, or a wholesale replacement in the child's natively trusted `.pi/mcp.json`. Untrusted project files are not read. No entry means no worker documentation endpoint; invalid or disabled selected entries do not fall back to another configuration.
+
+Only native `resolve-library-id` and `query-docs` tools are eligible for deferred access, narrowed by user-hidden choices. Workers inherit no unrelated servers, resource operations, MCP management commands or interactive login flows. Native Pi retains command/environment/header resolution and ordinary agent-directory OAuth storage; Pipkin copies no credentials or transports. Auth-needed documentation reports bounded unavailability without failing the entire child. Authenticate manually with native `/mcp` in the parent, then start a new worker. [Agents](features/agents.md#native-documentation) owns callable restrictions and lifecycle.
+
 ### Figma operator gate
 
 Live Figma cutover is **blocked/unverified** until the operator, with explicit authorization, registers/configures/logs in using the separately supplied current guide and makes a real permitted Figma tool call through native Pi. Record only pass/fail and a non-secret explanation. Native Pi supports a configured `oauth.clientId` and matching callback URL to skip dynamic registration, but not the adapter's client-name override; use the working name, matching callback, and returned authentication method from that guide. Tests with a local fake server do not verify Figma. Failed or unperformed verification remains blocked/unverified: no proxy, fallback server, credential change, or workaround is authorized by this cutover.
@@ -104,7 +110,7 @@ Each preset requires:
 
 All four preset keys must be present; unknown preset keys are rejected. Pipkin does not silently substitute another provider for a missing or malformed preset. All presets may reference the same model if tiered routing is unnecessary.
 
-BTW uses the current conversation model. Explicit `model` or `thinking` arguments override a public `Agent` invocation only and are not saved.
+BTW uses the current conversation model. Explicit `model` or `thinking` arguments override a public `agent_start` invocation only and are not saved.
 
 Pi owns provider credentials and `settings.json`; keep API keys out of Pipkin configuration.
 
