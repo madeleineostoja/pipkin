@@ -39,7 +39,7 @@ describe("managed Pipkin Implement worker tools", () => {
       "write",
       "docs",
       "web_fetch",
-      "browser_observe",
+      "browser_snapshot",
       "inspect_implement_run",
       "Agent",
       "get_subagent_result",
@@ -106,14 +106,14 @@ describe("managed Pipkin Implement worker tools", () => {
       "write",
       "docs",
       "web_fetch",
-      "browser_observe",
+      "browser_snapshot",
       "explore",
     ]);
     expect(selected(1)).toEqual([
       "read",
       "docs",
       "web_fetch",
-      "browser_observe",
+      "browser_snapshot",
       "explore",
     ]);
     await expect(client.waitFor(mutable)).resolves.toEqual({

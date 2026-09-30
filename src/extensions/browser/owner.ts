@@ -24,6 +24,7 @@ export type Diagnostic = {
   method?: string;
   status?: number;
   tabId: string;
+  truncated: boolean;
 };
 export type Tab = { id: string; page: Page; lastActive: number };
 type ChromiumFacade = Pick<typeof chromium, "launch">;
@@ -36,6 +37,7 @@ export class BrowserOwner {
   private active?: Tab;
   private readonly tabs = new Map<Page, Tab>();
   private diagnostics: Diagnostic[] = [];
+  private droppedDiagnostics = 0;
   private queue: Promise<void> = Promise.resolve();
   private launch?: Promise<void>;
   private shutdownTask?: Promise<void>;
@@ -74,13 +76,17 @@ export class BrowserOwner {
     operation: () => Promise<T>,
   ): Promise<T> {
     if (signal?.aborted) {
-      throw new BrowserError(
-        "cancelled",
-        "Browser call was cancelled before dispatch.",
+      throw this.withContext(
+        new BrowserError(
+          "cancelled",
+          "Browser call was cancelled before dispatch.",
+        ),
       );
     }
     if (!this.accepting) {
-      throw new BrowserError("cancelled", "Browser session is shutting down.");
+      throw this.withContext(
+        new BrowserError("cancelled", "Browser session is shutting down."),
+      );
     }
     let release!: () => void;
     const previous = this.queue;
@@ -99,6 +105,9 @@ export class BrowserOwner {
         );
       }
       return await this.execute(operation, signal);
+    } catch (error) {
+      // Capture identity before releasing the lane to another invocation.
+      throw this.withContext(browserError(error));
     } finally {
       release();
     }
@@ -127,15 +136,19 @@ export class BrowserOwner {
   getDiagnostics(): readonly Diagnostic[] {
     return this.diagnostics;
   }
+  diagnosticDropCount(): number {
+    return this.droppedDiagnostics;
+  }
   contextState(): { generation: number; stateLost: boolean } {
     return { generation: this.generation, stateLost: this.stateLost };
   }
+  stateLossNotice(): string | undefined {
+    return this.stateLost ? BROWSER_STATE_LOSS_NOTICE : undefined;
+  }
   consumeStateLossNotice(): string | undefined {
-    if (!this.stateLost) {
-      return undefined;
-    }
+    const notice = this.stateLossNotice();
     this.stateLost = false;
-    return BROWSER_STATE_LOSS_NOTICE;
+    return notice;
   }
   canRetryObservation(generation: number): boolean {
     return this.disconnectGeneration > generation;
@@ -168,12 +181,12 @@ export class BrowserOwner {
   }
   withContext(error: BrowserError, recovery?: string): BrowserError {
     const changes = [...new Set([recovery, this.activeChange].filter(Boolean))];
-    if (!this.stateLost && changes.length === 0) {
-      return error;
-    }
-    return new BrowserError(error.category, error.message, {
+    return new BrowserError(error.category, this.redactText(error.message), {
       ...error.details,
-      ...(this.stateLost ? { stateLost: true } : {}),
+      ...(typeof error.details.cause === "string"
+        ? { cause: bounded(this.redactText(error.details.cause), 1000) }
+        : {}),
+      ...this.contextState(),
       ...(changes.length > 0 ? { recovery: changes.join(" ") } : {}),
     });
   }
@@ -345,7 +358,7 @@ export class BrowserOwner {
       return this.withContext(
         new BrowserError(
           "uncertain_outcome",
-          "Browser action may have completed before it was cancelled; observe the page before retrying.",
+          "Browser action may have completed before it was cancelled; observe the page, but do not replay the action automatically.",
           details,
         ),
       );
@@ -503,21 +516,31 @@ export class BrowserOwner {
     return tab;
   }
 
-  private record(record: Omit<Diagnostic, "sequence">): void {
+  private record(record: Omit<Diagnostic, "sequence" | "truncated">): void {
+    let truncated = false;
+    const field = (value: string, limit: number) => {
+      const safe = bounded(this.redactText(value), Number.MAX_SAFE_INTEGER);
+      truncated ||= Array.from(safe).length > limit;
+      return bounded(safe, limit);
+    };
+    const message = field(record.message, LIMITS.diagnosticMessageChars);
+    const url = record.url
+      ? field(sanitizedUrl(record.url), LIMITS.urlChars)
+      : undefined;
+    const method =
+      record.method !== undefined ? field(record.method, 100) : undefined;
     this.diagnostics.push({
       ...record,
       sequence: this.sequence++,
-      message: bounded(
-        this.redactText(record.message),
-        LIMITS.diagnosticMessageChars,
-      ),
-      url: record.url ? this.redactText(sanitizeUrl(record.url)) : undefined,
+      message,
+      url,
+      method,
+      truncated,
     });
     if (this.diagnostics.length > LIMITS.diagnosticRetention) {
-      this.diagnostics.splice(
-        0,
-        this.diagnostics.length - LIMITS.diagnosticRetention,
-      );
+      const dropped = this.diagnostics.length - LIMITS.diagnosticRetention;
+      this.droppedDiagnostics += dropped;
+      this.diagnostics.splice(0, dropped);
     }
   }
 
@@ -576,22 +599,32 @@ export class BrowserOwner {
     this.invalidateRefs();
     this.tabs.clear();
     this.diagnostics = [];
+    this.droppedDiagnostics = 0;
     this.sensitiveTexts.clear();
   }
 }
 
 export function sanitizeUrl(value: string): string {
+  return bounded(sanitizedUrl(value), LIMITS.urlChars);
+}
+function sanitizedUrl(value: string): string {
   try {
     const url = new URL(value);
     url.username = "";
     url.password = "";
     url.search = "";
     url.hash = "";
-    return bounded(url.toString(), LIMITS.urlChars);
+    return url.toString();
   } catch {
     return "about:blank";
   }
 }
 export function bounded(value: string, maximum: number): string {
-  return Array.from(value).slice(0, maximum).join("");
+  return Array.from(value)
+    .filter((character) => {
+      const code = character.codePointAt(0)!;
+      return (code >= 32 && code !== 127) || "\t\n\r".includes(character);
+    })
+    .slice(0, maximum)
+    .join("");
 }

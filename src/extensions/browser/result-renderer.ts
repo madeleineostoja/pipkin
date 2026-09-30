@@ -37,6 +37,14 @@ function origin(url: string): string {
   }
 }
 
+function errorSummary(value: unknown, content: unknown): string {
+  const metadata = details(value);
+  const error = details(metadata.error);
+  return typeof error.message === "string"
+    ? `Browser ${metadata.category ?? "failure"} · ${bounded(error.message, 180)}`
+    : first(content).split("\n", 1)[0] || "Browser operation failed.";
+}
+
 export const renderBrowserObserveResult = toolResultRenderer({
   summary(result) {
     const value = details(result.details);
@@ -58,9 +66,7 @@ export const renderBrowserObserveResult = toolResultRenderer({
     return `${details(result.details).phase ?? "Observing"}…`;
   },
   error(result) {
-    return (
-      first(result.content).split("\n", 1)[0] || "Browser observation failed."
-    );
+    return errorSummary(result.details, result.content);
   },
 });
 
@@ -77,6 +83,6 @@ export const renderBrowserActResult = toolResultRenderer({
     return `${details(result.details).phase ?? "Navigating"}…`;
   },
   error(result) {
-    return first(result.content).split("\n", 1)[0] || "Browser action failed.";
+    return errorSummary(result.details, result.content);
   },
 });

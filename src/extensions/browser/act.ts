@@ -1,21 +1,13 @@
 import type { Locator, Page } from "playwright-core";
 import { BrowserError, browserError } from "./errors.js";
 import { LIMITS } from "./limits.js";
-import { snapshot, type BrowserResult } from "./observe.js";
-import { bounded, type BrowserOwner, sanitizeUrl } from "./owner.js";
+import { pageDetails } from "./observe.js";
+import { bounded, type BrowserOwner } from "./owner.js";
+import { success, type BrowserResult } from "./results.js";
 import { actionSummary } from "./presentation.js";
 import type { BrowserActInput, WaitCondition } from "./schema.js";
 import { strictTarget, strictWaitTarget } from "./target.js";
 
-const snapshotActions = new Set([
-  "navigate",
-  "back",
-  "forward",
-  "reload",
-  "open_tab",
-  "switch_tab",
-  "close_tab",
-]);
 const elementActions = new Set([
   "click",
   "hover",
@@ -34,10 +26,12 @@ export async function act(
 ): Promise<BrowserResult> {
   let dispatched = false;
   const mutation = input.action !== "wait";
-  const redacted = input.action === "fill" || input.action === "type";
+  const formText = input.action === "fill" || input.action === "type";
+  const redacted = formText || input.action === "select";
   let recovered: string | undefined;
   try {
     let page = await owner.page();
+    const generation = owner.contextState().generation;
     recovered = owner.consumeActiveChange();
     const requestedTab =
       input.action === "switch_tab" || input.action === "close_tab"
@@ -66,8 +60,13 @@ export async function act(
       waitTarget = await strictWaitTarget(page, input.condition.target, owner);
     }
 
-    if (redacted) {
+    if (formText) {
       owner.rememberSensitiveText(input.value!);
+    }
+    if (input.action === "select") {
+      for (const value of input.values!) {
+        owner.rememberSensitiveText(value);
+      }
     }
     owner.beginAction();
     const dispatch = () => {
@@ -199,34 +198,19 @@ export async function act(
         break;
     }
     await owner.settleAction();
+    if (owner.contextState().generation !== generation) {
+      throw new BrowserError(
+        "browser_disconnected",
+        "Browser disconnected during action.",
+      );
+    }
     page = await owner.page();
     const change = owner.consumeActiveChange();
     if (recovered || change) {
       outcome = `${outcome}; ${[recovered, change].filter(Boolean).join(" ")}`;
     }
     const target = actionSummary(input);
-    if (snapshotActions.has(input.action) || recovered || change) {
-      const fresh = await snapshot(page, { mode: "snapshot", depth: 4 }, owner);
-      const contextState = owner.contextState();
-      const notice = owner.consumeStateLossNotice();
-      return {
-        content: [
-          {
-            type: "text",
-            text: `${notice ? `${notice}\n\n` : ""}${outcome}.\n\n${(fresh.content[0] as { text: string }).text}`,
-          },
-        ],
-        details: {
-          ...fresh.details,
-          action: input.action,
-          target,
-          outcome,
-          activeTabId: owner.activeTab()?.id,
-          ...contextState,
-        },
-      };
-    }
-    return compact(page, owner, input.action, target, outcome);
+    return await compact(page, owner, input, target, outcome, generation);
   } catch (error) {
     if (dispatched) {
       await owner.settleAction().catch(() => {});
@@ -301,33 +285,41 @@ async function waitFor(
 async function compact(
   page: Page,
   owner: BrowserOwner,
-  action: string,
+  input: BrowserActInput,
   target: string | undefined,
   outcome: string,
+  generation: number,
 ): Promise<BrowserResult> {
-  const title = owner.redactText(
-    bounded(await page.title().catch(() => ""), LIMITS.titleChars),
+  const identity = await pageDetails(page, owner);
+  const state = owner.contextState();
+  if (identity.generation !== generation || state.generation !== generation) {
+    throw new BrowserError(
+      "browser_disconnected",
+      "Browser disconnected during action.",
+    );
+  }
+  const notice = owner.stateLossNotice();
+  const safeOutcome = bounded(owner.redactText(outcome), 2000);
+  return success(
+    {
+      ok: true,
+      action: input.action,
+      page: identity,
+      ...state,
+      outcome: safeOutcome,
+      ...(notice ? { recovery: notice } : {}),
+      ...(input.action === "open_tab" ? { tabId: identity.tabId } : {}),
+      ...(input.action === "set_viewport"
+        ? { viewport: { width: input.width!, height: input.height! } }
+        : {}),
+    },
+    {
+      action: input.action,
+      target: target ? bounded(owner.redactText(target), 120) : undefined,
+      ...identity,
+      outcome: safeOutcome,
+    },
   );
-  const details = {
-    action,
-    target,
-    activeTabId: owner.activeTab()?.id,
-    url: owner.redactText(sanitizeUrl(page.url())),
-    title,
-    outcome,
-    observe: "Observe again when rendered state matters.",
-    ...owner.contextState(),
-  };
-  const notice = owner.consumeStateLossNotice();
-  return {
-    content: [
-      {
-        type: "text",
-        text: `${notice ? `${notice}\n\n` : ""}${outcome}. Observe again when rendered state matters.`,
-      },
-    ],
-    details,
-  };
 }
 
 async function targetlessPress(

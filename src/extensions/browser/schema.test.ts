@@ -1,125 +1,115 @@
 import { describe, expect, it } from "vitest";
+import { Check } from "typebox/value";
 import { BrowserError } from "./errors.js";
 import { truncate, truncateSnapshot } from "./observe.js";
 import {
-  normalizeAct as normalizeActParameters,
-  normalizeObserve as normalizeObserveParameters,
+  actionParameters,
+  observationParameters,
+  normalizeAct,
+  normalizeObserve,
   normalizeTarget,
 } from "./schema.js";
 
-const normalizeAct = (request: unknown) => normalizeActParameters({ request });
-const normalizeObserve = (request: unknown) =>
-  normalizeObserveParameters({ request });
-
-describe("Browser schemas", () => {
-  it("keeps action fields closed and permits loopback HTTP navigation", () => {
+describe("Browser operation inputs", () => {
+  it("rejects unrelated fields and unsafe URLs before dispatch", () => {
     expect(
-      normalizeAct({ action: "navigate", url: "http://localhost:3000/app" }),
+      normalizeAct("navigate", { url: "http://localhost:3000/app" }),
     ).toMatchObject({ action: "navigate" });
+    expect(() => normalizeAct("navigate", { url: "file:///tmp/x" })).toThrow(
+      BrowserError,
+    );
     expect(() =>
-      normalizeAct({ action: "navigate", url: "file:///tmp/x" }),
+      normalizeAct("history", { action: "back", url: "https://example.test" }),
     ).toThrow(BrowserError);
-    expect(() =>
-      normalizeAct({ action: "back", url: "https://example.test" }),
-    ).toThrow(BrowserError);
+    expect(() => normalizeObserve("tabs", { categories: ["console"] })).toThrow(
+      BrowserError,
+    );
+    expect(() => normalizeObserve("element", {})).toThrow(BrowserError);
+    expect(() => normalizeObserve("snapshot", { depth: 21 })).toThrow(
+      BrowserError,
+    );
+    expect(normalizeObserve("snapshot", { depth: 10 })).toMatchObject({
+      mode: "snapshot",
+    });
   });
-
-  it("validates the closed interaction and wait action surface before dispatch", () => {
+  it("keeps capture and wait choices closed and checked state explicit", () => {
+    expect(normalizeObserve("screenshot", {})).toMatchObject({
+      mode: "screenshot",
+      fullPage: false,
+    });
     expect(
-      normalizeAct({
-        action: "fill",
-        target: { kind: "role", value: "textbox", name: "Message" },
-        value: "secret value",
-      }),
-    ).toMatchObject({ action: "fill" });
-    expect(
-      normalizeAct({
-        action: "wait",
-        condition: { kind: "url", value: "/ready", match: "contains" },
-        timeoutMs: 100,
-      }),
-    ).toMatchObject({ action: "wait" });
+      normalizeObserve("screenshot", { capture: { kind: "page" } }),
+    ).toMatchObject({ fullPage: true });
     expect(() =>
-      normalizeAct({ action: "scroll", deltaX: 0, deltaY: 0 }),
-    ).toThrow(BrowserError);
-    expect(() =>
-      normalizeAct({
-        action: "select",
-        target: { kind: "css", value: "select" },
-        values: [],
+      normalizeObserve("screenshot", {
+        capture: { kind: "page", target: { kind: "css", value: "main" } },
       }),
     ).toThrow(BrowserError);
+    expect(
+      normalizeAct("set_checked", {
+        target: { kind: "role", value: "checkbox" },
+        checked: false,
+      }),
+    ).toMatchObject({ action: "uncheck" });
+    expect(
+      Check(actionParameters.set_checked, {
+        target: { kind: "css", value: "input" },
+      }),
+    ).toBe(false);
     expect(() =>
-      normalizeAct({
-        action: "wait",
+      normalizeAct("wait", {
         condition: { kind: "load_state", state: "networkidle" },
       }),
     ).toThrow(BrowserError);
     expect(() =>
-      normalizeAct({
-        action: "click",
-        target: { kind: "ref", value: "x", exact: false },
-      }),
-    ).toThrow(BrowserError);
-    expect(() =>
-      normalizeAct({
-        action: "click",
-        target: { kind: "ref", value: "e12 >> text=other" },
+      normalizeAct("wait", {
+        condition: { kind: "url", value: "/ready", match: "regex" },
       }),
     ).toThrow(BrowserError);
     expect(
-      normalizeAct({
-        action: "click",
-        target: { kind: "ref", value: "f1e12" },
+      normalizeAct("wait", {
+        condition: { kind: "url", value: "/ready", match: "contains" },
+        timeoutMs: 100,
       }),
-    ).toMatchObject({ target: { value: "f1e12" } });
+    ).toMatchObject({ action: "wait" });
+    expect(() => normalizeAct("scroll", { deltaX: 0, deltaY: 0 })).toThrow(
+      BrowserError,
+    );
+    expect(
+      Check(observationParameters.element, {
+        target: { kind: "css", value: "main" },
+        styleProperties: ["color", "color"],
+      }),
+    ).toBe(false);
   });
-
-  it("preserves Unicode boundaries while marking bounded output", () => {
-    const result = truncate("a😀bc", 3, 600);
-    expect(result.text).toBe("a😀…");
-    expect(result.details).toMatchObject({
-      truncated: true,
-      returnedCharacters: 3,
-    });
-  });
-
-  it("rejects incompatible observation options before a browser is used", () => {
-    for (const fullPage of [true, false]) {
-      expect(() =>
-        normalizeObserve({
-          mode: "screenshot",
-          target: { kind: "css", value: "main" },
-          fullPage,
-        }),
-      ).toThrow(BrowserError);
-    }
-    expect(() =>
-      normalizeObserve({ mode: "tabs", categories: ["console"] }),
-    ).toThrow(BrowserError);
-    expect(() => normalizeObserve({ mode: "element" })).toThrow(BrowserError);
-    expect(normalizeObserve({ mode: "snapshot", depth: 10 })).toMatchObject({
-      mode: "snapshot",
-    });
-  });
-
-  it("rejects blank targets without changing meaningful selector spelling", () => {
+  it("preserves strict kind rules and selector spelling", () => {
     expect(() => normalizeTarget({ kind: "css", value: "   " })).toThrow(
       BrowserError,
     );
+    expect(() =>
+      normalizeTarget({ kind: "css", value: "main", name: "Main" }),
+    ).toThrow(BrowserError);
+    expect(() =>
+      normalizeTarget({ kind: "ref", value: "e12", exact: false }),
+    ).toThrow(BrowserError);
+    expect(() =>
+      normalizeTarget({ kind: "ref", value: "e12 >> text=other" }),
+    ).toThrow(BrowserError);
     expect(
       normalizeTarget({ kind: "css", value: " main > button " }).value,
     ).toBe(" main > button ");
   });
-
-  it("truncates snapshots without splitting a ref token", () => {
+  it("marks bounded Unicode output without splitting snapshot refs", () => {
+    expect(truncate("a😀bc", 3, 600)).toMatchObject({
+      text: "a😀…",
+      details: { truncated: true, returnedCharacters: 3 },
+    });
     const snapshot = truncateSnapshot(
       `button ${"x".repeat(20)} [ref=abcdefgh]`,
       35,
       600,
     );
     expect(snapshot.text).not.toContain("[ref=");
-    expect(snapshot.text.endsWith("…")).toBe(true);
-    expect(snapshot.details).toMatchObject({ truncated: true });
+    expect(snapshot.details.truncated).toBe(true);
   });
 });

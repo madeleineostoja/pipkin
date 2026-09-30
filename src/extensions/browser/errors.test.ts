@@ -59,11 +59,17 @@ describe("Browser error precedence", () => {
       details: {
         category: "browser_disconnected",
         cause: "closed transport",
-        recovery: "Observe again.",
+        recovery: expect.stringContaining("Observe again."),
+        stateLost: true,
+      },
+      isError: true,
+      structuredContent: {
+        ok: false,
+        error: { code: "browser_disconnected" },
         stateLost: true,
       },
     });
-    expect(result.content[0].text).toContain(
+    expect(JSON.stringify(result.content)).toContain(
       "prior tabs, refs, and diagnostics were lost",
     );
   });

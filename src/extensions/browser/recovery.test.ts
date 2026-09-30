@@ -7,14 +7,20 @@ function observationOwner(
   page: () => Promise<unknown>,
   canRetryObservation = true,
 ): BrowserOwner {
+  let active: { id: string; page: unknown } | undefined;
   return {
-    page,
+    page: async () => {
+      const result = await page();
+      active = { id: "tab-1", page: result };
+      return result;
+    },
     contextState: () => ({ generation: 1, stateLost: false }),
     canRetryObservation: () => canRetryObservation,
-    activeTab: () => undefined,
+    activeTab: () => active,
+    redactText: (value: string) => value,
     liveTabs: () => [],
     consumeActiveChange: () => undefined,
-    consumeStateLossNotice: () => undefined,
+    stateLossNotice: () => undefined,
     withContext: (error: unknown) => error,
   } as unknown as BrowserOwner;
 }
@@ -27,11 +33,16 @@ describe("Browser recovery policy", () => {
       if (calls === 1) {
         throw new Error("Target page, context or browser has been closed");
       }
-      return {};
+      return {
+        isClosed: () => false,
+        locator: () => ({ innerText: async () => "recovered" }),
+        title: async () => "",
+        url: () => "about:blank",
+      };
     });
 
-    await expect(observe(owner, { mode: "tabs" })).resolves.toMatchObject({
-      details: { mode: "tabs" },
+    await expect(observe(owner, { mode: "text" })).resolves.toMatchObject({
+      structuredContent: { ok: true, text: "recovered", generation: 1 },
     });
     expect(calls).toBe(2);
   });
@@ -43,7 +54,7 @@ describe("Browser recovery policy", () => {
       throw new Error("Target page, context or browser has been closed");
     }, false);
 
-    await expect(observe(owner, { mode: "tabs" })).rejects.toMatchObject({
+    await expect(observe(owner, { mode: "text" })).rejects.toMatchObject({
       category: "page_gone",
     });
     expect(calls).toBe(1);
@@ -58,6 +69,7 @@ describe("Browser recovery policy", () => {
           throw new Error("browser disconnected");
         },
       }),
+      contextState: () => ({ generation: 0, stateLost: false }),
       consumeActiveChange: () => undefined,
       liveTabs: () => [],
       beginAction: () => {},

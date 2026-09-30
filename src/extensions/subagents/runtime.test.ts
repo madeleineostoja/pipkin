@@ -2108,7 +2108,7 @@ describe("SubagentRuntime", () => {
       "lsp",
       "docs",
       "web_fetch",
-      "browser_observe",
+      "browser_snapshot",
       "inspect_implement_run",
       "record_papercut",
       "Agent",

@@ -40,6 +40,8 @@ import {
   REVIEW_PROMPT,
 } from "../../src/extensions/subagents/agent-profiles.js";
 import { undocumentedSchemaProperties } from "../support/schema-descriptions.js";
+import { Check } from "typebox/value";
+import { success } from "../../src/extensions/browser/results.js";
 import {
   loadPipkinConfig,
   loadProjectPipkinConfig,
@@ -1071,7 +1073,7 @@ describe("Pipkin bundle", () => {
     }
   });
 
-  it("projects registered Browser failures through the tool-result boundary once", async () => {
+  it("returns registered Browser structured failures directly without result reconstruction", async () => {
     const fixture = await loadBundle();
     const browser = fixture.result.extensions.find(
       (extension) =>
@@ -1080,38 +1082,119 @@ describe("Pipkin bundle", () => {
     const { runner, errors } = await createBundleRunner(fixture, [browser]);
     const definition = runner
       .getAllRegisteredTools()
-      .find(({ definition }) => definition.name === "browser_act")!.definition;
-    const input = {
-      request: { action: "navigate", url: "file:///tmp/not-allowed" },
-    };
-    await expect(
-      definition.execute(
-        "browser-failure",
-        input,
-        undefined,
-        undefined,
-        {} as never,
-      ),
-    ).rejects.toMatchObject({ category: "target" });
+      .find(
+        ({ definition }) => definition.name === "browser_navigate",
+      )!.definition;
+    const input = { url: "file:///tmp/not-allowed" };
+    const result = await definition.execute(
+      "browser-failure",
+      input,
+      undefined,
+      undefined,
+      {} as never,
+    );
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        ok: false,
+        error: { code: "target" },
+        generation: expect.any(Number),
+        stateLost: false,
+      },
+    });
+    expect(Check(definition.outputSchema!, result.structuredContent)).toBe(
+      true,
+    );
     const event = {
       type: "tool_result" as const,
       toolCallId: "browser-failure",
-      toolName: "browser_act",
+      toolName: "browser_navigate",
       input,
       content: [{ type: "text" as const, text: "raw failure" }],
       details: undefined,
       isError: true,
     };
-    await expect(runner.emitToolResult(event)).resolves.toMatchObject({
-      content: [
-        { type: "text", text: expect.stringContaining("Browser target") },
-      ],
-      details: { category: "target" },
-      isError: true,
-    });
     await expect(runner.emitToolResult(event)).resolves.toBeUndefined();
     expect(errors).toEqual([]);
     await runner.emit({ type: "session_shutdown", reason: "quit" });
+  });
+
+  it("forwards native screenshot images and inspectable Browser errors through codemode", async () => {
+    const fixture = await loadBundle({ nativeFactories: true });
+    const screenshot = fixture.result.extensions
+      .flatMap((extension) => [...extension.tools.values()])
+      .find(
+        ({ definition }) => definition.name === "browser_screenshot",
+      )!.definition;
+    // Deterministic transport fixture: Browser owner/schema behavior is covered beside its owner.
+    const image = {
+      type: "image" as const,
+      mimeType: "image/png" as const,
+      data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1foAAAAASUVORK5CYII=",
+    };
+    screenshot.execute = async () =>
+      success(
+        {
+          ok: true,
+          page: {
+            tabId: "tab-1",
+            url: "about:blank",
+            title: "",
+            generation: 0,
+          },
+          generation: 0,
+          stateLost: false,
+          image,
+          width: 1,
+          height: 1,
+          bytes: Buffer.from(image.data, "base64").length,
+        },
+        { mode: "screenshot" },
+      );
+    const host = await nativeSession(fixture);
+    try {
+      const results = await host.prompt([
+        {
+          name: "codemode",
+          args: {
+            code: "const result = await tools.browser_screenshot({}); image(result.image);",
+          },
+          id: "shot",
+        },
+        {
+          name: "codemode",
+          args: {
+            code: 'const result = await tools.browser_navigate({url:"file:///tmp/blocked"}); text({ok:result.ok,code:result.error.code});',
+          },
+          id: "browser-error",
+        },
+      ]);
+      expect(
+        results.find((result) => result.toolCallId === "shot"),
+      ).toMatchObject({
+        isError: false,
+        content: expect.arrayContaining([image]),
+        nestedCalls: {
+          calls: [
+            expect.objectContaining({
+              name: "browser_screenshot",
+              status: "ok",
+            }),
+          ],
+        },
+      });
+      const failure = results.find(
+        (result) => result.toolCallId === "browser-error",
+      )!;
+      expect(failure.isError).toBe(false);
+      expect(JSON.stringify(failure.content)).toContain("target");
+      expect(failure.nestedCalls?.calls).toEqual([
+        expect.objectContaining({ name: "browser_navigate", status: "error" }),
+      ]);
+      expect(host.errors).toEqual([]);
+    } finally {
+      await host.dispose();
+    }
   });
 
   it("persists a native error result for a forbidden web target", async () => {

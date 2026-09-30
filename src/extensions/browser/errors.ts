@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import type { BrowserFailure, BrowserResult } from "./results.js";
 
 export const BROWSER_STATE_LOSS_NOTICE =
   "Browser context was recreated; prior tabs, refs, and diagnostics were lost.";
@@ -28,7 +29,7 @@ const playwrightVersion =
   (require("playwright-core/package.json") as { version?: string }).version ??
   "installed";
 
-/** A bounded, stable tool error; Pi converts thrown errors to native failures. */
+/** A bounded, stable owner error, converted directly to native structured failures. */
 export class BrowserError extends Error {
   constructor(
     readonly category: BrowserErrorCategory,
@@ -40,24 +41,41 @@ export class BrowserError extends Error {
   }
 }
 
-export function failureResult(error: BrowserError): {
-  content: [{ type: "text"; text: string }];
-  details: Record<string, unknown>;
-} {
-  const recovery =
-    typeof error.details.recovery === "string"
-      ? ` ${error.details.recovery}`
-      : "";
-  const stateLoss =
-    error.details.stateLost === true ? `${BROWSER_STATE_LOSS_NOTICE}\n\n` : "";
+export function failureResult(
+  error: BrowserError,
+): BrowserResult<BrowserFailure> {
+  const payload: BrowserFailure = {
+    ok: false,
+    error: { code: error.category, message: bounded(error.message) },
+    generation:
+      typeof error.details.generation === "number"
+        ? error.details.generation
+        : 0,
+    stateLost: error.details.stateLost === true,
+    ...(typeof error.details.cause === "string"
+      ? { cause: bounded(error.details.cause) }
+      : {}),
+    ...(typeof error.details.recovery === "string" ||
+    error.details.stateLost === true
+      ? {
+          recovery: bounded(
+            [
+              error.details.stateLost === true ? BROWSER_STATE_LOSS_NOTICE : "",
+              typeof error.details.recovery === "string"
+                ? error.details.recovery
+                : "",
+            ]
+              .filter(Boolean)
+              .join(" "),
+          ),
+        }
+      : {}),
+  };
   return {
-    content: [
-      {
-        type: "text",
-        text: `${stateLoss}Browser ${error.category}: ${error.message}${recovery}`,
-      },
-    ],
-    details: { category: error.category, ...error.details },
+    content: [{ type: "text", text: JSON.stringify(payload) }],
+    structuredContent: payload,
+    isError: true,
+    details: { category: error.category, ...payload },
   };
 }
 
@@ -84,7 +102,7 @@ export function browserError(
   if (/executable doesn't exist|executable.*not found/i.test(message)) {
     return new BrowserError(
       "installation",
-      `Chromium is unavailable for Playwright ${playwrightVersion}. Repair Pipkin's normal npm installation (npm install or npm rebuild) so @playwright/browser-chromium can populate its managed cache.`,
+      `Chromium is unavailable for Playwright ${playwrightVersion}. Repair Pipkin's npm installation: permit @playwright/browser-chromium's standard install lifecycle, then npm rebuild @playwright/browser-chromium to populate its managed cache.`,
     );
   }
   if (/browserType\.launch|failed to launch/i.test(message)) {
@@ -131,10 +149,16 @@ function uncertain(
   const cause = typeof error === "string" ? error : error.message;
   return new BrowserError(
     "uncertain_outcome",
-    "Browser action may have completed before it failed; observe the page before retrying.",
+    "Browser action may have completed before it failed; observe the page, but do not replay the action automatically.",
     { cause: redactCause ? "Sensitive text action failed." : bounded(cause) },
   );
 }
 function bounded(value: string): string {
-  return Array.from(value).slice(0, 1_000).join("");
+  return Array.from(value)
+    .filter((character) => {
+      const code = character.codePointAt(0)!;
+      return (code >= 32 && code !== 127) || "\t\n\r".includes(character);
+    })
+    .slice(0, 1_000)
+    .join("");
 }
