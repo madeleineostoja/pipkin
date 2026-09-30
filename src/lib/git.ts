@@ -37,6 +37,15 @@ export async function gitCommonDir(cwd: string): Promise<string> {
   return stdout.trim();
 }
 
+export async function gitWorktreeRoot(cwd: string): Promise<string> {
+  const { stdout } = await execFileAsync(
+    "git",
+    ["rev-parse", "--show-toplevel"],
+    { cwd },
+  );
+  return realpath(stdout.trim());
+}
+
 export async function gitPrimaryWorktreeRoot(cwd: string): Promise<string> {
   if (!cwd) {
     throw new Error(

@@ -1,5 +1,26 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { ConfigSnapshot, ProjectConfigSnapshot } from "#lib/config";
+import {
+  loadPipkinConfig,
+  loadProjectPipkinConfig,
+  type ConfigSnapshot,
+  type ProjectConfigSnapshot,
+} from "#lib/config";
+import { gitWorktreeRoot } from "#lib/git";
+import { realpath } from "node:fs/promises";
+
+export async function reportConfiguration(
+  ctx: ExtensionContext,
+  agentDir: string,
+): Promise<void> {
+  const snapshots: (ConfigSnapshot | ProjectConfigSnapshot)[] = [
+    loadPipkinConfig(agentDir),
+  ];
+  if (ctx.isProjectTrusted()) {
+    const root = await gitWorktreeRoot(ctx.cwd).catch(() => realpath(ctx.cwd));
+    snapshots.push(loadProjectPipkinConfig(root));
+  }
+  reportRetiredConfiguration(ctx, snapshots);
+}
 
 export function reportSetupWarning(
   ctx: ExtensionContext,

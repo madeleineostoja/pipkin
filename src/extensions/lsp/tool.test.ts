@@ -264,7 +264,7 @@ describe("on-demand LSP operation contracts", () => {
     useClient({
       supports: () => true,
       semantic: async () => [
-        { name: "value", kind: 13, selectionRange: range },
+        { name: "value", kind: 13, range, selectionRange: range },
       ],
       workspaceSymbols: async () => [
         { name: "x".repeat(2001), location: { uri: "custom:source", range } },

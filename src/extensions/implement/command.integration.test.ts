@@ -3,6 +3,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -57,10 +58,15 @@ describe("/implement command Git boundary", () => {
       ],
       { cwd: f.root },
     );
+    const state = f.store.read();
     const raw = JSON.stringify({
-      ...f.store.read(),
+      ...state,
       version: 10,
       phase: "planning",
+      run: {
+        ...state.run,
+        checkout: { ...state.run.checkout, root: realpathSync(f.root) },
+      },
     });
     writeFileSync(f.store.path, raw);
     let handler: ((args: string, ctx: any) => Promise<void>) | undefined;

@@ -276,12 +276,25 @@ export function normalizeSymbolsResult(
           resolvedLocation = normalizeLocation(location);
         }
       }
+      if (defaultUri && item.location === undefined) {
+        range(item.range);
+        range(item.selectionRange);
+      }
       const symbolRange = item.selectionRange ?? item.range;
       const normalizedRange =
         symbolRange === undefined ? undefined : range(symbolRange);
       const nameText = text(item.name);
       textTruncated ||= nameText.truncated;
       const name = nameText.value;
+      // Document symbols are resolved evidence. Only workspace-symbol queries
+      // may return URI-only entries for a later workspaceSymbol/resolve request.
+      if (
+        defaultUri &&
+        (!name ||
+          (item.location !== undefined ? !resolvedLocation : !normalizedRange))
+      ) {
+        throw new Error("Invalid LSP document symbol name or location");
+      }
       if (name) {
         const location =
           resolvedLocation ??

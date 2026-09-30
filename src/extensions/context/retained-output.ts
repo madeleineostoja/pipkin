@@ -191,10 +191,14 @@ export function parseOutputReference(
   );
   return match ? { scopeId: match[1]!, key: match[2]! } : undefined;
 }
-// Raw entries are copied into forks. Hash their canonical persisted value, not
-// a session-local ID or origin pathname, so inherited evidence stays portable.
+// Native forks re-chain parents around labels while preserving source entries.
+// Bind to the source value (including ID/time), not its normalized tree edge.
 export function entryFingerprint(entry: { id: string }): string {
-  const canonical = JSON.stringify(entry, (_key, value: unknown) => {
+  const { parentId: _parentId, ...source } = entry as {
+    id: string;
+    parentId?: unknown;
+  };
+  const canonical = JSON.stringify(source, (_key, value: unknown) => {
     if (value && typeof value === "object" && !Array.isArray(value)) {
       return Object.fromEntries(
         Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),

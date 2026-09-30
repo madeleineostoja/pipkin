@@ -66,7 +66,6 @@ describe("normalized semantic data", () => {
       normalizeSymbolsResult(
         [{ name: "value", location: { uri: "custom:source" } }],
         100,
-        "file:///source.ts",
       ),
     ).toEqual({ items: [{ name: "value" }], truncated: false });
   });

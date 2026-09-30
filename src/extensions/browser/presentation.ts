@@ -2,6 +2,41 @@ import type { BrowserActInput, Target, WaitCondition } from "./schema.js";
 
 const SUMMARY_LIMIT = 120;
 
+/** Rendering sees streaming/invalid arguments too; never validate or echo form values. */
+export function callSummary(operation: string, input: unknown): string {
+  const fields = record(input);
+  if (
+    (operation === "navigate" || operation === "open_tab") &&
+    typeof fields.url === "string"
+  ) {
+    return urlSummary(fields.url);
+  }
+  if (
+    (operation === "switch_tab" || operation === "close_tab") &&
+    typeof fields.tabId === "string"
+  ) {
+    return bounded(fields.tabId);
+  }
+  if (operation === "history" && typeof fields.action === "string") {
+    return bounded(fields.action);
+  }
+  const target = record(fields.target);
+  if (typeof target.kind === "string" && typeof target.value === "string") {
+    return `${bounded(target.kind)}:${bounded(target.value)}`;
+  }
+  const condition = record(fields.condition);
+  if (operation === "wait" && typeof condition.kind === "string") {
+    return `wait:${bounded(condition.kind)}`;
+  }
+  return operation;
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
 export function targetSummary(target: Target): string {
   return `${target.kind}:${bounded(target.value)}`;
 }

@@ -229,7 +229,9 @@ describe("retained output scopes", () => {
       content: "execute",
       timestamp: Date.now(),
     });
+    manager.appendLabelChange(before, "bookmark");
     const anchor = manager.appendMessage(fauxAssistantMessage("source"));
+    const originalParent = manager.getEntry(anchor)!.parentId;
     const ctx = { sessionManager: manager } as never;
     const scope = createOutputScope(f.root, ctx);
     const result = await scope.reserve(ctx, source).commit(data);
@@ -249,7 +251,12 @@ describe("retained output scopes", () => {
     resumed.createBranchedSession(resumed.getLeafId()!);
     const forkCtx = { sessionManager: resumed } as never;
     const forkScope = createOutputScope(f.root, forkCtx);
+    expect(resumed.getEntry(anchor)!.parentId).not.toBe(originalParent);
     expect(forkScope.read(result.outputRef, forkCtx)).toBeDefined();
+    expect(forkScope.list(forkCtx, 0, 1)).toMatchObject({
+      count: 1,
+      outputs: [{ reference: result.outputRef }],
+    });
     const earlier = SessionManager.open(originFile);
     earlier.createBranchedSession(before);
     const earlyCtx = { sessionManager: earlier } as never;

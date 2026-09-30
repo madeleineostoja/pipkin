@@ -38,7 +38,7 @@ Merge this fragment into Pi's `settings.json`; do not overwrite unrelated settin
 
 Keep the native built-in extensions enabled and the native declaration budget. Sandbox `bash` stays directly declared, and user-enabled native tools such as `read`, `edit`, and `write` remain intact. Other public Pipkin tools are deferred: native `tool_search` can discover and activate them for direct calls, and native `codemode` can call them without activation. Private managed completion is directly declared but model-only. Discovery and annotation hints never grant permission.
 
-At least one discovery path must be active. Pipkin currently checks once at the first turn, after the initial native startup wait; a slow MCP connection can outlast that wait, so the check can warn prematurely. Setup warnings use UI notifications when available and stderr in print/JSON sessions, leaving protocol stdout untouched. Pipkin does not rewrite settings, crash, or enable every tool as a fallback. SDK hosts must supply the supported native factories and complete `bindExtensions()`; the CLI supplies them normally.
+At least one discovery path must be active. Pipkin currently checks once at the first turn, after the initial native startup wait; a slow MCP connection can outlast that wait, so the check can warn prematurely. This remains unresolved: Pi 0.99.1 exposes neither native connection state nor a startup-settlement notification to extensions, so turn timing cannot establish actual settlement. Setup warnings use UI notifications when available and stderr in print/JSON sessions, leaving protocol stdout untouched. Pipkin does not rewrite settings, crash, or enable every tool as a fallback. SDK hosts must supply the supported native factories and complete `bindExtensions()`; the CLI supplies them normally.
 
 ## MCP servers
 
@@ -72,7 +72,7 @@ Sandbox reads `sandbox.writable` from both configuration scopes:
 | Global  | `<getAgentDir()>/pipkin/config.json` (normally `~/.pi/agent/pipkin/config.json`)                             | `nickname`, `models`, `implement`, and `sandbox` |
 | Project | `<canonical-workspace>/<CONFIG_DIR_NAME>/pipkin/config.json` (currently `<checkout>/.pi/pipkin/config.json`) | `sandbox`                                        |
 
-Project configuration is anchored to the resolved workspace; Pipkin does not search ancestors. Put personal persistent roots in the global file, not in a project file or `.pi/settings.json`.
+Project configuration is anchored to the resolved workspace: the canonical Git worktree root even when Pi starts in a subdirectory, or the canonical current directory outside Git. This also applies to trusted-project retirement diagnostics. Pipkin does not search other ancestors. Put personal persistent roots in the global file, not in a project file or `.pi/settings.json`.
 
 ```json
 {

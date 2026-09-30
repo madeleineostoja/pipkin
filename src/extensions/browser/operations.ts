@@ -4,7 +4,7 @@ import { act } from "./act.js";
 import { browserError, failureResult } from "./errors.js";
 import { observe } from "./observe.js";
 import type { BrowserOwner } from "./owner.js";
-import { actionSummary, targetSummary, urlSummary } from "./presentation.js";
+import { callSummary } from "./presentation.js";
 import {
   renderBrowserActResult,
   renderBrowserObserveResult,
@@ -105,10 +105,7 @@ export function registerBrowserOperations(
       outputSchema: observationOutputs[mode],
       renderCall: toolCallRenderer({
         name,
-        detail: (input) => {
-          const request = normalizeObserve(mode, input);
-          return request.target ? targetSummary(request.target) : mode;
-        },
+        detail: (input) => callSummary(mode, input),
         pending: "Observing rendered page…",
       }),
       execute: (_id, input, signal) =>
@@ -131,12 +128,7 @@ export function registerBrowserOperations(
       outputSchema: actionOutput,
       renderCall: toolCallRenderer({
         name,
-        detail: (input) => {
-          const request = normalizeAct(action, input);
-          return request.url
-            ? urlSummary(request.url)
-            : (request.tabId ?? actionSummary(request) ?? request.action);
-        },
+        detail: (input) => callSummary(action, input),
         pending: "Updating browser…",
       }),
       execute: (_id, input, signal) =>

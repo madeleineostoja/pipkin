@@ -254,7 +254,10 @@ export function loadCheckoutRun(checkoutRoot: string, runId: string): RunState {
   if (lstatSync(join(path, "run-state.json")).isSymbolicLink()) {
     throw new Error("Run state is symlinked.");
   }
-  const state = loadRunState(join(path, "run-state.json"));
+  const state = loadRunState(join(path, "run-state.json"), false, {
+    runId,
+    checkoutRoot,
+  });
   if (state.run.id !== runId || state.run.checkout.root !== checkoutRoot) {
     throw new Error("Run belongs to a different checkout.");
   }

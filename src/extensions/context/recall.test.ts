@@ -98,6 +98,45 @@ describe("read_output", () => {
     expect(recalled.structuredContent.ok).toBe(true);
   });
 
+  it("resolves the original transcript ref after native fork label re-chaining", async () => {
+    const manager = SessionManager.inMemory("/work");
+    const before = manager.appendMessage({
+      role: "user",
+      content: "before",
+      timestamp: 1,
+    });
+    manager.appendLabelChange(before, "bookmark");
+    const id = manager.appendMessage({
+      role: "toolResult",
+      toolName: "read",
+      toolCallId: "source",
+      content: [{ type: "text", text: "inherited evidence" }],
+      isError: false,
+      timestamp: 2,
+    });
+    const reference = transcriptReference(manager.getEntry(id)!);
+    const parentId = manager.getEntry(id)!.parentId;
+    manager.createBranchedSession(id);
+    expect(manager.getEntry(id)!.parentId).not.toBe(parentId);
+    const f = tools(manager.getBranch());
+    const result = await f.run(undefined, reference);
+    expect(result.structuredContent).toMatchObject({
+      ok: true,
+      content: [{ type: "text", text: "inherited evidence" }],
+    });
+    expect(Value.Check(f.read.outputSchema, result.structuredContent)).toBe(
+      true,
+    );
+    manager.branch(before);
+    expect(
+      (await tools(manager.getBranch()).run(undefined, reference))
+        .structuredContent,
+    ).toMatchObject({
+      ok: false,
+      error: { code: "not_found" },
+    });
+  });
+
   it("does not resolve a colliding entry ID to unrelated transcript evidence", async () => {
     const entry = {
       id: "0123abcd",

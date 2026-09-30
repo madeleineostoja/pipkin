@@ -2,18 +2,14 @@ import {
   getAgentDir,
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
-import { loadPipkinConfig, loadProjectPipkinConfig } from "#lib/config";
-import { reportRetiredConfiguration, reportSetupWarning } from "./setup.ts";
+import { reportConfiguration, reportSetupWarning } from "./setup.ts";
 import { DISCOVERY_SETUP, EXTERNAL_AUTHORITY, STRATEGY } from "./strategy.ts";
 
 export default function (pi: ExtensionAPI): void {
   let checkedDiscovery = false;
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", async (_event, ctx) => {
     checkedDiscovery = false;
-    reportRetiredConfiguration(ctx, [
-      loadPipkinConfig(getAgentDir()),
-      ...(ctx.isProjectTrusted() ? [loadProjectPipkinConfig(ctx.cwd)] : []),
-    ]);
+    await reportConfiguration(ctx, getAgentDir());
   });
   pi.on("before_agent_start", (event) => {
     event.systemPromptOptions.sections.pipkin_strategy = STRATEGY;

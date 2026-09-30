@@ -125,6 +125,103 @@ function fixture() {
 }
 
 describe("Browser structured operations", () => {
+  it("preserves ref boundaries when Unicode snapshot line and character limits combine", async () => {
+    const f = fixture();
+    try {
+      const prefix = "😀\n".repeat(599);
+      const body =
+        prefix +
+        "😀".repeat(16000 - Array.from(prefix).length - "[ref=e1@1]".length);
+      for (const suffix of ["\nignored line", "more characters"]) {
+        f.locator.ariaSnapshot.mockResolvedValueOnce(
+          `${body}[ref=e1]${suffix}`,
+        );
+        const result = await f.call("snapshot", {});
+        const data = result.structuredContent as {
+          snapshot: string;
+          truncated: boolean;
+        };
+        expect(data.truncated).toBe(true);
+        expect(Array.from(data.snapshot).length).toBeLessThanOrEqual(16000);
+        expect(data.snapshot.split("\n").length).toBeLessThanOrEqual(600);
+        expect(data.snapshot).not.toContain("[ref=");
+      }
+    } finally {
+      await f.owner.shutdown();
+    }
+  });
+  it("keeps selected values private without corrupting freshly actionable refs", async () => {
+    const f = fixture();
+    try {
+      await f.call("select", {
+        target: { kind: "css", value: "select" },
+        values: ["1"],
+      });
+      f.locator.ariaSnapshot.mockResolvedValueOnce(
+        '- button "value 1" [ref=e1]',
+      );
+      const result = await f.call("snapshot", {});
+      expect(result.structuredContent).toMatchObject({
+        snapshot: '- button "value [redacted]" [ref=e1@1]',
+      });
+      expect(
+        (await f.call("click", { target: { kind: "ref", value: "e1@1" } }))
+          .structuredContent,
+      ).toMatchObject({ ok: true });
+      expect(f.locator.click).toHaveBeenCalledTimes(1);
+      expect(f.locator.selectOption).toHaveBeenCalledTimes(1);
+    } finally {
+      await f.owner.shutdown();
+    }
+  });
+  it("renders partial and rejected form arguments without throwing or echoing values", async () => {
+    const f = fixture();
+    const theme = {
+      fg: (_tone: string, value: string) => value,
+      bold: (value: string) => value,
+    };
+    try {
+      for (const action of ["fill", "type", "select"] as const) {
+        const tool = f.tools.get(`browser_${action}`)!;
+        for (const input of [
+          { value: "private-value", values: ["private-value"] },
+          {
+            target: { kind: "css", value: "input", exact: true },
+            ...(action === "select"
+              ? { values: ["private-value"] }
+              : { value: "private-value" }),
+          },
+        ]) {
+          const component = tool.renderCall!(
+            input as never,
+            theme as never,
+            {} as never,
+          );
+          expect(component.render(120).join("\n")).not.toContain(
+            "private-value",
+          );
+          expect((await f.call(action, input)).structuredContent).toMatchObject(
+            { ok: false },
+          );
+        }
+        const component = tool.renderCall!(
+          {
+            target: { kind: "ref", value: "e1@1" },
+            value: "private-value",
+            values: ["private-value"],
+          } as never,
+          theme as never,
+          {} as never,
+        );
+        expect(component.render(120).join("\n")).toContain("ref:e1@1");
+      }
+      expect(f.launch).not.toHaveBeenCalled();
+      expect(f.locator.fill).not.toHaveBeenCalled();
+      expect(f.locator.selectOption).not.toHaveBeenCalled();
+    } finally {
+      await f.owner.shutdown();
+    }
+  });
   it("keeps passive inspection empty before launch and navigation compact until explicit snapshot", async () => {
     const f = fixture();
     try {

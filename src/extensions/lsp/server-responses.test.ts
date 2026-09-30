@@ -137,6 +137,27 @@ describe("untrusted language-server responses", () => {
         ],
         ["lsp_document_symbols", { file: "sample.ts" }, "not an array"],
         [
+          "lsp_document_symbols",
+          { file: "sample.ts" },
+          [{ name: "  ", range }],
+        ],
+        ["lsp_document_symbols", { file: "sample.ts" }, [{ name: "value" }]],
+        [
+          "lsp_document_symbols",
+          { file: "sample.ts" },
+          [{ name: "value", selectionRange: range }],
+        ],
+        [
+          "lsp_document_symbols",
+          { file: "sample.ts" },
+          [{ name: "value", range }],
+        ],
+        [
+          "lsp_document_symbols",
+          { file: "sample.ts" },
+          [{ name: "value", location: { uri: "custom:source" } }],
+        ],
+        [
           "lsp_workspace_symbols",
           { query: "value" },
           [{ name: "value", location: {} }],
@@ -169,6 +190,37 @@ describe("untrusted language-server responses", () => {
       expect(
         await call(definitions, cwd, "lsp_hover", positionInput),
       ).toMatchObject({ ok: true, text: "" });
+      for (const response of [
+        [],
+        [{ name: "value", kind: 13, range, selectionRange: range }],
+        [
+          {
+            name: "value",
+            kind: 13,
+            location: { uri: "custom:source", range },
+          },
+        ],
+      ]) {
+        server.respond = (message) => {
+          if (message.id !== undefined) {
+            server.reply(message, response);
+          }
+        };
+        const result = await call(definitions, cwd, "lsp_document_symbols", {
+          file: "sample.ts",
+        });
+        expect(result).toMatchObject({
+          ok: true,
+          symbols: response.length
+            ? [
+                {
+                  name: "value",
+                  location: { line: 1, column: 1, endLine: 1, endColumn: 6 },
+                },
+              ]
+            : [],
+        });
+      }
       server.respond = (message) => {
         if (message.id !== undefined) {
           server.reply(message, [

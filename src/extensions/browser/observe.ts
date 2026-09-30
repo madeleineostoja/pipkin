@@ -136,9 +136,16 @@ async function snapshot(
         )
       : error;
   }
+  // Ref tokens are protocol identity, not page text or submitted form values.
   const emitted = owner.registerSnapshot(
     page,
-    bounded(owner.redactText(value), Number.MAX_SAFE_INTEGER),
+    bounded(
+      value
+        .split(/(\[ref=[^\]]+\])/gu)
+        .map((part, index) => (index % 2 ? part : owner.redactText(part)))
+        .join(""),
+      Number.MAX_SAFE_INTEGER,
+    ),
   );
   const clipped = truncateSnapshot(
     emitted,
@@ -490,10 +497,8 @@ function truncateValue(
 ) {
   const sourceLines = value.split("\n");
   const points = Array.from(sourceLines.slice(0, lines).join("\n"));
-  let end = Math.min(
-    points.length,
-    points.length > chars ? Math.max(0, chars - 1) : chars,
-  );
+  const omitted = sourceLines.length > lines || points.length > chars;
+  let end = Math.min(points.length, omitted ? Math.max(0, chars - 1) : chars);
   if (protectRefs && end < points.length) {
     const before = points.slice(0, end);
     const tokenStart = before.lastIndexOf("[");
@@ -507,11 +512,7 @@ function truncateValue(
   }
   const clipped = points.slice(0, end).join("");
   const truncated = clipped !== value;
-  const text = truncated
-    ? `${Array.from(clipped)
-        .slice(0, Math.max(0, chars - 1))
-        .join("")}…`
-    : clipped;
+  const text = truncated ? `${clipped}…` : clipped;
   return {
     text,
     details: {

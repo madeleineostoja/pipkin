@@ -1215,25 +1215,25 @@ export function executionPlanPath(paths: CheckoutPaths, runId: string): string {
   return join(paths.runs, runId, "execution-plan.json");
 }
 
-export function loadRunState(path: string, continuation = false): RunState {
+export function loadRunState(
+  path: string,
+  continuation = false,
+  expectedOwner?: { runId: string; checkoutRoot: string },
+): RunState {
   if (!existsSync(path)) {
     throw new StateError("Run state is missing.", path);
   }
   try {
     let value = JSON.parse(readFileSync(path, "utf-8"));
-    if (versionOf(value) === 10) {
-      if (
-        !["completed", "failed", "incomplete"].includes(value.phase) ||
-        Object.keys(value.processLeases ?? {}).length > 0
-      ) {
-        throw new UnsupportedActiveRunVersionError(path);
-      }
-      if (continuation) {
-        throw new StateError(
-          "Terminal v10 state is inspection-only; use the old runtime for cleanup. Finish or stop active runs before upgrading.",
-          path,
-        );
-      }
+    if (
+      expectedOwner &&
+      (value?.run?.id !== expectedOwner.runId ||
+        value?.run?.checkout?.root !== expectedOwner.checkoutRoot)
+    ) {
+      throw new StateError("Run is unavailable in the current checkout.", path);
+    }
+    const legacy = versionOf(value) === 10;
+    if (legacy) {
       value = structuredClone(value);
       value.version = 11;
       for (const candidate of Object.values(value.candidates ?? {}) as Array<{
@@ -1253,6 +1253,26 @@ export function loadRunState(path: string, continuation = false): RunState {
             review.latestCorrection.verification,
           );
         }
+      }
+    }
+    if (legacy) {
+      // Classification needs the persisted shape, not new-runtime scheduler
+      // invariants for an active run that we will never continue.
+      const parsed = RunStateSchema.safeParse(value);
+      if (!parsed.success) {
+        throw new StateError("Historical v10 run state is invalid.", path);
+      }
+      if (
+        !["completed", "failed", "incomplete"].includes(parsed.data.phase) ||
+        Object.keys(parsed.data.processLeases).length > 0
+      ) {
+        throw new UnsupportedActiveRunVersionError(path);
+      }
+      if (continuation) {
+        throw new StateError(
+          "Terminal v10 state is inspection-only; use the old runtime for cleanup. Finish or stop active runs before upgrading.",
+          path,
+        );
       }
     }
     return validateRunState(value, path);
