@@ -590,7 +590,9 @@ function addSatisfiedDelivery(state: RunState): void {
     treeSha: "candidate-tree",
     implementationEvidence: {
       summary: "Implemented first stream.",
-      verification: ["npm run check"],
+      verification: [
+        { kind: "inspection", label: "Check", evidence: "npm run check" },
+      ],
     },
   };
   state.satisfaction.receipts["satisfaction:first"] = {

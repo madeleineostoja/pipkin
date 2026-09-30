@@ -7,6 +7,7 @@ import {
   checkoutPaths,
   loadRunState,
   RunStore,
+  UnsupportedActiveRunVersionError,
   type CheckoutLeaseCapability,
   type RunState,
 } from "./store.js";
@@ -20,29 +21,42 @@ import {
 
 export type RunListing =
   | { kind: "run"; runId: string; state: RunState }
-  | { kind: "historical"; runId: string };
+  | { kind: "historical"; runId: string }
+  | { kind: "unsupported_active"; runId: string; diagnostic: string };
 
 export function listCheckoutRuns(checkoutRoot: string): RunListing[] {
   const runs = checkoutPaths(checkoutRoot).runs;
+  return existsSync(runs)
+    ? readdirSync(runs).map((runId) => checkoutRunListing(checkoutRoot, runId))
+    : [];
+}
+
+export function enumerateCheckoutRuns(checkoutRoot: string): {
+  runs: RunListing[];
+  truncated: boolean;
+} {
+  const runs = checkoutPaths(checkoutRoot).runs;
   if (!existsSync(runs)) {
-    return [];
+    return { runs: [], truncated: false };
   }
-  return readdirSync(runs).map((runId) => {
-    try {
-      assertRunId(runId);
-      const path = join(runs, runId);
-      if (lstatSync(path).isSymbolicLink()) {
-        throw new Error("run entry is symlinked");
-      }
-      const state = loadRunState(join(path, "run-state.json"));
-      if (state.run.checkout.root !== checkoutRoot) {
-        throw new Error("run belongs to another checkout");
-      }
-      return { kind: "run" as const, runId, state };
-    } catch {
-      return { kind: "historical" as const, runId };
+  const entries = readdirSync(runs).sort();
+  return {
+    runs: entries
+      .slice(0, 1000)
+      .map((runId) => checkoutRunListing(checkoutRoot, runId)),
+    truncated: entries.length > 1000,
+  };
+}
+
+function checkoutRunListing(checkoutRoot: string, runId: string): RunListing {
+  try {
+    return { kind: "run", runId, state: loadCheckoutRun(checkoutRoot, runId) };
+  } catch (error) {
+    if (error instanceof UnsupportedActiveRunVersionError) {
+      return { kind: "unsupported_active", runId, diagnostic: error.message };
     }
-  });
+    return { kind: "historical", runId };
+  }
 }
 
 export function formatStatus(state: RunState): string {
@@ -220,10 +234,7 @@ export function inspectRun(checkoutRoot: string, runId: string): string {
   return inspectRunSnapshot(checkoutRoot, runId).text;
 }
 
-export function inspectRunSnapshot(
-  checkoutRoot: string,
-  runId: string,
-): { text: string; state: RunState } {
+export function loadCheckoutRun(checkoutRoot: string, runId: string): RunState {
   assertRunId(runId);
   const paths = checkoutPaths(checkoutRoot);
   const path = join(paths.runs, runId);
@@ -240,10 +251,23 @@ export function inspectRunSnapshot(
   if (!entry.isDirectory()) {
     throw new Error("Run is unavailable or historical; inspect it manually.");
   }
+  if (lstatSync(join(path, "run-state.json")).isSymbolicLink()) {
+    throw new Error("Run state is symlinked.");
+  }
   const state = loadRunState(join(path, "run-state.json"));
-  if (state.run.checkout.root !== checkoutRoot) {
+  if (state.run.id !== runId || state.run.checkout.root !== checkoutRoot) {
     throw new Error("Run belongs to a different checkout.");
   }
+  return state;
+}
+
+export function inspectRunSnapshot(
+  checkoutRoot: string,
+  runId: string,
+): { text: string; state: RunState } {
+  const state = loadCheckoutRun(checkoutRoot, runId);
+  const paths = checkoutPaths(checkoutRoot);
+  const path = join(paths.runs, runId);
   const executionPlan = join(path, "execution-plan.json");
   const sourceCorpus = sourceCorpusPath(path);
   const plannerAttempt = plannerAttemptPath(path);
@@ -452,7 +476,12 @@ export async function terminalizeInterruptedRun(
 }
 
 export function assertNoFailedRuns(checkoutRoot: string): void {
-  const retained = listCheckoutRuns(checkoutRoot).find(
+  const runs = listCheckoutRuns(checkoutRoot);
+  const unsupported = runs.find((run) => run.kind === "unsupported_active");
+  if (unsupported?.kind === "unsupported_active") {
+    throw new Error(`Run ${unsupported.runId}: ${unsupported.diagnostic}`);
+  }
+  const retained = runs.find(
     (run) => run.kind === "run" && run.state.phase !== "completed",
   );
   if (retained) {

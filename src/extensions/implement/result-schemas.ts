@@ -1,4 +1,5 @@
 import { Type, type Static } from "typebox";
+import type { PersistedCompletion } from "./verification.js";
 
 const text = (description: string) =>
   Type.String({ minLength: 1, description });
@@ -130,11 +131,80 @@ const summary = (
 const evidence = (
   description = "Concrete repository-state evidence supporting the reported outcome.",
 ) => text(description);
+export const workerVerificationSchema = Type.Union([
+  Type.Object(
+    {
+      kind: Type.Literal("execution", {
+        description:
+          "Execution captured by Bash or Processes in this worker attempt.",
+      }),
+      label: Type.String({
+        minLength: 1,
+        maxLength: 4000,
+        description: "Concise name of the check.",
+      }),
+      outputRef: Type.String({
+        minLength: 1,
+        maxLength: 160,
+        description:
+          "Context output reference from a terminal execution in this assigned worktree and attempt; not a file path.",
+      }),
+      claimedOutcome: Type.Union(
+        [Type.Literal("passed"), Type.Literal("failed")],
+        {
+          description:
+            "Claim matched by the host against captured terminal status; passing requires completed zero exit.",
+        },
+      ),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      kind: Type.Literal("inspection", {
+        description:
+          "Worker-reported direct inspection, not captured execution.",
+      }),
+      label: Type.String({
+        minLength: 1,
+        maxLength: 4000,
+        description: "Concise name of the inspection.",
+      }),
+      evidence: Type.String({
+        minLength: 1,
+        maxLength: 4000,
+        description:
+          "Concrete observed evidence and outcome of the inspection.",
+      }),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      kind: Type.Literal("not_run", {
+        description: "A check that was not performed.",
+      }),
+      label: Type.String({
+        minLength: 1,
+        maxLength: 4000,
+        description: "Concise name of the unperformed check.",
+      }),
+      reason: Type.String({
+        minLength: 1,
+        maxLength: 4000,
+        description: "Concrete reason the check was not run.",
+      }),
+    },
+    { additionalProperties: false },
+  ),
+]);
 const verification = () =>
-  textList(
-    "Checks, analysis, or direct inspection performed and their outcomes.",
-    "One concise verification statement naming what was checked and the outcome.",
-  );
+  Type.Array(workerVerificationSchema, {
+    minItems: 1,
+    maxItems: 100,
+    description:
+      "Selected execution references, reported inspections, or checks not run. Legacy prose is not accepted. Host validates and saves execution evidence before delivery.",
+  });
 const uncertainty = () =>
   Type.Optional(
     text("Material remaining uncertainty; omit when none remains."),
@@ -369,8 +439,8 @@ export const revisionCompletionSchema = Type.Union([
   ),
 ]);
 
-export type WorkstreamImplementerCompletion = Static<
-  typeof workstreamImplementerResultSchema
+export type WorkstreamImplementerCompletion = PersistedCompletion<
+  Static<typeof workstreamImplementerResultSchema>
 >;
 export type DirectReviewFinding = Static<typeof directReviewFindingSchema>;
 export type InitialWorkstreamReviewCompletion = Static<
@@ -394,8 +464,12 @@ export type InitialAnchoredOverallReviewCompletion = Static<
 export type AnchoredOverallReviewCompletion = Static<
   typeof anchoredOverallReviewSchema
 >;
-export type OverallReworkCompletion = Static<typeof overallReworkSchema>;
-export type ReconciliationCompletion = Static<
-  typeof reconciliationCompletionSchema
+export type OverallReworkCompletion = PersistedCompletion<
+  Static<typeof overallReworkSchema>
 >;
-export type RevisionCompletion = Static<typeof revisionCompletionSchema>;
+export type ReconciliationCompletion = PersistedCompletion<
+  Static<typeof reconciliationCompletionSchema>
+>;
+export type RevisionCompletion = PersistedCompletion<
+  Static<typeof revisionCompletionSchema>
+>;

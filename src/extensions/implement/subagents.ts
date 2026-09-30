@@ -6,6 +6,13 @@ import { getSubagentRuntime } from "#subagents/runtime";
 import type { ImplementWorkerRole, RuntimeSnapshot } from "#subagents/runtime";
 import type { ModelPreset, ThinkingLevel } from "#lib/config";
 import type { Static, TSchema } from "typebox";
+import { join } from "node:path";
+import { mkdirSync } from "node:fs";
+import {
+  promoteVerification,
+  type PersistedCompletion,
+} from "./verification.js";
+import { writeAtomicJson } from "./atomic-json.js";
 
 export type SubagentHandle<TResult = unknown> = string & {
   readonly __subagentResult?: TResult;
@@ -14,7 +21,7 @@ export type SubagentHandle<TResult = unknown> = string & {
 export type SubagentClient = {
   spawn<TSchemaValue extends TSchema = TSchema>(
     args: SpawnArgs<TSchemaValue>,
-  ): Promise<SubagentHandle<Static<TSchemaValue>>>;
+  ): Promise<SubagentHandle<PersistedCompletion<Static<TSchemaValue>>>>;
   stop(id: string): Promise<void>;
   waitFor<TResult = any>(
     id: SubagentHandle<TResult>,
@@ -75,23 +82,25 @@ export function resolveImplementRoles(
 }
 
 export function implementWorkerExcludedTools(): string[] {
-  return ["inspect_implement_run"];
+  return ["implement_list_runs", "implement_inspect"];
 }
 
 export class RuntimeSubagentClient implements SubagentClient {
   private readonly runtime;
+  private readonly finalized = new Map<string, unknown>();
 
   constructor(
     private readonly pi: ExtensionAPI,
     private readonly ctx: ExtensionCommandContext,
     private readonly runId: string,
+    private readonly runDirectory: string,
   ) {
     this.runtime = getSubagentRuntime(pi);
   }
 
   async spawn<TSchemaValue extends TSchema = TSchema>(
     args: SpawnArgs<TSchemaValue>,
-  ): Promise<SubagentHandle<Static<TSchemaValue>>> {
+  ): Promise<SubagentHandle<PersistedCompletion<Static<TSchemaValue>>>> {
     const cwd = args.cwd ?? this.ctx.cwd;
     const role = args.role ?? "implementer";
     const snapshot = await this.runtime.runManagedAgent({
@@ -110,6 +119,44 @@ export class RuntimeSubagentClient implements SubagentClient {
       mode: "background",
       ctx: this.ctx,
       completion: args.completion as never,
+      finalizeOutput: async (snapshot, lease) => {
+        const payload = snapshot.result as
+          | { verification?: unknown }
+          | undefined;
+        // No completion selection means no incidental captures are archived.
+        if (!payload?.verification) {
+          return;
+        }
+        try {
+          const verification = await promoteVerification({
+            verification: payload.verification,
+            lease,
+            cwd,
+            runDirectory: this.runDirectory,
+            workerId: snapshot.id,
+          });
+          this.finalized.set(snapshot.id, { ...payload, verification });
+        } catch (error) {
+          mkdirSync(join(this.runDirectory, "artifacts", "verification"), {
+            recursive: true,
+          });
+          writeAtomicJson(
+            join(
+              this.runDirectory,
+              "artifacts",
+              "verification",
+              `unavailable-${snapshot.id}.json`,
+            ),
+            {
+              workerId: snapshot.id,
+              evidenceStatus: "unavailable",
+              reason:
+                "Selected verification could not be validated or promoted.",
+            },
+          );
+          throw error;
+        }
+      },
       ...((args.sandboxWriteMode ??
         (args.readOnly || role === "reviewer" || role === "planner"
           ? "repository-read-only"
@@ -125,7 +172,9 @@ export class RuntimeSubagentClient implements SubagentClient {
             sandboxWriteMode: "workspace-write" as const,
           }),
     });
-    return snapshot.id as SubagentHandle<Static<TSchemaValue>>;
+    return snapshot.id as SubagentHandle<
+      PersistedCompletion<Static<TSchemaValue>>
+    >;
   }
 
   async stop(id: string): Promise<void> {
@@ -163,10 +212,25 @@ export class RuntimeSubagentClient implements SubagentClient {
       const snapshot = (await this.runtime.wait(
         id,
       )) as RuntimeSnapshot<TResult>;
+      const finalized = this.finalized.get(id);
+      const raw = snapshot.result as
+        | { verification?: Array<{ kind?: string }> }
+        | undefined;
+      if (
+        snapshot.status === "completed" &&
+        raw?.verification?.some((item) => item.kind === "execution") &&
+        !finalized
+      ) {
+        return {
+          status: "failed",
+          error:
+            "Execution verification was not finalized into durable run artifacts.",
+        };
+      }
       if (snapshot.status === "completed") {
         return {
           status: "completed",
-          result: snapshot.result as TResult,
+          result: structuredClone(finalized ?? snapshot.result) as TResult,
         };
       }
       return {

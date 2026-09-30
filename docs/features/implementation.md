@@ -56,7 +56,7 @@ Missing, unreadable, empty, escaping, or invalid local Markdown targets block th
 
 1. **Plan once.** A high-reasoning planner creates one immutable schedule covering every unchecked task exactly once. It identifies dependencies and groups work at coherent implementation and review boundaries.
 2. **Work in isolation.** Eligible workstreams receive owned disposable Git worktrees. Independent streams may run concurrently; dependent streams start from bases containing completed dependencies.
-3. **Retain evidence.** Implement records task coverage, candidate provenance, and concise verification statements. Already-satisfied tasks receive current-repository review instead of manufactured changes.
+3. **Retain evidence.** Implement records task coverage, candidate provenance, typed verification, and selected durable execution captures. Already-satisfied tasks receive current-repository review instead of manufactured changes.
 4. **Review and repair.** Pipkin derives candidate identity from the owned worktree rather than trusting worker-reported Git state. Initial review assesses each ordered contract and the cumulative candidate. Every material finding receives one bounded correction opportunity followed by anchored reassessment.
 5. **Publish serially.** One integration lane replays reviewed contributions onto the current target, runs ordinary Git hooks, verifies the prepared commit, and advances the branch with compare-and-swap protection. Conflicting or semantically changed replay goes through bounded reconciliation and fresh review without giving the worker target-write authority.
 6. **Review the whole result.** After all source work is delivered, a final reviewer assesses the complete plan. One bounded whole-plan repair and final review may follow. Completed task checkboxes are projected only from durable scheduler state.
@@ -92,7 +92,16 @@ A crash-retained active run is terminalized as interrupted under the checkout le
 
 The menu also offers **Clean completed runs (N)** for retained completed history. It does not include failed, incomplete, or historical entries. The footer shows a short warning-yellow `cleaning` status while cleanup or automatic post-run resource release is pending.
 
-`inspect_implement_run` is the read-only model-facing inspection tool. Without `runId`, it lists retained runs in the current checkout; with `runId`, it summarizes that run and reports authoritative artifact paths for ordinary reads. Its collapsed row identifies the retained run and point-in-time phase; expanding it shows the complete bounded inspection artifact. Managed Implement workers cannot call it.
+## Model-facing inspection
+
+| Tool                                    | Purpose                                                                                              |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `implement_list_runs({offset?,limit?})` | Discover authorized current-checkout runs, newest first with stable ID ties                          |
+| `implement_inspect({runId})`            | Inspect one known run's bounded phase, workstreams, outcomes, verification, and artifact descriptors |
+
+Both tools are deferred in namespace `implement` and read-only. Pagination defaults to offset `0` and limit `25` (maximum `25`); authorization precedes pagination. Owner enumeration visits at most `1000` directory entries in stable name order and reports `truncated` when incomplete. `nextOffset` appears only when more authorized runs are known. Historical malformed entries and unrelated checkout IDs are not listed. Missing/out-of-checkout targets both return `not_found`; invalid inputs return `invalid_arguments`, and unavailable checkout discovery returns `unavailable`.
+
+Inspection caps each workstream/outcome/verification/artifact inventory at `25`, with bounded text and an overall payload bound. It reports truncation rather than returning mutable internal state or private prompts. Discover artifact descriptors before reading retained files. Execution paths are relative to the run directory; other descriptors identify retained state/corpus/evidence locations. The collapsed row shows a concise run/phase or list summary; expansion shows the same useful typed payload delivered to direct and codemode callers. Managed Implement workers cannot call either operation.
 
 The shared Activity view shows only active Implement work: the generated session title, compact run phase/progress/duration, and active or settlement-waiting workstream lanes. The run's `x/y` reports published tasks across the plan; each source workstream separately shows its assigned task total alongside any duration. Completed lanes disappear immediately; failed lanes remain muted as waiting context only while the parent run is active, and terminal run settlement clears the projection. Workstream duration is shown only when a durable operation timestamp exists. `/agents` reports the active Implement agent count as non-selectable context but leaves run inspection and control with Implement.
 
@@ -130,7 +139,26 @@ Each checkout owns its Implement state:
 
 One OS-backed lease protects each checkout's active run and destructive cleanup. Linked checkouts own independent state and may run separately; a second run in the same checkout is rejected. Retained-run cleanup is rejected immediately when another run in the current session owns the checkout. If an external owner blocks bulk cleanup, Implement reports its recorded run and process identity when available, then stops the batch after the first lease timeout instead of repeating that timeout for every remaining run.
 
-State is versioned. Before upgrading across an incompatible lifecycle version, settle and clean retained runs with the previous runtime. Newer runtimes reject legacy run state rather than guessing how to resume it.
+New writes use RunState **v11**. Terminal v10 runs are inspected by normalizing historical free-text verification to reader-only `legacy` records in memory. Inspection never rewrites old files or invents execution references. Active v10 continuation and recovery are unsupported: finish or stop those runs with the old runtime before upgrading. Discovery preserves this diagnostic, human inspection/cleanup surfaces it, and an active v10 run blocks starting another run in the checkout. Historical v10 state cannot be opened for mutation. Older incompatible lifecycle versions retain their existing rejection behavior.
+
+### Verification and execution artifacts
+
+Implementation, revision, reconciliation, and whole-plan repair completions require at least one verification record; reviewers retain their separate finding contracts, without a command requirement.
+
+| Kind         | Meaning                                                                                                                      |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `execution`  | Worker selects `label`, `outputRef`, and `claimedOutcome: passed\|failed`; host validates and derives the durable descriptor |
+| `inspection` | `label` and concrete `evidence`, explicitly worker-reported rather than host-attested execution                              |
+| `not_run`    | `label` and concrete `reason` a check was not performed                                                                      |
+| `legacy`     | Reader-only historical prose, never accepted from new workers                                                                |
+
+Passing claims require completed zero-exit captures from the expected attempt and assigned worktree. Failed claims must match captured failures. Missing/corrupt references, sibling-worker output, wrong worktrees, running snapshots, intentional stops, and false outcome claims reject completion; they are never downgraded to prose.
+
+Implement uses Context's host-held granted export, not worker-chosen filesystem locations. After child producer shutdown flushes and before disposal/scope release, selected validated metadata and bounded output are atomically saved under `runs/<run-id>/artifacts/verification/<hash>.json` in the canonical checkout-owned run directory, even when the parent session starts in a checkout subdirectory. Unavailable-evidence markers use that same run directory. Descriptors retain outcome, execution timing, completeness/truncation, command-preview uncertainty, host-assigned attempt and worker identity, and Git-observed candidate SHA at promotion. They contain artifact-relative references, not transient Context references or child paths. Parent public output lists do not expose private worker captures.
+
+The candidate observed at promotion is provenance, not a claim that every later change was verified: `candidateCoverage: not_attested` explicitly leaves subsequent changes unexcluded. Review packets and handoffs retain typed distinctions and uncertainty. This does not change candidate authority, review acceptance, publication rules, or add a final-candidate test gate.
+
+Finalization also runs on failure, stop, and cancellation, saving only already selected evidence, never all incidental captures. Validation or promotion failure rejects required completion/reliance and records unavailable evidence through the existing failure/candidate artifacts where storage remains available; children and leases are still disposed/released. Source-plan `material-store.ts` is not execution storage.
 
 ## Models and concurrency
 

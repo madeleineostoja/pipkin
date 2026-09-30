@@ -148,7 +148,7 @@ export function registerImplementCommand(
       if (parsed.name === "status") {
         if (parsed.runId) {
           const run = findRun(checkoutRoot, parsed.runId, active);
-          if (run.kind === "historical") {
+          if (run.kind !== "run") {
             ctx.ui.notify(formatRunListing(run), "warning");
           } else if (ctx.mode === "tui" && ctx.hasUI) {
             await showImplementRunSurface(
@@ -189,7 +189,7 @@ export function registerImplementCommand(
           throw new Error("Inspect requires a run ID.");
         }
         const run = findRun(checkoutRoot, parsed.runId, active);
-        if (run.kind === "historical") {
+        if (run.kind !== "run") {
           ctx.ui.notify(formatRunListing(run), "warning");
         } else if (ctx.mode === "tui" && ctx.hasUI) {
           await showImplementRunSurface(
@@ -656,9 +656,11 @@ async function showImplementMenu(
     }
     const index = labels.indexOf(selected);
     const run = runs[index];
-    if (!run || run.kind === "historical") {
+    if (!run || run.kind !== "run") {
       ctx.ui.notify(
-        "Historical artifacts require manual inspection or removal.",
+        run?.kind === "unsupported_active"
+          ? run.diagnostic
+          : "Historical artifacts require manual inspection or removal.",
         "warning",
       );
       continue;
@@ -756,9 +758,9 @@ function cleanCompletedRunsLabel(runs: RunListing[]): string | undefined {
 }
 
 function runMenuLabel(run: RunListing): string {
-  return run.kind === "historical"
-    ? `${run.runId} · historical`
-    : `${run.runId} · ${run.state.phase.replaceAll("_", " ")}`;
+  return run.kind === "run"
+    ? `${run.runId} · ${run.state.phase.replaceAll("_", " ")}`
+    : `${run.runId} · ${run.kind === "historical" ? "historical" : "unsupported active v10"}`;
 }
 
 function findRun(
@@ -784,8 +786,12 @@ function runState(
   active: ActiveRun | undefined,
 ): RunState {
   const run = findRun(checkoutRoot, runId, active);
-  if (run.kind === "historical") {
-    throw new Error("Historical artifacts require manual cleanup.");
+  if (run.kind !== "run") {
+    throw new Error(
+      run.kind === "unsupported_active"
+        ? run.diagnostic
+        : "Historical artifacts require manual cleanup.",
+    );
   }
   return run.state;
 }
@@ -797,7 +803,9 @@ function terminalRunState(state: RunState): boolean {
 function formatRunListing(run: RunListing): string {
   return run.kind === "run"
     ? formatStatus(run.state)
-    : `Historical artifact: ${run.runId} (manual inspection/removal only)`;
+    : run.kind === "unsupported_active"
+      ? `Run ${run.runId}: ${run.diagnostic}`
+      : `Historical artifact: ${run.runId} (manual inspection/removal only)`;
 }
 
 async function resolveCheckoutRoot(cwd: string): Promise<string> {

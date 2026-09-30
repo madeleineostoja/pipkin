@@ -406,7 +406,9 @@ function candidate(): RunState["candidates"][string] {
     changedPaths: ["src/endpoint.ts"],
     implementationEvidence: {
       summary: "implemented",
-      verification: ["tests pass"],
+      verification: [
+        { kind: "inspection", label: "Check", evidence: "tests pass" },
+      ],
     },
   };
 }

@@ -128,7 +128,7 @@ These tools are called by the agent rather than typed as slash commands. They us
 | `agent_wait`                                                            | Join through cleanup without stopping work on waiter timeout/cancellation           |
 | `agent_steer`                                                           | Report actual queued or handled guidance delivery                                   |
 | `agent_stop`                                                            | Stop owned public work and join cleanup                                             |
-| `inspect_implement_run`                                                 | List or inspect durable Implement runs and artifact paths                           |
+| `implement_list_runs`, `implement_inspect`                              | Discover checkout-owned runs and inspect typed evidence and artifact paths          |
 | `web_fetch`                                                             | Retrieve bounded readable content from one public URL                               |
 | [Browser observations](docs/features/browser.md#observation-operations) | Inspect isolated rendered pages and forward native images                           |
 | [Browser actions](docs/features/browser.md#action-operations)           | Strict interactions with compact page outcomes, without implicit snapshots          |

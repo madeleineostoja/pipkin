@@ -454,7 +454,13 @@ describe("terminal handoff rendering", () => {
       ...candidate("candidate-first"),
       implementationEvidence: {
         summary: "implemented",
-        verification: [`npm run check in ${candidatePath}`, "passed"],
+        verification: [
+          {
+            kind: "inspection",
+            label: "Check",
+            evidence: `npm run check in ${candidatePath}: passed`,
+          },
+        ],
       },
     };
     state.publication.preparations["preparation-first"] = {
@@ -575,7 +581,9 @@ describe("terminal handoff rendering", () => {
         treeSha: `tree-${index}`,
         implementationEvidence: {
           summary: long,
-          verification: [long],
+          verification: [
+            { kind: "inspection", label: "Check", evidence: long },
+          ],
           uncertainty: long,
         },
       };
@@ -665,7 +673,9 @@ function addPublishedSource(
     treeSha: `tree-${publishedCommitSha}`,
     implementationEvidence: {
       summary: "Implemented the accepted workstream.",
-      verification: ["npm run check"],
+      verification: [
+        { kind: "inspection", label: "Check", evidence: "npm run check" },
+      ],
     },
   };
   state.publication.receipts[`receipt:${candidateId}`] = {

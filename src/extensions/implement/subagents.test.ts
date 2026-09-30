@@ -29,7 +29,10 @@ import {
 
 describe("managed Pipkin Implement worker tools", () => {
   it("keeps Implement's worker-specific inspection exclusion separate from generic policy", () => {
-    expect(implementWorkerExcludedTools()).toEqual(["inspect_implement_run"]);
+    expect(implementWorkerExcludedTools()).toEqual([
+      "implement_list_runs",
+      "implement_inspect",
+    ]);
   });
 
   it("gives mutable and repository-read-only workers broad inherited tools with Implement's inspection exclusion", async () => {
@@ -40,7 +43,8 @@ describe("managed Pipkin Implement worker tools", () => {
       "docs",
       "web_fetch",
       "browser_snapshot",
-      "inspect_implement_run",
+      "implement_list_runs",
+      "implement_inspect",
       "agent_start",
       "agent_wait",
       "agent_steer",
@@ -79,6 +83,7 @@ describe("managed Pipkin Implement worker tools", () => {
         modelRegistry: { find: vi.fn() },
       } as never,
       "run",
+      "/worktree/.pi/pipkin/implement/runs/run",
     );
 
     const mutable = await client.spawn({
@@ -134,7 +139,8 @@ describe("managed Pipkin Implement worker tools", () => {
     expect(selected(1)).not.toContain("write");
     for (const tools of [selected(0), selected(1)]) {
       expect(tools).not.toContain("agent_start");
-      expect(tools).not.toContain("inspect_implement_run");
+      expect(tools).not.toContain("implement_list_runs");
+      expect(tools).not.toContain("implement_inspect");
     }
   });
 

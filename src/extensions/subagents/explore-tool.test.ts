@@ -376,7 +376,8 @@ describe("runtime-injected explore tool", () => {
         getActiveTools: () => [
           "read",
           "docs",
-          "inspect_implement_run",
+          "implement_list_runs",
+          "implement_inspect",
           "agent_start",
           "agent_wait",
           "agent_steer",
@@ -402,7 +403,7 @@ describe("runtime-injected explore tool", () => {
       cwd: "/task-worktree",
       ctx: makeCtx() as never,
       mode: "background",
-      excludeTools: ["inspect_implement_run"],
+      excludeTools: ["implement_list_runs", "implement_inspect"],
     });
     await vi.waitFor(() => expect(parentSession.prompt).toHaveBeenCalled());
 

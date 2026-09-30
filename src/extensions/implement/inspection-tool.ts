@@ -1,161 +1,222 @@
-import {
-  DEFAULT_MAX_BYTES,
-  DEFAULT_MAX_LINES,
-  truncateHead,
-  type ExtensionAPI,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type, type Static } from "typebox";
+import { Check } from "typebox/value";
 import {
   toolCallRenderer,
   toolResultRenderer,
 } from "#lib/ui/tool-result-renderer";
-import { Type, type Static } from "typebox";
-import { inspectRunSnapshot, listCheckoutRuns } from "./controls.js";
+import { enumerateCheckoutRuns, loadCheckoutRun } from "./controls.js";
 import { ExecGitClient } from "./git.js";
-import { checkoutPaths, runStatePath } from "./store.js";
+import { UnsupportedActiveRunVersionError } from "./store.js";
+import { projectRunSurface, runSummary } from "./run-surface.js";
+import {
+  InspectResultSchema,
+  ListRunsResultSchema,
+} from "./inspection-schema.js";
 
-export const InspectImplementRunParams = Type.Object(
+export const ListRunsParams = Type.Object(
   {
-    runId: Type.Optional(
-      Type.String({ description: "Retained Implement run ID to inspect." }),
+    offset: Type.Optional(
+      Type.Integer({
+        minimum: 0,
+        maximum: Number.MAX_SAFE_INTEGER,
+        description:
+          "Zero-based offset in authorized known runs; defaults to 0.",
+      }),
+    ),
+    limit: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        maximum: 25,
+        description:
+          "Maximum authorized run summaries to return, 1..25; defaults to 25.",
+      }),
     ),
   },
   { additionalProperties: false },
 );
-
-type InspectImplementRunInput = Static<typeof InspectImplementRunParams>;
-
-type InspectionDetails = {
-  checkoutRoot: string;
-  runId?: string;
-  truncated: boolean;
-  phase?: string;
-};
-
-export function registerImplementInspectionTool(pi: ExtensionAPI): void {
-  pi.registerTool({
-    name: "inspect_implement_run",
-    exposure: "deferred",
-    namespace: {
-      name: "implement",
+export const InspectParams = Type.Object(
+  {
+    runId: Type.String({
+      minLength: 1,
+      maxLength: 64,
+      pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
       description:
-        "Inspect checkout-owned implementation runs without controlling publication.",
-    },
-    annotations: { readOnlyHint: true, openWorldHint: false },
-    label: "inspect_implement_run",
-    description:
-      "List and inspect durable Pipkin Implement runs in the current checkout. This tool is read-only and reports only durable retained state and paths.",
-    parameters: InspectImplementRunParams,
-    async execute(
-      _toolCallId,
-      input: InspectImplementRunInput,
-      _signal,
-      _update,
-      ctx,
-    ) {
-      const checkoutRoot = await new ExecGitClient(ctx.cwd).root();
-      return inspectImplementRun(checkoutRoot, input);
-    },
-    renderCall: toolCallRenderer({
-      name: "inspect_implement_run",
-      detail: (args: InspectImplementRunInput) => args.runId ?? "retained runs",
-      pending: "Inspecting retained Implement state…",
+        "Known retained run ID in the current checkout, discovered through implement_list_runs.",
     }),
-    renderResult: toolResultRenderer({
-      summary(result) {
-        const details = result.details as InspectionDetails | undefined;
-        return details?.runId
-          ? `Implement run ${details.runId} · ${details.phase ?? "retained"}.`
-          : "Retained Implement runs.";
-      },
-      partial() {
-        return "Inspecting retained Implement state…";
-      },
-      error(result) {
-        return (
-          firstText(result.content).split("\n", 1)[0] ?? "Inspection failed."
-        );
-      },
-    }),
-  });
+  },
+  { additionalProperties: false },
+);
+
+export function listImplementRuns(
+  checkoutRoot: string,
+  input: Static<typeof ListRunsParams>,
+): Static<typeof ListRunsResultSchema> {
+  if (!Check(ListRunsParams, input)) {
+    return {
+      ok: false,
+      error: { code: "invalid_arguments", message: "Invalid run pagination." },
+    };
+  }
+  const { offset = 0, limit = 25 } = input;
+  const enumeration = enumerateCheckoutRuns(checkoutRoot);
+  const unsupported = enumeration.runs.find(
+    (entry) => entry.kind === "unsupported_active",
+  );
+  if (unsupported?.kind === "unsupported_active") {
+    return {
+      ok: false,
+      error: { code: "unavailable", message: unsupported.diagnostic },
+    };
+  }
+  // Authorization precedes pagination; historical/unowned IDs are never public.
+  const runs = enumeration.runs.flatMap((entry) =>
+    entry.kind === "run" ? [runSummary(entry.state)] : [],
+  );
+  runs.sort(
+    (a, b) =>
+      b.createdAt.localeCompare(a.createdAt) || a.runId.localeCompare(b.runId),
+  );
+  return {
+    ok: true,
+    runs: runs.slice(offset, offset + limit),
+    truncated: enumeration.truncated,
+    ...(offset + limit < runs.length ? { nextOffset: offset + limit } : {}),
+  };
 }
 
 export function inspectImplementRun(
   checkoutRoot: string,
-  input: InspectImplementRunInput,
-): {
-  content: Array<{ type: "text"; text: string }>;
-  details: InspectionDetails;
-} {
-  const inspection = input.runId
-    ? inspectRunSnapshot(checkoutRoot, input.runId)
-    : undefined;
-  const text = inspection?.text ?? formatRunList(checkoutRoot);
-  const paths = checkoutPaths(checkoutRoot);
-  const authoritativePath = input.runId
-    ? runStatePath(paths, input.runId)
-    : paths.runs;
-  const output = boundOutput(text, authoritativePath);
-  const phase = inspection?.state.phase;
-  return {
-    content: [{ type: "text", text: output.text }],
-    details: {
-      checkoutRoot,
-      ...(input.runId === undefined ? {} : { runId: input.runId }),
-      ...(phase ? { phase } : {}),
-      truncated: output.truncated,
-    },
+  input: Static<typeof InspectParams>,
+): Static<typeof InspectResultSchema> {
+  if (!Check(InspectParams, input)) {
+    return {
+      ok: false,
+      error: {
+        code: "invalid_arguments",
+        message: "A valid known run ID is required.",
+      },
+    };
+  }
+  try {
+    const state = loadCheckoutRun(checkoutRoot, input.runId);
+    return { ok: true, run: projectRunSurface(checkoutRoot, state) };
+  } catch (error) {
+    return {
+      ok: false,
+      error:
+        error instanceof UnsupportedActiveRunVersionError
+          ? { code: "unavailable", message: error.message }
+          : {
+              code: "not_found",
+              message: "Run is unavailable in the current checkout.",
+            },
+    };
+  }
+}
+
+export function registerImplementInspectionTool(pi: ExtensionAPI): void {
+  const namespace = {
+    name: "implement",
+    description:
+      "Read-only discovery of checkout-owned runs and durable evidence artifacts; no run or publication controls.",
   };
-}
-
-function firstText(content: unknown): string {
-  if (!Array.isArray(content)) {
-    return "inspect_implement_run failed";
-  }
-  const text = content.find(
-    (block): block is { type: "text"; text: string } =>
-      typeof block === "object" &&
-      block !== null &&
-      (block as { type?: unknown }).type === "text" &&
-      typeof (block as { text?: unknown }).text === "string",
-  );
-  return text?.text ?? "inspect_implement_run failed";
-}
-
-export function formatRunList(checkoutRoot: string): string {
-  const runs = listCheckoutRuns(checkoutRoot);
-  if (runs.length === 0) {
-    return "Implement: no retained runs in this checkout.";
-  }
-  return [
-    "Implement retained runs:",
-    ...runs.map((run) =>
-      run.kind === "run"
-        ? `- ${run.runId} · ${run.state.phase} · updated ${run.state.updatedAt}`
-        : `- ${run.runId} · historical artifact (manual inspection/removal only)`,
-    ),
-  ].join("\n");
-}
-
-export function boundOutput(
-  text: string,
-  authoritativePath: string,
-): { text: string; truncated: boolean } {
-  const truncation = truncateHead(text, {
-    maxLines: DEFAULT_MAX_LINES,
-    maxBytes: DEFAULT_MAX_BYTES,
+  const annotations = { readOnlyHint: true, openWorldHint: false };
+  const renderer = toolResultRenderer({
+    summary(result) {
+      const details = result.details as { summary?: string };
+      return details?.summary ?? "Implement inspection.";
+    },
+    partial: () => "Inspecting Implement state…",
+    error: () => "Implement inspection unavailable.",
   });
-  if (!truncation.truncated) {
-    return { text, truncated: false };
+  pi.registerTool({
+    name: "implement_list_runs",
+    label: "implement_list_runs",
+    exposure: "deferred",
+    namespace,
+    annotations,
+    description:
+      "List authorized retained Implement runs in the current checkout, newest first. Enumeration is bounded to 1000 owner entries; truncated discloses an incomplete enumeration.",
+    parameters: ListRunsParams,
+    outputSchema: ListRunsResultSchema,
+    async execute(_id, input, _signal, _update, ctx) {
+      try {
+        return result(
+          ListRunsResultSchema,
+          listImplementRuns(await new ExecGitClient(ctx.cwd).root(), input),
+        );
+      } catch {
+        return result(ListRunsResultSchema, {
+          ok: false,
+          error: {
+            code: "unavailable",
+            message: "Checkout run discovery is unavailable.",
+          },
+        });
+      }
+    },
+    renderCall: toolCallRenderer({
+      name: "implement_list_runs",
+      detail: () => "retained runs",
+      pending: "Listing Implement runs…",
+    }),
+    renderResult: renderer,
+  });
+  pi.registerTool({
+    name: "implement_inspect",
+    label: "implement_inspect",
+    exposure: "deferred",
+    namespace,
+    annotations,
+    description:
+      "Inspect one known current-checkout Implement run. Returns bounded state, reported/legacy verification and durable run-owned artifact descriptors. Discover artifacts here before reading retained files; this operation never controls a run or mutates artifacts.",
+    parameters: InspectParams,
+    outputSchema: InspectResultSchema,
+    async execute(_id, input, _signal, _update, ctx) {
+      try {
+        return result(
+          InspectResultSchema,
+          inspectImplementRun(await new ExecGitClient(ctx.cwd).root(), input),
+        );
+      } catch {
+        return result(InspectResultSchema, {
+          ok: false,
+          error: {
+            code: "unavailable",
+            message: "Checkout inspection is unavailable.",
+          },
+        });
+      }
+    },
+    renderCall: toolCallRenderer({
+      name: "implement_inspect",
+      detail: (input: Static<typeof InspectParams>) => input.runId,
+      pending: "Inspecting Implement run…",
+    }),
+    renderResult: renderer,
+  });
+}
+
+function result(
+  schema: typeof InspectResultSchema | typeof ListRunsResultSchema,
+  payload:
+    | Static<typeof InspectResultSchema>
+    | Static<typeof ListRunsResultSchema>,
+) {
+  if (!Check(schema, payload)) {
+    throw new Error("Invalid Implement inspection result.");
   }
-  const notice = `[Output truncated. Read ${authoritativePath} for authoritative state and deeper evidence.]`;
-  const separator = "\n";
-  const content = truncateHead(text, {
-    maxLines: DEFAULT_MAX_LINES - 1,
-    maxBytes:
-      DEFAULT_MAX_BYTES - Buffer.byteLength(`${separator}${notice}`, "utf8"),
-  }).content;
   return {
-    text: content ? `${content}${separator}${notice}` : notice,
-    truncated: true,
+    content: [{ type: "text" as const, text: JSON.stringify(payload) }],
+    structuredContent: payload,
+    isError: !payload.ok,
+    details: {
+      summary: payload.ok
+        ? "run" in payload
+          ? `Implement run ${payload.run.runId} · ${payload.run.phase}.`
+          : `Implement · ${payload.runs.length} retained runs${payload.truncated ? " · enumeration truncated" : ""}.`
+        : "Implement inspection unavailable.",
+    },
   };
 }

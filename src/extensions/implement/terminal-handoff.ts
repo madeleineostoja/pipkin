@@ -1,4 +1,5 @@
 import type { RunState } from "./store.js";
+import { verificationText } from "./verification.js";
 
 const MAX_RETAINED_TEXT = 12_000;
 const MAX_EXCERPT = 280;
@@ -210,10 +211,13 @@ function verificationGaps(state: RunState): string[] {
 function retainedVerificationCount(state: RunState): number {
   return unique([
     ...Object.values(state.candidates).flatMap(
-      (candidate) => candidate.implementationEvidence?.verification ?? [],
+      (candidate) =>
+        candidate.implementationEvidence?.verification.map(verificationText) ??
+        [],
     ),
     ...Object.values(state.reviews).flatMap(
-      (review) => review.latestCorrection?.verification ?? [],
+      (review) =>
+        review.latestCorrection?.verification?.map(verificationText) ?? [],
     ),
     ...(state.wholePlanReview.evidence ? [state.wholePlanReview.evidence] : []),
   ]).length;

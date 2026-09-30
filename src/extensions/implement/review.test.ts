@@ -279,7 +279,13 @@ describe("canonical review findings", () => {
         changedPaths: [],
         evidence: "tests could not start",
         summary: "No safe source change",
-        verification: ["test command was blocked"],
+        verification: [
+          {
+            kind: "not_run",
+            label: "Tests",
+            reason: "test command was blocked",
+          },
+        ],
         uncertainty: "dependency installation unavailable",
         artifactPath: "/artifacts/unchanged.json",
       },
@@ -288,7 +294,9 @@ describe("canonical review findings", () => {
     expect(review.latestCorrection).toMatchObject({
       mode: "unchanged",
       evidence: "tests could not start",
-      verification: ["test command was blocked"],
+      verification: [
+        { kind: "not_run", label: "Tests", reason: "test command was blocked" },
+      ],
     });
     expect(() =>
       applyAnchoredWorkstreamReview({

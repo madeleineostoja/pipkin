@@ -22,6 +22,7 @@ import {
 } from "#sandbox/runtime";
 import { createManagedSessionHarness } from "../support/managed-session.ts";
 import { createServer } from "node:http";
+import { execFileSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -820,6 +821,72 @@ describe("Pipkin bundle", () => {
       await host.dispose();
       pending?.dispose();
       mode.dispose();
+    }
+  });
+
+  it("discovers typed read-only Implement operations through native direct and nested calls", async () => {
+    const fixture = await loadBundle({ nativeFactories: true });
+    execFileSync("git", ["init", fixture.cwd]);
+    const host = await nativeSession(fixture);
+    try {
+      const results = await host.prompt([
+        {
+          name: "tool_search",
+          args: { query: "+implement_list_runs +implement_inspect" },
+          id: "implement-search",
+        },
+        { name: "implement_list_runs", args: {}, id: "implement-direct" },
+        {
+          name: "codemode",
+          args: {
+            code: "text(await tools.implement_inspect({runId:'missing'}));",
+          },
+          id: "implement-nested",
+        },
+      ]);
+      const direct = results.find(
+        (result) => result.toolCallId === "implement-direct",
+      )!;
+      const definition = host.session.extensionRunner
+        .getAllRegisteredTools()
+        .find(
+          (tool) => tool.definition.name === "implement_list_runs",
+        )!.definition;
+      const directPayload = JSON.parse(
+        direct.content[0]!.type === "text" ? direct.content[0]!.text : "null",
+      );
+      expect(Check(definition.outputSchema!, directPayload)).toBe(true);
+      expect(directPayload).toEqual({ ok: true, runs: [], truncated: false });
+      const nested = results.find(
+        (result) => result.toolCallId === "implement-nested",
+      )!;
+      expect(nested.isError).toBe(false);
+      const printed = nested.content.find(
+        (block) =>
+          block.type === "text" && block.text.trimStart().startsWith("{"),
+      );
+      const nestedPayload = JSON.parse(
+        printed?.type === "text" ? printed.text : "null",
+      );
+      const inspectDefinition = host.session.extensionRunner
+        .getAllRegisteredTools()
+        .find(
+          (tool) => tool.definition.name === "implement_inspect",
+        )!.definition;
+      expect(
+        Check(inspectDefinition.outputSchema!, nestedPayload),
+        JSON.stringify(nested.content),
+      ).toBe(true);
+      expect(nestedPayload).toMatchObject({
+        ok: false,
+        error: { code: "not_found" },
+      });
+      expect(existsSync(join(fixture.cwd, ".pi", "pipkin", "implement"))).toBe(
+        false,
+      );
+      expect(host.errors).toEqual([]);
+    } finally {
+      await host.dispose();
     }
   });
 

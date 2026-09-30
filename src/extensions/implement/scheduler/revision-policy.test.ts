@@ -316,7 +316,13 @@ describe("revision policy", () => {
         kind: "unchanged",
         evidence: "test command could not start",
         summary: "No safe change",
-        verification: ["inspected the target"],
+        verification: [
+          {
+            kind: "inspection",
+            label: "Target",
+            evidence: "inspected the target",
+          },
+        ],
         uncertainty: "dependency installation unavailable",
         artifactPath: "/artifacts/revision.json",
       },
@@ -501,7 +507,13 @@ describe("revision policy", () => {
           observationArtifact: "/artifacts/repair.json",
           implementationEvidence: {
             summary: "The target already satisfies the requested behavior.",
-            verification: ["Inspected the existing behavior."],
+            verification: [
+              {
+                kind: "inspection",
+                label: "Behavior",
+                evidence: "Inspected the existing behavior.",
+              },
+            ],
             uncertainty: "Runtime verification could not start.",
             artifactPath: "/artifacts/repair.json",
             changedPaths: [],
@@ -522,7 +534,13 @@ describe("revision policy", () => {
       evidence: "/artifacts/repair.json",
       mode: "unchanged",
       summary: "The target already satisfies the requested behavior.",
-      verification: ["Inspected the existing behavior."],
+      verification: [
+        {
+          kind: "inspection",
+          label: "Behavior",
+          evidence: "Inspected the existing behavior.",
+        },
+      ],
       uncertainty: "Runtime verification could not start.",
       artifactPath: "/artifacts/repair.json",
     });
@@ -1463,7 +1481,9 @@ function candidate(
     changedPaths: ["src/endpoint.ts"],
     implementationEvidence: {
       summary: "implemented",
-      verification: ["tests pass"],
+      verification: [
+        { kind: "inspection" as const, label: "Check", evidence: "tests pass" },
+      ],
     },
   };
 }

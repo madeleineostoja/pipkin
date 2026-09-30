@@ -388,7 +388,13 @@ async function reconciliationFixture(
       : ["shared.txt"],
     implementationEvidence: {
       summary: "candidate",
-      verification: ["candidate checked"],
+      verification: [
+        {
+          kind: "inspection",
+          label: "Candidate",
+          evidence: "candidate checked",
+        },
+      ],
     },
   };
   writeFileSync(join(root, "shared.txt"), targetContent);
@@ -582,7 +588,13 @@ function mergingWorker(
             status: "completed" as const,
             result: {
               summary: "merged target behavior",
-              verification: ["checked shared behavior"],
+              verification: [
+                {
+                  kind: "inspection",
+                  label: "Behavior",
+                  evidence: "checked shared behavior",
+                },
+              ],
             },
           }
         : {

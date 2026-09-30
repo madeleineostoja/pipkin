@@ -14,6 +14,9 @@ import { ScrollViewport } from "#lib/ui/scroll-viewport";
 import { plannerAttemptPath } from "./execution-plan.js";
 import { sourceCorpusPath } from "./requirements-context.js";
 import { checkoutPaths, type RunState } from "./store.js";
+import { verificationText } from "./verification.js";
+import { stripVTControlCharacters } from "node:util";
+import type { RunInspection, RunSummary } from "./inspection-schema.js";
 
 type RunSurfaceMode = "overview" | "details";
 
@@ -240,6 +243,21 @@ export function runMarkdown(
       : []),
   ]);
 
+  const evidence = projectRunSurface(checkoutRoot, state);
+  if (evidence.verification.length) {
+    sections.push([
+      "## Verification",
+      ...evidence.verification.map(
+        (record) => `- **${record.kind}:** ${record.text}`,
+      ),
+      ...(evidence.truncated
+        ? [
+            "- Projection bounded; inspect retained artifacts for more evidence.",
+          ]
+        : []),
+    ]);
+  }
+
   const executionPlan = join(runDirectory, "execution-plan.json");
   const sourceCorpus = sourceCorpusPath(runDirectory);
   const plannerAttempt = plannerAttemptPath(runDirectory);
@@ -256,6 +274,223 @@ export function runMarkdown(
   ]);
 
   return sections.map((section) => section.join("\n")).join("\n\n");
+}
+
+const surfaceText = (text: string) =>
+  stripVTControlCharacters(text).replace(/\p{C}/gu, " ").slice(0, 1500);
+
+export function runSummary(state: RunState): RunSummary {
+  const tasks = Object.values(state.tasks);
+  return {
+    runId: surfaceText(state.run.id),
+    phase: state.phase,
+    createdAt: surfaceText(state.createdAt),
+    updatedAt: surfaceText(state.updatedAt),
+    tasks: tasks.length,
+    publishedTasks: tasks.filter((task) => task.phase === "published").length,
+  };
+}
+
+export function projectRunSurface(
+  checkoutRoot: string,
+  state: RunState,
+): RunInspection {
+  const runDirectory = join(checkoutPaths(checkoutRoot).runs, state.run.id);
+  let truncated = false;
+  const bounded = (text: string) => {
+    truncated ||= text.length > 1500;
+    return surfaceText(text);
+  };
+  const take = <T>(items: T[]): T[] => {
+    truncated ||= items.length > 25;
+    return items.slice(0, 25);
+  };
+  const artifacts: RunInspection["artifacts"] = [
+    {
+      kind: "state",
+      path: join(runDirectory, "run-state.json"),
+      retained: true,
+    },
+    {
+      kind: "execution_plan",
+      path: join(runDirectory, "execution-plan.json"),
+      retained: existsSync(join(runDirectory, "execution-plan.json")),
+    },
+    {
+      kind: "source_corpus",
+      path: sourceCorpusPath(runDirectory),
+      retained: existsSync(sourceCorpusPath(runDirectory)),
+    },
+    {
+      kind: "planner_attempt",
+      path: plannerAttemptPath(runDirectory),
+      retained: existsSync(plannerAttemptPath(runDirectory)),
+    },
+    {
+      kind: "artifacts",
+      path: join(runDirectory, "artifacts"),
+      retained: existsSync(join(runDirectory, "artifacts")),
+    },
+  ];
+  const verification: RunInspection["verification"] = [];
+  const add = (
+    candidateId: string,
+    context: "implementation" | "correction",
+    evidence:
+      | NonNullable<RunState["candidates"][string]["implementationEvidence"]>
+      | undefined,
+  ) => {
+    if (!evidence) {
+      return;
+    }
+    if (evidence.artifactPath) {
+      artifacts.push({
+        kind: "evidence",
+        path: evidence.artifactPath,
+        retained: existsSync(evidence.artifactPath),
+        candidateId: bounded(candidateId),
+      });
+    }
+    for (const record of evidence.verification) {
+      const descriptor: RunInspection["verification"][number] = {
+        kind: record.kind,
+        candidateId: bounded(candidateId),
+        context,
+        text: bounded(verificationText(record)),
+      };
+      if (record.kind === "execution") {
+        Object.assign(descriptor, {
+          artifactPath: record.artifactPath,
+          attemptId: bounded(record.attemptId),
+          candidateCommitSha: bounded(record.candidateCommitSha),
+          capturedAt: record.capturedAt,
+          outcome: record.outcome,
+          truncated: record.truncated,
+          commandTruncated: record.commandTruncated,
+          candidateCoverage: record.candidateCoverage,
+          sourceTool: record.sourceTool,
+          executionState: record.execution.state,
+          exitCode: record.execution.exitCode,
+          outputComplete: record.outputComplete,
+          droppedBytes: record.droppedBytes,
+          startedAt: record.execution.startedAt,
+          endedAt: record.execution.endedAt,
+        });
+        artifacts.push({
+          kind: "execution",
+          path: record.artifactPath,
+          retained: existsSync(join(runDirectory, record.artifactPath)),
+          candidateId: bounded(candidateId),
+          attemptId: bounded(record.attemptId),
+          outcome: record.outcome,
+        });
+      }
+      verification.push(descriptor);
+    }
+  };
+  for (const candidate of Object.values(state.candidates)) {
+    add(candidate.id, "implementation", candidate.implementationEvidence);
+  }
+  for (const review of Object.values(state.reviews)) {
+    const correction = review.latestCorrection;
+    if (correction?.verification) {
+      add(review.candidateId, "correction", {
+        ...correction,
+        summary: correction.summary ?? correction.evidence,
+        verification: correction.verification,
+      });
+    }
+  }
+  const workstreams = take([
+    ...Object.values(state.workstreams.source).map((item) => ({
+      id: bounded(item.id),
+      phase: item.phase,
+    })),
+    ...Object.values(state.workstreams.overall).map((item) => ({
+      id: bounded(item.repairId),
+      phase: item.phase,
+    })),
+  ]);
+  const outcomes = take([
+    ...Object.values(state.failures).map((failure) => ({
+      kind: failure.category,
+      text: bounded(failure.evidence),
+    })),
+    ...Object.values(state.findings)
+      .filter((finding) => finding.status === "open")
+      .map((finding) => ({
+        kind: "open_finding",
+        text: bounded(finding.evidence),
+      })),
+    ...Object.values(state.publication.receipts).map((receipt) => ({
+      kind: "publication",
+      text: bounded(receipt.publishedCommitSha),
+    })),
+    ...Object.values(state.candidates).flatMap((candidate) => [
+      ...(candidate.evidenceStatus === "unavailable"
+        ? [
+            {
+              kind: "evidence_unavailable",
+              text: bounded(`${candidate.id}: worker evidence unavailable`),
+            },
+          ]
+        : []),
+      ...(candidate.implementationEvidence?.uncertainty
+        ? [
+            {
+              kind: "verification_uncertainty",
+              text: bounded(
+                `${candidate.id}: ${candidate.implementationEvidence.uncertainty}`,
+              ),
+            },
+          ]
+        : []),
+    ]),
+    ...Object.values(state.reviews).flatMap((review) =>
+      review.latestCorrection?.uncertainty
+        ? [
+            {
+              kind: "verification_uncertainty",
+              text: bounded(
+                `${review.candidateId}: ${review.latestCorrection.uncertainty}`,
+              ),
+            },
+          ]
+        : [],
+    ),
+    ...(state.failure
+      ? [{ kind: state.failure.category, text: bounded(state.failure.reason) }]
+      : []),
+  ]);
+  const result: RunInspection = {
+    ...runSummary(state),
+    workstreams,
+    outcomes,
+    verification: take(verification),
+    artifacts: take(
+      artifacts.filter((artifact) => {
+        const exact =
+          artifact.path.length <= 2000 &&
+          stripVTControlCharacters(artifact.path) === artifact.path &&
+          !/\p{C}/u.test(artifact.path);
+        truncated ||= !exact;
+        return exact;
+      }),
+    ),
+    truncated,
+  };
+  // Keep direct and structured payloads identically bounded, not just the renderer.
+  while (Buffer.byteLength(JSON.stringify(result)) > 48_000) {
+    const arrays = [
+      result.outcomes,
+      result.verification,
+      result.artifacts,
+      result.workstreams,
+    ];
+    arrays.sort((a, b) => b.length - a.length)[0]!.pop();
+    result.truncated = true;
+  }
+  return result;
 }
 
 function retainedPath(path: string): string {

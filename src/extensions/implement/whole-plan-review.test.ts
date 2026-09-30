@@ -172,7 +172,9 @@ describe("whole-plan review packet", () => {
       evidenceStatus: "reported",
       implementationEvidence: {
         summary: "Preserved the reviewer-authored handoff draft.",
-        verification: ["npm run check"],
+        verification: [
+          { kind: "inspection", label: "Check", evidence: "npm run check" },
+        ],
         uncertainty: "No end-to-end session was available.",
         changedPaths: ["src/extensions/implement/whole-plan-review.ts"],
       },

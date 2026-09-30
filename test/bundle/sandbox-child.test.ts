@@ -166,6 +166,7 @@ describe("Sandbox child binding", () => {
       runtime.pi,
       { ...managedSessionContext(harness), cwd: "/parent-workspace" } as never,
       "parent-run",
+      join(workspace, ".pi/pipkin/implement/runs/parent-run"),
     );
 
     try {
@@ -413,6 +414,7 @@ describe("Sandbox child binding", () => {
       runtime.pi,
       { ...managedSessionContext(harness), cwd: "/parent-workspace" } as never,
       "parent-run",
+      join(workspace, ".pi/pipkin/implement/runs/parent-run"),
     );
 
     try {

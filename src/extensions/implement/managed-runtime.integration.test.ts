@@ -115,6 +115,7 @@ describe("Implement managed runtime integration", () => {
       extension as never,
       context as never,
       "run-1",
+      join(MANAGED_TEST_CWD, ".pi/pipkin/implement/runs/run-1"),
     );
     const handle = await spawnValidatedWorker({
       packet: {
@@ -193,6 +194,7 @@ describe("Implement managed runtime integration", () => {
       extension as never,
       managedSessionContext(harness) as never,
       "run-1",
+      join(MANAGED_TEST_CWD, ".pi/pipkin/implement/runs/run-1"),
     );
 
     const handle = await spawnValidatedWorker({
@@ -261,6 +263,7 @@ describe("Implement managed runtime integration", () => {
       extension as never,
       managedSessionContext(harness) as never,
       "run-1",
+      join(MANAGED_TEST_CWD, ".pi/pipkin/implement/runs/run-1"),
     );
 
     const handle = await spawnValidatedWorker({
@@ -339,7 +342,13 @@ describe("Implement managed runtime integration", () => {
             {
               outcome: "changed",
               summary: "Completed the assignment.",
-              verification: ["Checked the assigned result."],
+              verification: [
+                {
+                  kind: "inspection",
+                  label: "Result",
+                  evidence: "Checked the assigned result.",
+                },
+              ],
             },
             { id: "completion" },
           ),
@@ -369,6 +378,7 @@ describe("Implement managed runtime integration", () => {
       extension as never,
       managedSessionContext(harness) as never,
       "run-1",
+      join(root, ".pi/pipkin/implement/runs/run-1"),
     );
 
     const handle = await spawnValidatedWorker({
@@ -419,6 +429,7 @@ describe("Implement managed runtime integration", () => {
       extension as never,
       managedSessionContext(harness) as never,
       "run-1",
+      join(MANAGED_TEST_CWD, ".pi/pipkin/implement/runs/run-1"),
     );
 
     const handle = await spawnValidatedWorker({

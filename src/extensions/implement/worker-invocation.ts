@@ -1,5 +1,6 @@
 import { isAbsolute } from "node:path";
 import type { Static } from "typebox";
+import type { PersistedCompletion } from "./verification.js";
 import { MANAGED_COMPLETION_FINAL_ACTION } from "#subagents/completion";
 import {
   anchoredOverallReviewSchema,
@@ -130,7 +131,9 @@ export async function spawnValidatedWorker<
   description: string;
   render: (packet: TPacket) => string;
 }): Promise<
-  SubagentHandle<Static<CompletionSchema<TPacket["completionKind"]>>>
+  SubagentHandle<
+    PersistedCompletion<Static<CompletionSchema<TPacket["completionKind"]>>>
+  >
 > {
   const { packet } = args;
   const completion = completionContracts[packet.completionKind];
@@ -147,7 +150,9 @@ export async function spawnValidatedWorker<
       `${roleName} packet ${packet.identity} has an invalid worker identity.`,
     );
   }
-  const prompt = `${args.render(packet)}${completion.readOnly ? `\n\n${REPOSITORY_PRESERVING_ROLE_CONTRACT}` : ""}\n\n${MANAGED_COMPLETION_FINAL_ACTION} The supplied pi_managed_complete definition is the required structured result for this completion kind.\n\nrecord_papercut is the sole allowed personal-metadata write for qualifying incidental friction; it does not permit source or Git changes.`;
+  const verificationContract =
+    "Report verification as execution {kind,label,outputRef,claimedOutcome}, inspection {kind,label,evidence}, or not_run {kind,label,reason}. Execution references must come from terminal captured commands in this attempt and assigned worktree. Inspection is worker-reported, not host-attested execution. Passing evidence does not attest later candidate changes. Free text and legacy inputs are not accepted.";
+  const prompt = `${args.render(packet)}${completion.role === "implementer" ? `\n\n${verificationContract}` : ""}${completion.readOnly ? `\n\n${REPOSITORY_PRESERVING_ROLE_CONTRACT}` : ""}\n\n${MANAGED_COMPLETION_FINAL_ACTION} The supplied pi_managed_complete definition is the required structured result for this completion kind.\n\nrecord_papercut is the sole allowed personal-metadata write for qualifying incidental friction; it does not permit source or Git changes.`;
   return args.subagents.spawn({
     type: role.type,
     role: roleName,
@@ -166,6 +171,8 @@ export async function spawnValidatedWorker<
       schema: completion.schema,
     },
   }) as Promise<
-    SubagentHandle<Static<CompletionSchema<TPacket["completionKind"]>>>
+    SubagentHandle<
+      PersistedCompletion<Static<CompletionSchema<TPacket["completionKind"]>>>
+    >
   >;
 }

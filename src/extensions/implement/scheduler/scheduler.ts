@@ -128,7 +128,9 @@ export type SchedulerEvent =
               changedPaths: string[];
               evidence: string;
               summary?: string;
-              verification?: string[];
+              verification?: NonNullable<
+                RunState["candidates"][string]["implementationEvidence"]
+              >["verification"];
               uncertainty?: string;
               artifactPath?: string;
             };
@@ -137,7 +139,9 @@ export type SchedulerEvent =
             kind: "unchanged";
             evidence: string;
             summary?: string;
-            verification?: string[];
+            verification?: NonNullable<
+              RunState["candidates"][string]["implementationEvidence"]
+            >["verification"];
             uncertainty?: string;
             artifactPath?: string;
           };

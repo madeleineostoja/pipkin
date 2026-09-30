@@ -18,6 +18,7 @@ import {
 import { ensureGitInfoExclude } from "#lib/git";
 import { pipkinProjectDirectory } from "#lib/project-path";
 import { z } from "zod";
+import { verificationSchema } from "./verification.js";
 import { writeAtomicJson, type AtomicJsonWriteHooks } from "./atomic-json.js";
 import {
   publicationIntentId,
@@ -199,7 +200,7 @@ const candidateSchema = z
     implementationEvidence: z
       .object({
         summary: nonEmpty,
-        verification: z.array(nonEmpty).min(1),
+        verification: z.array(verificationSchema).min(1),
         uncertainty: nonEmpty.optional(),
         artifactPath: nonEmpty.optional(),
         changedPaths: z.array(nonEmpty).optional(),
@@ -255,7 +256,7 @@ const reviewStateSchema = z
         evidence: nonEmpty,
         mode: z.enum(["changed", "unchanged"]),
         summary: nonEmpty.optional(),
-        verification: z.array(nonEmpty).min(1).optional(),
+        verification: z.array(verificationSchema).min(1).optional(),
         uncertainty: nonEmpty.optional(),
         artifactPath: nonEmpty.optional(),
       })
@@ -631,7 +632,7 @@ const wholePlanReviewSchema = z
 
 export const RunStateSchema = z
   .object({
-    version: z.literal(10),
+    version: z.literal(11),
     revision: z.number().int().nonnegative(),
     run: z
       .object({
@@ -740,6 +741,15 @@ export class StateError extends Error {
     readonly issues: string[] = [],
   ) {
     super(message);
+  }
+}
+
+export class UnsupportedActiveRunVersionError extends StateError {
+  constructor(path: string) {
+    super(
+      "Active v10 continuation/recovery is unsupported. Finish or stop the run with the old runtime before upgrading.",
+      path,
+    );
   }
 }
 
@@ -917,7 +927,7 @@ export function createPlanningRun(args: {
   const now = args.now ?? new Date().toISOString();
   const path = runStatePath(args.lease.paths, args.runId);
   const state: RunState = {
-    version: 10,
+    version: 11,
     revision: 0,
     run: {
       id: args.runId,
@@ -976,6 +986,7 @@ export class RunStore {
       throw new StateError("Canonical run state already exists.", path);
     }
     const state = validateRunState(initial, path);
+    assertWritableVerification(state, path);
     writeAtomicJson(path, state, hooks);
     return new RunStore(lease, path, state, hooks);
   }
@@ -986,7 +997,7 @@ export class RunStore {
     hooks: StoreHooks = {},
   ): RunStore {
     lease.assertOwned();
-    const state = loadRunState(path);
+    const state = loadRunState(path, true);
     assertLeaseRun(lease, state.run.id);
     assertRunStatePath(lease, path, state.run.id);
     return new RunStore(lease, path, state, hooks);
@@ -997,7 +1008,7 @@ export class RunStore {
   }
 
   refresh(): RunState {
-    this.snapshot = loadRunState(this.path);
+    this.snapshot = loadRunState(this.path, true);
     return this.read();
   }
 
@@ -1011,7 +1022,7 @@ export class RunStore {
       .catch(() => undefined)
       .then(() => {
         this.lease.assertOwned();
-        const current = loadRunState(this.path);
+        const current = loadRunState(this.path, true);
         if (current.revision !== expectedRevision) {
           this.snapshot = current;
           throw new StaleRevisionError(
@@ -1023,7 +1034,7 @@ export class RunStore {
         const next = validateRunState(
           {
             ...update(structuredClone(current)),
-            version: 10,
+            version: 11,
             revision: current.revision + 1,
             updatedAt: new Date().toISOString(),
           },
@@ -1039,6 +1050,7 @@ export class RunStore {
             this.path,
           );
         }
+        assertWritableVerification(next, this.path);
         writeAtomicJson(this.path, next, this.hooks);
         this.snapshot = next;
       });
@@ -1118,7 +1130,7 @@ export class RunStore {
     protectedArtifactHashes: Record<string, string>,
   ): Promise<RunState> {
     this.lease.assertOwned();
-    const current = loadRunState(this.path);
+    const current = loadRunState(this.path, true);
     if (current.revision !== expectedRevision) {
       throw new StaleRevisionError(
         this.path,
@@ -1186,6 +1198,7 @@ export class RunStore {
         this.path,
       );
     }
+    assertWritableVerification(next, this.path);
     writeAtomicJson(this.path, next, this.hooks);
     this.snapshot = next;
     return this.read();
@@ -1202,12 +1215,47 @@ export function executionPlanPath(paths: CheckoutPaths, runId: string): string {
   return join(paths.runs, runId, "execution-plan.json");
 }
 
-export function loadRunState(path: string): RunState {
+export function loadRunState(path: string, continuation = false): RunState {
   if (!existsSync(path)) {
     throw new StateError("Run state is missing.", path);
   }
   try {
-    return validateRunState(JSON.parse(readFileSync(path, "utf-8")), path);
+    let value = JSON.parse(readFileSync(path, "utf-8"));
+    if (versionOf(value) === 10) {
+      if (
+        !["completed", "failed", "incomplete"].includes(value.phase) ||
+        Object.keys(value.processLeases ?? {}).length > 0
+      ) {
+        throw new UnsupportedActiveRunVersionError(path);
+      }
+      if (continuation) {
+        throw new StateError(
+          "Terminal v10 state is inspection-only; use the old runtime for cleanup. Finish or stop active runs before upgrading.",
+          path,
+        );
+      }
+      value = structuredClone(value);
+      value.version = 11;
+      for (const candidate of Object.values(value.candidates ?? {}) as Array<{
+        implementationEvidence?: { verification: unknown[] };
+      }>) {
+        if (candidate.implementationEvidence) {
+          candidate.implementationEvidence.verification = legacyVerification(
+            candidate.implementationEvidence.verification,
+          );
+        }
+      }
+      for (const review of Object.values(value.reviews ?? {}) as Array<{
+        latestCorrection?: { verification?: unknown[] };
+      }>) {
+        if (review.latestCorrection?.verification) {
+          review.latestCorrection.verification = legacyVerification(
+            review.latestCorrection.verification,
+          );
+        }
+      }
+    }
+    return validateRunState(value, path);
   } catch (error) {
     if (error instanceof StateError) {
       throw error;
@@ -1215,6 +1263,31 @@ export function loadRunState(path: string): RunState {
     throw new StateError(" run state is malformed JSON.", path, [
       String(error),
     ]);
+  }
+}
+
+function legacyVerification(items: unknown[]) {
+  return z
+    .array(nonEmpty)
+    .min(1)
+    .parse(items)
+    .map((text) => ({ kind: "legacy" as const, text }));
+}
+
+function assertWritableVerification(state: RunState, path: string): void {
+  const records = [
+    ...Object.values(state.candidates).flatMap(
+      (item) => item.implementationEvidence?.verification ?? [],
+    ),
+    ...Object.values(state.reviews).flatMap(
+      (item) => item.latestCorrection?.verification ?? [],
+    ),
+  ];
+  if (records.some((item) => item.kind === "legacy")) {
+    throw new StateError(
+      "Legacy verification is reader-only; historical runs cannot be rewritten.",
+      path,
+    );
   }
 }
 
@@ -1229,7 +1302,7 @@ export function validateRunState(
     const message =
       version !== undefined && version < 9
         ? `Run state uses legacy schema version ${version}; settle and clean it with the previous runtime before deploying this version.`
-        : version === undefined || version !== 9
+        : version === undefined || version !== 11
           ? "Run state has an unsupported schema."
           : "Run state is invalid.";
     throw new StateError(

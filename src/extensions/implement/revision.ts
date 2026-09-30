@@ -57,7 +57,7 @@ export type RevisionOutcome =
       kind: "unchanged";
       evidence: string;
       summary: string;
-      verification: string[];
+      verification: RevisionCompletion["verification"];
       uncertainty?: string;
       artifactPath: string;
     };

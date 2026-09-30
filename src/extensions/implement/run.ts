@@ -1,4 +1,4 @@
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
@@ -290,7 +290,12 @@ export function createRuntime(args: {
 }): SchedulerActor {
   const subagents =
     args.subagents ??
-    new RuntimeSubagentClient(args.pi, args.ctx, args.store.read().run.id);
+    new RuntimeSubagentClient(
+      args.pi,
+      args.ctx,
+      args.store.read().run.id,
+      dirname(args.store.path),
+    );
   return new SchedulerActor({
     store: args.store,
     onTransition: args.onTransition,

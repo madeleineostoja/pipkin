@@ -1,347 +1,179 @@
 import {
   cpSync,
   mkdirSync,
-  rmSync,
   readFileSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import {
-  DEFAULT_MAX_BYTES,
-  DEFAULT_MAX_LINES,
-} from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, it, vi } from "vitest";
-
-const fsSpies = vi.hoisted(() => ({ readdirSync: vi.fn() }));
-
-vi.mock("node:fs", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:fs")>();
-  fsSpies.readdirSync.mockImplementation(actual.readdirSync);
-  return { ...actual, readdirSync: fsSpies.readdirSync };
-});
-import { formatStatus } from "./controls.js";
-import { plannerAttemptPath } from "./execution-plan.js";
+import { execFileSync } from "node:child_process";
+import { afterEach, describe, expect, it } from "vitest";
+import { Check } from "typebox/value";
 import { checkoutPaths } from "./store.js";
 import {
   createLifecycleFixture,
   type LifecycleFixture,
 } from "./lifecycle-test-support.js";
 import {
-  boundOutput,
-  formatRunList,
   inspectImplementRun,
+  listImplementRuns,
   registerImplementInspectionTool,
 } from "./inspection-tool.js";
+import {
+  InspectResultSchema,
+  ListRunsResultSchema,
+} from "./inspection-schema.js";
 
 const fixtures: LifecycleFixture[] = [];
-
 afterEach(() => {
   for (const fixture of fixtures.splice(0)) {
     fixture.dispose();
   }
 });
-
-async function fixture(): Promise<LifecycleFixture> {
+async function fixture() {
   const value = await createLifecycleFixture();
   fixtures.push(value);
   return value;
 }
-
 function copyRun(
   root: string,
-  sourceRunId: string,
   runId: string,
-  phase: "running" | "failed",
-  updatedAt: string,
-): void {
-  const paths = checkoutPaths(root);
-  const source = join(paths.runs, sourceRunId);
-  const destination = join(paths.runs, runId);
-  cpSync(source, destination, { recursive: true });
-  const statePath = join(destination, "run-state.json");
-  const state = JSON.parse(readFileSync(statePath, "utf8"));
+  createdAt: string,
+  foreign = false,
+) {
+  const runs = checkoutPaths(root).runs;
+  cpSync(join(runs, "run-1"), join(runs, runId), { recursive: true });
+  const path = join(runs, runId, "run-state.json");
+  const state = JSON.parse(readFileSync(path, "utf8"));
   state.run.id = runId;
-  state.executionPlan.path = join(destination, "execution-plan.json");
-  state.phase = phase;
-  state.updatedAt = updatedAt;
-  if (phase === "failed") {
-    state.failure = {
-      category: "runtime",
-      reason: "Worker stopped",
-      originPhase: "running",
-      at: updatedAt,
-    };
+  state.executionPlan.path = join(runs, runId, "execution-plan.json");
+  state.createdAt = createdAt;
+  if (foreign) {
+    state.run.checkout.root = "/unrelated/checkout";
   }
-  writeFileSync(statePath, JSON.stringify(state));
+  writeFileSync(path, JSON.stringify(state));
 }
 
-function inspectionTool(): any {
-  let definition: unknown;
-  registerImplementInspectionTool({
-    registerTool: (tool: unknown) => {
-      definition = tool;
-    },
-  } as never);
-  return definition;
-}
-
-describe("inspect_implement_run", () => {
-  it("lists valid retained runs with phases and timestamps", async () => {
+describe("Implement read-only operations", () => {
+  it("authorizes before pagination, sorts newest with stable ties, and omits unknown next offsets", async () => {
     const run = await fixture();
-    copyRun(
-      run.root,
-      "run-1",
-      "failed-1",
-      "failed",
-      "2026-02-02T00:00:00.000Z",
-    );
-
-    expect(formatRunList(run.root)).toContain("run-1 · running · updated ");
-    expect(formatRunList(run.root)).toContain(
-      "failed-1 · failed · updated 2026-02-02T00:00:00.000Z",
-    );
-  });
-
-  it("reports an empty checkout clearly", () => {
-    expect(formatRunList("/tmp/pipkin-implement-empty")).toBe(
-      "Implement: no retained runs in this checkout.",
-    );
-  });
-
-  it("keeps historical artifacts visible alongside valid runs", async () => {
-    const run = await fixture();
-    const historical = join(checkoutPaths(run.root).runs, "old-run");
-    mkdirSync(historical);
-    writeFileSync(join(historical, "run-state.json"), "old state");
-
-    expect(formatRunList(run.root)).toContain(
-      "old-run · historical artifact (manual inspection/removal only)",
-    );
-    expect(formatRunList(run.root)).toContain("run-1 · running");
-  });
-
-  it("returns detailed status and durable paths for one run", async () => {
-    const run = await fixture();
-    const paths = checkoutPaths(run.root);
-    const worktree = join(paths.worktrees, "run-1");
-    mkdirSync(worktree, { recursive: true });
-    writeFileSync(plannerAttemptPath(join(paths.runs, "run-1")), "{}\n");
-
-    const result = inspectImplementRun(run.root, { runId: "run-1" });
-    const text = result.content[0].text;
-
-    expect(text).toContain("Run: run-1");
-    expect(text).toContain("Phase: running");
-    expect(text).toContain(
-      `State: ${join(paths.runs, "run-1", "run-state.json")}`,
-    );
-    expect(text).toContain(`Source plan: ${run.plan.source.planPath}`);
-    expect(text).toContain(
-      `Planner attempt: ${join(paths.runs, "run-1", "planner-attempt-1.json")}`,
-    );
-    expect(text).not.toContain("planner-attempt-1.json (not retained)");
-    expect(text).toContain(
-      `Execution plan: ${join(paths.runs, "run-1", "execution-plan.json")}`,
-    );
-    expect(text).toContain(
-      `Source corpus: ${join(paths.runs, "run-1", "source-corpus.json")}`,
-    );
-    expect(text).not.toContain("source-corpus.json (not retained)");
-    expect(text).toContain(
-      `Artifacts: ${join(paths.runs, "run-1", "artifacts")} (not retained)`,
-    );
-    expect(text).toContain(`Retained worktree: ${worktree}`);
-    expect(result.details).toEqual({
-      checkoutRoot: run.root,
-      runId: "run-1",
-      phase: "running",
+    copyRun(run.root, "new-b", "2099-01-01T00:00:00.000Z");
+    copyRun(run.root, "new-a", "2099-01-01T00:00:00.000Z");
+    copyRun(run.root, "private", "2100-01-01T00:00:00.000Z", true);
+    const first = listImplementRuns(run.root, { limit: 1 });
+    expect(Check(ListRunsResultSchema, first)).toBe(true);
+    expect(first).toMatchObject({
+      ok: true,
+      runs: [{ runId: "new-a" }],
+      nextOffset: 1,
       truncated: false,
     });
-  });
-
-  it("uses one active-run snapshot for targeted phase text and details", async () => {
-    const run = await fixture();
-    const state = run.store.read();
-    state.phase = "failed";
-    state.failure = {
-      category: "runtime",
-      reason: "Inspection snapshot failure.",
-      originPhase: "running",
-      at: "2026-01-01T00:00:00.000Z",
-    };
-    writeFileSync(run.store.path, `${JSON.stringify(state, null, 2)}\n`);
-    fsSpies.readdirSync.mockClear();
-
-    const result = inspectImplementRun(run.root, { runId: "run-1" });
-
-    expect(result.content[0].text).toContain("Phase: failed");
-    expect(result.details.phase).toBe("failed");
-    expect(fsSpies.readdirSync).not.toHaveBeenCalled();
-  });
-
-  it("marks absent planning artifacts as not retained", async () => {
-    const run = await fixture();
-    const paths = checkoutPaths(run.root);
-    const state = run.store.read();
-    state.phase = "failed";
-    state.executionPlan = undefined;
-    state.workstreams = { source: {}, overall: {} };
-    state.tasks = {};
-    state.failure = {
-      category: "runtime",
-      reason: "Planning failed.",
-      originPhase: "planning",
-      at: "2026-01-01T00:00:00.000Z",
-    };
-    writeFileSync(run.store.path, `${JSON.stringify(state, null, 2)}\n`);
-    rmSync(join(paths.runs, "run-1", "execution-plan.json"));
-    rmSync(join(paths.runs, "run-1", "source-corpus.json"));
-
-    const result = inspectImplementRun(run.root, { runId: "run-1" });
-    const text = result.content[0].text;
-
-    expect(text).toContain("planner-attempt-1.json (not retained)");
-    expect(text).toContain("execution-plan.json (not retained)");
-    expect(text).toContain("source-corpus.json (not retained)");
-  });
-
-  it("structures finding evidence without changing its content", async () => {
-    const run = await fixture();
-    const state = run.store.read();
-    state.findings["finding-1"] = {
-      id: "finding-1",
-      candidateId: "candidate-1",
-      workstream: { kind: "source", id: "first-stream" },
-      scope: { kind: "source", id: "first-stream" },
-      summary: "Finding summary",
-      evidence: "Detailed finding evidence",
-      requiredChange: "Required change",
-      acceptanceCriteria: ["Expected behavior"],
-      origin: "initial",
-      introducedRound: 1,
-      status: "open",
-    };
-
-    const text = formatStatus(state);
-
-    expect(text).toContain("Workstreams:\n- first-stream:");
-    expect(text).toContain(
-      "Open findings: 1\n- finding-1: Detailed finding evidence",
-    );
-  });
-
-  it("renders a quiet collapsed row and the canonical result when expanded", async () => {
-    const run = await fixture();
-    const tool = inspectionTool();
-    const result = inspectImplementRun(run.root, { runId: "run-1" });
-    const theme = {
-      bold: (text: string) => text,
-      fg: (_color: string, text: string) => text,
-    };
-
-    expect(
-      tool
-        .renderCall({ runId: "run-1" }, theme, { isPartial: false })
-        .render(200)
-        .map((line: string) => line.trimEnd())
-        .join("\n"),
-    ).toBe("inspect_implement_run run-1");
-    expect(
-      tool
-        .renderResult(result, { expanded: false, isPartial: false }, theme, {
-          isError: false,
-        })
-        .render(200)
-        .join("\n"),
-    ).toContain("Implement run run-1");
-    expect(
-      tool
-        .renderResult(result, { expanded: true, isPartial: false }, theme, {
-          isError: false,
-        })
-        .render(20_000)
-        .map((line: string) => line.trimEnd())
-        .join("\n"),
-    ).toContain(result.content[0].text);
-  });
-
-  it("keeps inspection errors visible while collapsed", () => {
-    const tool = inspectionTool();
-    const theme = {
-      bold: (text: string) => text,
-      fg: (_color: string, text: string) => text,
-    };
-    const text = tool
-      .renderResult(
-        {
-          content: [
-            { type: "text", text: "Run is unavailable or historical." },
-          ],
-        },
-        { expanded: false, isPartial: false },
-        theme,
-        { isError: true },
-      )
-      .render(200)
-      .map((line: string) => line.trimEnd())
-      .join("\n");
-
-    expect(text).toBe("Run is unavailable or historical.");
-  });
-
-  it("rejects symlinked retained runs through durable validation", async () => {
-    const run = await fixture();
-    const paths = checkoutPaths(run.root);
-    const runPath = join(paths.runs, "run-1");
-    const target = join(run.root, "other-run");
-    cpSync(runPath, target, { recursive: true });
-    rmSync(runPath, { recursive: true });
-    symlinkSync(target, runPath);
-
-    expect(() => inspectImplementRun(run.root, { runId: "run-1" })).toThrow(
-      "symlinked",
-    );
-  });
-
-  it("bounds output and directs the agent to authoritative durable state", () => {
-    const path = "/checkout/.pi/pipkin/implement/runs/run-1/run-state.json";
-    const result = boundOutput(`${"x".repeat(30)}\n`.repeat(3_000), path);
-
-    expect(Buffer.byteLength(result.text, "utf8")).toBeLessThanOrEqual(
-      DEFAULT_MAX_BYTES,
-    );
-    expect(result.text.split("\n").length).toBeLessThanOrEqual(
-      DEFAULT_MAX_LINES,
-    );
-    expect(result).toMatchObject({ truncated: true });
-    expect(result.text).toContain(`Read ${path}`);
-  });
-
-  it("resolves the checkout root from the invoking cwd", async () => {
-    const run = await fixture();
-    rmSync(join(run.root, ".pi"), { recursive: true });
-    execFileSync("git", ["init", "-q"], { cwd: run.root });
-    const nested = join(run.root, "nested", "directory");
-    mkdirSync(nested, { recursive: true });
-    const tool = inspectionTool();
-
-    const result = await tool.execute("tool-call", {}, undefined, undefined, {
-      cwd: nested,
+    expect(listImplementRuns(run.root, { offset: 1, limit: 1 })).toMatchObject({
+      runs: [{ runId: "new-b" }],
+      nextOffset: 2,
     });
+    expect(listImplementRuns(run.root, { offset: 2 })).not.toHaveProperty(
+      "nextOffset",
+    );
+    expect(JSON.stringify(listImplementRuns(run.root, {}))).not.toContain(
+      "private",
+    );
+  });
 
-    expect(tool.name).toBe("inspect_implement_run");
-    expect(tool.promptSnippet).toBeUndefined();
-    expect(tool.promptGuidelines).toBeUndefined();
-    expect(result.content[0].text).toBe(
-      "Implement: no retained runs in this checkout.",
+  it("returns bounded projection and descriptors without state, prompts, or writes", async () => {
+    const run = await fixture();
+    const before = readFileSync(run.store.path, "utf8");
+    const result = inspectImplementRun(run.root, { runId: "run-1" });
+    expect(Check(InspectResultSchema, result)).toBe(true);
+    expect(result).toMatchObject({
+      ok: true,
+      run: {
+        runId: "run-1",
+        phase: "running",
+        artifacts: expect.arrayContaining([
+          { kind: "state", path: run.store.path, retained: true },
+        ]),
+      },
+    });
+    expect(result).not.toHaveProperty("run.processLeases");
+    expect(readFileSync(run.store.path, "utf8")).toBe(before);
+  });
+
+  it("denies missing, foreign, unsafe and symlinked targets without unrelated disclosure", async () => {
+    const run = await fixture();
+    copyRun(run.root, "foreign", "2099-01-01T00:00:00.000Z", true);
+    symlinkSync(
+      join(checkoutPaths(run.root).runs, "run-1"),
+      join(checkoutPaths(run.root).runs, "linked"),
     );
-    expect(result.details.checkoutRoot).toBe(
-      execFileSync("git", ["rev-parse", "--show-toplevel"], {
-        cwd: nested,
-        encoding: "utf8",
-      }).trim(),
-    );
+    for (const runId of ["missing", "foreign", "linked"]) {
+      const result = inspectImplementRun(run.root, { runId });
+      expect(Check(InspectResultSchema, result)).toBe(true);
+      expect(result).toMatchObject({ ok: false, error: { code: "not_found" } });
+      expect(JSON.stringify(result)).not.toContain("unrelated");
+    }
+    expect(
+      inspectImplementRun(run.root, { runId: "../foreign" }),
+    ).toMatchObject({ ok: false, error: { code: "invalid_arguments" } });
+  });
+
+  it("discloses owner enumeration truncation without inventing totals", async () => {
+    const run = await fixture();
+    const runs = checkoutPaths(run.root).runs;
+    for (let index = 0; index < 1001; index++) {
+      mkdirSync(join(runs, `historical-${index}`));
+    }
+    const result = listImplementRuns(run.root, {});
+    expect(result).toMatchObject({ ok: true, truncated: true });
+    expect(result).not.toHaveProperty("nextOffset");
+    expect(result).not.toHaveProperty("total");
+  });
+
+  it("registers only deferred closed typed operations and validates real results", async () => {
+    const run = await fixture();
+    execFileSync("git", ["init", run.root]);
+    const tools: any[] = [];
+    registerImplementInspectionTool({
+      registerTool: (tool: unknown) => tools.push(tool),
+    } as never);
+    expect(tools.map((tool) => tool.name)).toEqual([
+      "implement_list_runs",
+      "implement_inspect",
+    ]);
+    for (const tool of tools) {
+      expect(tool.exposure).toBe("deferred");
+      expect(tool.namespace.name).toBe("implement");
+      expect(tool.parameters.additionalProperties).toBe(false);
+      for (const input of [
+        tool.name === "implement_inspect" ? { runId: "run-1" } : {},
+        tool.name === "implement_inspect"
+          ? { runId: "missing" }
+          : { limit: 99 },
+      ]) {
+        const result = await tool.execute("call", input, undefined, undefined, {
+          cwd: run.root,
+        });
+        expect(Check(tool.outputSchema, result.structuredContent)).toBe(true);
+        expect(JSON.parse(result.content[0].text)).toEqual(
+          result.structuredContent,
+        );
+        expect(result.isError).toBe(!result.structuredContent.ok);
+        const theme = {
+          bold: (text: string) => text,
+          fg: (_color: string, text: string) => text,
+        };
+        expect(
+          tool
+            .renderResult(
+              result,
+              { expanded: false, isPartial: false },
+              theme,
+              { isError: result.isError },
+            )
+            .render(200)
+            .join("\n"),
+        ).toContain("Implement");
+      }
+    }
   });
 });
