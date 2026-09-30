@@ -112,6 +112,18 @@ describe("Content-Length JSON-RPC protocol", () => {
       failureReason: "LSP is read-only",
     });
   });
+  it("contains unexpected notification listener failures and rejects pending requests", async () => {
+    const child = new FakeProcess();
+    const connection = new JsonRpcConnection(child);
+    connection.onNotification(() => {
+      throw new Error("invalid notification");
+    });
+    const pending = connection.request("slow");
+    const rejection = expect(pending).rejects.toThrow("invalid notification");
+    child.stdout.write(frame({ method: "broken", params: {} }));
+    await rejection;
+    expect(connection.closed).toBe(true);
+  });
   it("does not write notifications or replies after close races", async () => {
     const child = new FakeProcess();
     const connection = new JsonRpcConnection(child, async () => {

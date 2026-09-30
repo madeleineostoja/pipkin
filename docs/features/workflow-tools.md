@@ -4,21 +4,21 @@ Pipkin includes several focused utilities for semantic navigation, overlapping c
 
 ## LSP
 
-The read-only `lsp` tool complements text search with language-server relationships and type information.
+Nine read-only tools in the deferred `lsp` namespace complement text search with language-server relationships and type information. There is no `lsp` dispatcher alias.
 
-| Action              | Question answered                                                    |
-| ------------------- | -------------------------------------------------------------------- |
-| `definition`        | Where is this symbol defined?                                        |
-| `type_definition`   | Where is its type defined?                                           |
-| `implementation`    | What implements this contract?                                       |
-| `references`        | Where is it used?                                                    |
-| `hover`             | What type or documentation does the server know here?                |
-| `document_symbols`  | What symbols are in this file?                                       |
-| `workspace_symbols` | Where is a symbol with this name in the workspace?                   |
-| `diagnostics`       | What diagnostics does the server report for this file?               |
-| `status`            | Which servers are discovered, running, cooling down, or unavailable? |
+| Tool                    | Successful data                          |
+| ----------------------- | ---------------------------------------- |
+| `lsp_definition`        | Definition `locations`                   |
+| `lsp_type_definition`   | Type-definition `locations`              |
+| `lsp_implementation`    | Implementation `locations`               |
+| `lsp_references`        | Reference `locations`, with declarations |
+| `lsp_hover`             | Hover `text`; empty text is valid        |
+| `lsp_document_symbols`  | File `symbols`                           |
+| `lsp_workspace_symbols` | Workspace `symbols`                      |
+| `lsp_diagnostics`       | `diagnostics` and freshness evidence     |
+| `lsp_status`            | Configured and live `servers`            |
 
-Each call places one action-specific object under `request`. Position queries use a workspace-relative or absolute `file` with 1-indexed `line` and `column`. When symbol text is known, `symbol` can replace the column and `occurrence` selects a repeated instance.
+Position tools take `{file, position, timeout?}`. `position` is either `{line,column}` or `{line,symbol,occurrence?}`; all numeric selectors are positive integers. Symbol selection finds literal text on that line, with occurrence defaulting to the first match. Columns count UTF-16 code units; coordinates are 1-based, and range ends are exclusive. A column may be one past the line end, not beyond it. File tools take `{file,timeout?}`; workspace symbols takes `{query,file?,timeout?}` with a file routing hint; status takes `{}`. Files must be inside the caller's workspace, including after symlink resolution.
 
 Use LSP for focused semantic relationships, text search for literal discovery, and Explore for multi-step mapping. Diagnostics are advisory; project lint, typecheck, tests, and builds remain authoritative.
 
@@ -30,9 +30,13 @@ Use LSP for focused semantic relationships, text search for literal discovery, a
 | Svelte                  | `.svelte`                                                    | Packaged `svelte-language-server`                                      |
 | Ruby                    | `.rb`, `.rake`                                               | Project-provisioned `ruby-lsp` from `bin/ruby-lsp` or `PATH`           |
 
-Servers start lazily, are shared per workspace, and retire after idle time. Requests default to five seconds and cap at 15. Results are bounded to 100 locations, symbols, or diagnostics and 2,000 hover characters; rendered lists also use Pi's ordinary tool-result limits.
+Servers start lazily, share one pool across operations and sessions, and retire after idle time. Requests default to five seconds, require at least 0.1 seconds, and cap at 15; acquisition and querying share one budget. Status inspects all three configured server kinds without launching them: `configured`, `available`, `running`, `state` (`available`, `starting`, `running`, `unavailable`), workspace, and bounded reason where relevant.
 
-Unavailable servers and unsupported capabilities return non-fatal fallback results. Collapsed rows identify the operation, target, and available result count; expanding a row preserves the complete bounded semantic output. The model cannot choose an executable, send arbitrary protocol methods, apply edits, or invoke server commands. Language servers are trusted processes outside Sandbox and inherit Pi's environment.
+Both direct content and codemode receive the same bounded JSON domain result. Success has `ok:true` and `truncated`; lists contain at most 100 items, applicable item text is capped at 2,000 characters, and the entire JSON payload obeys Pi's ordinary byte/line bounds. Locations are `{file,line,column,endLine,endColumn}`; symbols are `{name,kind?,location?}`; diagnostics are `{range:{line,column,endLine,endColumn},severity,message,source?,code?}`. Workspace files are relative where possible; external files and URIs keep their normalized external identity. Truncation never asserts an unverified total count.
+
+Diagnostics run only when requested. There is no save/edit hook, proactive server startup, or unsolicited diagnostic injection. A current empty diagnostic list is a valid result. Timeout with a usable cache (even an empty prior snapshot) succeeds with `freshness:"stale"` and `timedOut:true`, retaining messages and owner `evidence` (`fresh`, `stale`, optional `resultId`). `freshness:"unknown"` does not establish currency. No usable snapshot returns an error, never a clean-file claim. Malformed requested server responses fail with `request_failed` rather than empty semantic data. Invalid pushed diagnostic updates are discarded without replacing cached evidence; a pending request still waits within its deadline for valid data, then returns stale cache or a timeout error.
+
+Failures have `ok:false`, `error:{code,message}` and native `isError:true`; codemode can inspect that data without relying on a thrown exception. Owner codes are `invalid_arguments`, `invalid_position`, `workspace_denied`, `not_found`, `server_unavailable`, `unsupported`, `timeout`, `cancelled`, `request_failed`, and `not_current` (a response superseded or invalidated before it could establish currency). Continue with source search or project tooling when unavailable; do not install dependencies unless asked. Collapsed rows summarize results or freshness; expansion preserves the bounded JSON payload. The model cannot choose an executable, send arbitrary protocol methods, apply edits, or invoke server commands. Language servers are trusted processes outside Sandbox and inherit Pi's environment.
 
 ## Managed processes
 

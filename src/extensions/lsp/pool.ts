@@ -27,6 +27,7 @@ export type PoolUnavailable = {
   available: false;
   reason: string;
   coolingDown?: boolean;
+  timedOut?: boolean;
 };
 export type PoolAcquireResult = LspClient | PoolUnavailable;
 export type PoolAcquireOptions = {
@@ -431,6 +432,7 @@ export class LspPool {
       available: false,
       reason: error?.message ?? "LSP server is unavailable",
       ...(coolingDown ? { coolingDown: true } : {}),
+      ...(error instanceof RequestTimeoutError ? { timedOut: true } : {}),
     };
   }
 }

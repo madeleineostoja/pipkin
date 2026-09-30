@@ -111,27 +111,27 @@ Native Pi separately supplies `/mcp` for server management and authentication.
 
 These tools are called by the agent rather than typed as slash commands. They use native deferred discovery and codemode invocation; Sandbox `bash` stays direct. Native `read`, `edit`, `write`, and other user-enabled built-ins remain available. Private completion stays model-only; discovery never grants permission.
 
-| Tool                                                                    | Purpose                                                                                |
-| ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `bash`                                                                  | Run a command with output or explicit status presentation and retained evidence        |
-| `output_list`                                                           | Recover authorized execution capture references                                        |
-| `read_output`                                                           | Read immutable execution output or original transcript content                         |
-| `lsp`                                                                   | Query definitions, types, implementations, references, symbols, hover, and diagnostics |
-| `process_start`                                                         | Accept managed foreground work while independent work continues                        |
-| `process_list`                                                          | Recover session-owned process IDs and metadata                                         |
-| `process_inspect`                                                       | Immediately capture current process output/state                                       |
-| `process_wait`                                                          | Join finite work without killing it on wait timeout/cancellation                       |
-| `process_stop`                                                          | Stop unneeded work and join cleanup                                                    |
-| `Agent`                                                                 | Start an Explore or Review managed subagent and return its ID                          |
-| `get_subagent_result`                                                   | Join or inspect a managed subagent                                                     |
-| `steer_subagent`                                                        | Queue guidance for a running managed subagent                                          |
-| `inspect_implement_run`                                                 | List or inspect durable Implement runs and artifact paths                              |
-| `web_fetch`                                                             | Retrieve bounded readable content from one public URL                                  |
-| `batch_web_fetch`                                                       | Retrieve one to eight public URLs with fixed concurrency                               |
-| [Browser observations](docs/features/browser.md#observation-operations) | Inspect isolated rendered pages and forward native images                              |
-| [Browser actions](docs/features/browser.md#action-operations)           | Strict interactions with compact page outcomes, without implicit snapshots             |
-| `inspect_papercuts`                                                     | Read findings on request or check for duplicates before recording                      |
-| `record_papercut`                                                       | Record qualifying incidental friction after an exercised workaround                    |
+| Tool                                                                    | Purpose                                                                             |
+| ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `bash`                                                                  | Run a command with output or explicit status presentation and retained evidence     |
+| `output_list`                                                           | Recover authorized execution capture references                                     |
+| `read_output`                                                           | Read immutable execution output or original transcript content                      |
+| `lsp_*`                                                                 | Nine on-demand semantic operations with structured results and diagnostic freshness |
+| `process_start`                                                         | Accept managed foreground work while independent work continues                     |
+| `process_list`                                                          | Recover session-owned process IDs and metadata                                      |
+| `process_inspect`                                                       | Immediately capture current process output/state                                    |
+| `process_wait`                                                          | Join finite work without killing it on wait timeout/cancellation                    |
+| `process_stop`                                                          | Stop unneeded work and join cleanup                                                 |
+| `Agent`                                                                 | Start an Explore or Review managed subagent and return its ID                       |
+| `get_subagent_result`                                                   | Join or inspect a managed subagent                                                  |
+| `steer_subagent`                                                        | Queue guidance for a running managed subagent                                       |
+| `inspect_implement_run`                                                 | List or inspect durable Implement runs and artifact paths                           |
+| `web_fetch`                                                             | Retrieve bounded readable content from one public URL                               |
+| `batch_web_fetch`                                                       | Retrieve one to eight public URLs with fixed concurrency                            |
+| [Browser observations](docs/features/browser.md#observation-operations) | Inspect isolated rendered pages and forward native images                           |
+| [Browser actions](docs/features/browser.md#action-operations)           | Strict interactions with compact page outcomes, without implicit snapshots          |
+| `inspect_papercuts`                                                     | Read findings on request or check for duplicates before recording                   |
+| `record_papercut`                                                       | Record qualifying incidental friction after an exercised workaround                 |
 
 ## Important safety boundaries
 

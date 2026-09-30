@@ -13,15 +13,30 @@ import {
   toolCallRenderer,
   toolResultRenderer,
 } from "#lib/ui/tool-result-renderer";
-import { Type, type Static } from "typebox";
-import { RequestCancelledError, RequestTimeoutError } from "./protocol.js";
+import { Value } from "typebox/value";
+import {
+  actions,
+  outputFor,
+  parametersFor,
+  type Action,
+  type LspData,
+  type ErrorCode,
+  type OperationInput,
+  type DisplayLocation,
+  type DisplaySymbol,
+  type ServerState,
+} from "./contracts.js";
+import {
+  isRequestCancelledError,
+  isRequestTimeoutError,
+  RequestTimeoutError,
+} from "./protocol.js";
 import {
   normalizeHoverResult,
   normalizeLocations,
   normalizeSymbolsResult,
-  type NormalizedDiagnostic,
+  safeText,
   type NormalizedLocation,
-  type NormalizedSymbol,
 } from "./normalize.js";
 import { getLspPool, type LspPool } from "./pool.js";
 import {
@@ -38,134 +53,18 @@ import {
   type ServerKind,
 } from "./workspace.js";
 
-const MAX_TIMEOUT_MS = 15_000;
 const DEFAULT_TIMEOUT_MS = 5_000;
-const OMITTED_RESULTS_LINE =
-  "- … Additional results omitted to keep LSP output bounded.";
+const MAX_TIMEOUT_MS = 15_000;
 const warningKey = Symbol.for("pipkin:lsp:unavailable-warnings");
-type WarningStore = Set<string>;
-
-const Actions = [
-  "definition",
-  "type_definition",
-  "implementation",
-  "references",
-  "hover",
-  "document_symbols",
-  "workspace_symbols",
-  "diagnostics",
-  "status",
-] as const;
-type Action = (typeof Actions)[number];
-
-const lspFile = Type.String({
-  description: "Workspace-relative or absolute source file.",
-});
-const lspLine = Type.Integer({
-  minimum: 1,
-  description: "1-indexed source line.",
-});
-const lspColumn = Type.Integer({
-  minimum: 1,
-  description: "1-indexed source column.",
-});
-const lspSymbol = Type.String({
-  description: "Symbol text resolved on the selected line.",
-});
-const lspOccurrence = Type.Optional(
-  Type.Integer({
-    minimum: 1,
-    description: "1-indexed occurrence of repeated symbol text.",
-  }),
-);
-const lspTimeout = Type.Optional(
-  Type.Number({
-    minimum: 0.1,
-    description: "Request timeout in seconds, capped at 15 seconds.",
-  }),
-);
-const positionAction = Type.Union(
-  [
-    "definition",
-    "type_definition",
-    "implementation",
-    "references",
-    "hover",
-  ].map((action) => Type.Literal(action)),
-  { description: "Position-based semantic operation." },
-);
-const fileAction = Type.Union(
-  ["document_symbols", "diagnostics"].map((action) => Type.Literal(action)),
-  { description: "File-based semantic operation." },
-);
-const lspRequest = Type.Union(
-  [
-    Type.Object(
-      {
-        action: positionAction,
-        file: lspFile,
-        line: lspLine,
-        column: lspColumn,
-        timeout: lspTimeout,
-      },
-      { additionalProperties: false },
-    ),
-    Type.Object(
-      {
-        action: positionAction,
-        file: lspFile,
-        line: lspLine,
-        symbol: lspSymbol,
-        occurrence: lspOccurrence,
-        timeout: lspTimeout,
-      },
-      { additionalProperties: false },
-    ),
-    Type.Object(
-      {
-        action: fileAction,
-        file: lspFile,
-        timeout: lspTimeout,
-      },
-      { additionalProperties: false },
-    ),
-    Type.Object(
-      {
-        action: Type.Literal("workspace_symbols", {
-          description: "Search workspace symbols by query.",
-        }),
-        query: Type.String({
-          description: "Required workspace symbol query.",
-        }),
-        file: Type.Optional(
-          Type.String({
-            description: "Optional file used to select a workspace route.",
-          }),
-        ),
-        timeout: lspTimeout,
-      },
-      { additionalProperties: false },
-    ),
-    Type.Object(
-      {
-        action: Type.Literal("status", {
-          description: "Report configured language-server status.",
-        }),
-      },
-      { additionalProperties: false },
-    ),
-  ],
-  { description: "Action-specific language-semantic request." },
-);
-
-export const LspParameters = Type.Object(
-  { request: lspRequest },
-  {
-    additionalProperties: false,
-    description: "One action-specific LSP request.",
-  },
-);
-type LspParametersInput = Static<typeof LspParameters>;
+const capabilityFor = {
+  definition: "definition",
+  type_definition: "typeDefinition",
+  implementation: "implementation",
+  references: "references",
+  hover: "hover",
+  document_symbols: "documentSymbol",
+  workspace_symbols: "workspaceSymbol",
+} as const;
 type LspInput = {
   action: Action;
   file?: string;
@@ -176,149 +75,148 @@ type LspInput = {
   query?: string;
   timeout?: number;
 };
-type ToolDetails = Record<string, unknown>;
+type Context = Pick<ExtensionContext, "cwd" | "ui">;
+type Route = {
+  kind: ServerKind;
+  workspaceRoot: string;
+  server: ResolvedServer | UnavailableServer;
+};
 
-const positionActions = new Set<Action>([
-  "definition",
-  "type_definition",
-  "implementation",
-  "references",
-  "hover",
-]);
-const capabilityFor = {
-  definition: "definition",
-  type_definition: "typeDefinition",
-  implementation: "implementation",
-  references: "references",
-  hover: "hover",
-  document_symbols: "documentSymbol",
-  workspace_symbols: "workspaceSymbol",
-} as const;
-
+const descriptions: Record<Action, string> = {
+  definition: "Find a symbol's definitions.",
+  type_definition: "Find a symbol's type definitions.",
+  implementation: "Find implementations of a symbol or contract.",
+  references: "Find references to a symbol, including its declaration.",
+  hover:
+    "Read type and documentation text at a source position; empty text is valid.",
+  document_symbols: "Read named symbols in a source file.",
+  workspace_symbols: "Search named symbols in the selected workspace.",
+  diagnostics:
+    "Request file diagnostics on demand, with explicit freshness and timeout evidence. Cached results are not authoritative validation.",
+  status:
+    "Inspect configured server availability and running state without starting servers.",
+};
 export function registerLsp(pi: ExtensionAPI): void {
-  pi.registerTool({
-    name: "lsp",
-    exposure: "deferred",
-    namespace: {
-      name: "lsp",
-      description:
-        "Read workspace language semantics and bounded server diagnostics.",
-    },
-    annotations: { readOnlyHint: true, openWorldHint: false },
-    label: "lsp",
-    description:
-      "Read-only, workspace-scoped language-semantic queries for definitions, implementations, references, type information, symbols, hover, diagnostics, and server status. Results are bounded and reflect available configured language servers.",
-    parameters: LspParameters,
-    renderCall: toolCallRenderer({
-      name: "lsp",
-      detail: (args: LspParametersInput) => {
-        const request = args.request as LspInput;
-        const action = request.action.replaceAll("_", " ");
-        const target = lspTarget(request, action);
-        return `${action}${target ? ` · ${target}` : ""}`;
+  for (const action of actions) {
+    const name = `lsp_${action}`;
+    pi.registerTool({
+      name,
+      label: name,
+      exposure: "deferred",
+      namespace: {
+        name: "lsp",
+        description:
+          "Read workspace language semantics and bounded on-demand diagnostics through shared lazy language servers.",
       },
-      pending: "Querying language server…",
-    }),
-    async execute(
-      _toolCallId,
-      input: LspParametersInput,
-      signal,
-      _onUpdate,
-      ctx,
-    ) {
-      return executeLsp(input.request as LspInput, signal, ctx);
-    },
-    renderResult: toolResultRenderer({
-      summary(result, context) {
-        return lspSummary(result.details, context.args, result);
+      annotations: { readOnlyHint: true, openWorldHint: false },
+      description: `${descriptions[action]} Read-only and workspace-scoped; results are bounded, coordinates are 1-based UTF-16 with exclusive ends. Unavailable or unsupported requests return structured errors.`,
+      parameters: parametersFor(action),
+      outputSchema: outputFor(action),
+      renderCall: toolCallRenderer({
+        name,
+        detail: (args: OperationInput) =>
+          compactDisplayText(
+            "file" in args
+              ? args.file
+              : "query" in args
+                ? args.query
+                : undefined,
+            100,
+          ),
+        pending: "Querying language server…",
+      }),
+      async execute(_id, input, signal, _onUpdate, ctx) {
+        return executeLspOperation(action, input, signal, ctx);
       },
-      partial() {
-        return "Querying language server…";
-      },
-      error(result) {
-        return (
-          firstText(result.content)?.split("\n", 1)[0] ?? "LSP request failed."
-        );
-      },
-    }),
-  });
+      renderResult: toolResultRenderer({
+        summary(result) {
+          return lspSummary(result.details);
+        },
+        partial() {
+          return "Querying language server…";
+        },
+        error(result) {
+          return lspSummary(result.details)[0] ?? "LSP request failed.";
+        },
+      }),
+    });
+  }
 }
 
-export async function executeLsp(
+async function executeLspOperation(
+  action: Action,
+  input: OperationInput,
+  signal: AbortSignal | undefined,
+  ctx: Context,
+) {
+  if (!Value.Check(parametersFor(action), input)) {
+    return failure(
+      "invalid_arguments",
+      "Invalid LSP arguments; use the operation's closed input schema.",
+    );
+  }
+  const position = "position" in input ? input.position : undefined;
+  return executeLsp({ action, ...input, ...position }, signal, ctx);
+}
+
+async function executeLsp(
   input: LspInput,
   signal: AbortSignal | undefined,
-  ctx: Pick<ExtensionContext, "cwd" | "ui">,
-): Promise<{
-  content: Array<{ type: "text"; text: string }>;
-  details: ToolDetails;
-}> {
-  const validation = validate(input);
-  if (validation) {
-    return result(validation, {
-      action: input.action,
-      available: true,
-      success: false,
-    });
+  ctx: Context,
+) {
+  if (signal?.aborted) {
+    return failure("cancelled", "LSP request cancelled.");
   }
   if (input.action === "status") {
-    const details = lspStatus(ctx.cwd);
-    const rendered = renderStatus(details);
-    return result(rendered.text, {
-      ...details,
-      truncation: { content: rendered.truncated },
-    });
+    return result(lspStatus(ctx.cwd));
   }
-  let resolvedRoute: { kind: ServerKind; workspaceRoot: string } | undefined;
+  let target: string | undefined;
   try {
-    const target = targetFor(input, ctx.cwd);
-    const route = routeFor(input, target, ctx.cwd);
-    if ("error" in route) {
-      return result(route.error, {
-        action: input.action,
-        available: true,
-        success: false,
-      });
+    if (input.file) {
+      const candidate = resolve(canonicalPath(ctx.cwd), input.file);
+      if (!isWithin(ctx.cwd, candidate)) {
+        return failure("workspace_denied", "LSP target is outside workspace.");
+      }
+      target = assertWorkspaceFile(ctx.cwd, candidate);
+      if (!existsSync(target)) {
+        return failure("not_found", "LSP target does not exist.");
+      }
     }
-    if ("available" in route.server) {
-      return unavailable(
-        input.action,
-        route.workspaceRoot,
-        route.kind,
-        route.server.reason,
-        ctx,
-      );
+  } catch (error) {
+    return failure("invalid_arguments", conciseError(error));
+  }
+  try {
+    const selected = routeFor(target, ctx.cwd);
+    if ("error" in selected) {
+      return failure("unsupported", selected.error);
     }
-    resolvedRoute = route;
+    const route = selected;
     let position: { line: number; character: number } | undefined;
-    if (positionActions.has(input.action)) {
+    if (input.line !== undefined) {
       try {
         position = positionFor(input, target!);
       } catch (error) {
-        return result(conciseError(error), {
-          action: input.action,
-          available: true,
-          success: false,
-          server: route.kind,
-          workspace: route.workspaceRoot,
-          invalidPosition: true,
-        });
+        return failure("invalid_position", conciseError(error));
       }
     }
-    const deadline = Date.now() + boundedTimeout(input.timeout);
+    if ("available" in route.server) {
+      return unavailable(route, route.server.reason, ctx);
+    }
+    const deadline =
+      Date.now() +
+      Math.min(
+        MAX_TIMEOUT_MS,
+        Math.round((input.timeout ?? DEFAULT_TIMEOUT_MS / 1000) * 1000),
+      );
     const client = await getLspPool().acquire(
       route.server,
       route.workspaceRoot,
       { timeoutMs: remainingTimeout(deadline), signal },
     );
     if ("available" in client) {
-      return unavailable(
-        input.action,
-        route.workspaceRoot,
-        route.kind,
-        client.reason,
-        ctx,
-        client.coolingDown,
-      );
+      return client.timedOut
+        ? failure("timeout", client.reason)
+        : unavailable(route, client.reason, ctx);
     }
     if (input.action === "diagnostics") {
       const diagnostics = await client.diagnostics(
@@ -327,51 +225,44 @@ export async function executeLsp(
         client.capabilities,
         { timeoutMs: remainingTimeout(deadline), signal },
       );
-      const displayedDiagnostics = diagnostics.diagnostics.map((diagnostic) =>
-        displayDiagnostic(diagnostic, target!),
-      );
-      const rendered = renderBoundedList(
-        `${countLabel(displayedDiagnostics.length, diagnostics.truncated)} LSP ${pluralize("diagnostic", displayedDiagnostics.length, diagnostics.truncated)} for ${displayFile(target!, ctx.cwd)}:`,
-        `No LSP diagnostics for ${displayFile(target!, ctx.cwd)}.`,
-        displayedDiagnostics.map((diagnostic) =>
-          renderDiagnostic(diagnostic, ctx.cwd),
-        ),
-        diagnostics.truncated,
-      );
-      const details = {
-        action: input.action,
-        available: true,
-        success: diagnostics.fresh,
-        server: route.kind,
-        workspace: route.workspaceRoot,
-        diagnostics: displayedDiagnostics,
-        truncation: {
-          diagnostics: diagnostics.truncated,
-          content: rendered.truncated,
+      if (!diagnostics.fresh && !diagnostics.hasSnapshot) {
+        return failure(
+          diagnostics.timedOut ? "timeout" : "not_current",
+          "No usable diagnostic snapshot was available; run project validation for authoritative results.",
+        );
+      }
+      const resultId =
+        diagnostics.resultId === undefined
+          ? undefined
+          : safeText(diagnostics.resultId);
+      return result({
+        ok: true,
+        diagnostics: diagnostics.diagnostics.map((diagnostic) => ({
+          ...diagnostic,
+          range: displayRange(diagnostic.range),
+        })),
+        freshness: diagnostics.fresh
+          ? "current"
+          : diagnostics.stale || diagnostics.timedOut
+            ? "stale"
+            : "unknown",
+        timedOut: Boolean(diagnostics.timedOut),
+        truncated: diagnostics.truncated || (resultId?.length ?? 0) > 2000,
+        evidence: {
+          fresh: diagnostics.fresh,
+          stale: Boolean(diagnostics.stale),
+          ...(resultId === undefined
+            ? {}
+            : { resultId: resultId.slice(0, 2000) }),
         },
-        ...(diagnostics.stale ? { stale: true } : {}),
-        ...(diagnostics.timedOut ? { timedOut: true } : {}),
-      };
-      return result(
-        diagnostics.fresh
-          ? rendered.text
-          : "LSP diagnostics were not fresh before the timeout; run project validation for authoritative results.",
-        details,
-      );
+      });
     }
     const capability =
       capabilityFor[input.action as keyof typeof capabilityFor];
     if (!capability || !client.supports(capability)) {
-      return result(
-        `The ${route.kind} LSP server does not support ${String(input.action).replaceAll("_", " ")}. Use source search or project tooling instead.`,
-        {
-          action: input.action,
-          available: true,
-          success: false,
-          server: route.kind,
-          workspace: route.workspaceRoot,
-          unsupported: true,
-        },
+      return failure(
+        "unsupported",
+        `The ${route.kind} LSP server does not support ${input.action}.`,
       );
     }
     const raw =
@@ -387,83 +278,37 @@ export async function executeLsp(
             position,
             { timeoutMs: remainingTimeout(deadline), signal },
           );
-    return semanticResult(input.action, raw, route, target, ctx.cwd);
+    return semanticResult(input.action, raw, target, ctx.cwd);
   } catch (error) {
-    if (signal?.aborted || error instanceof RequestCancelledError) {
-      throw error;
+    if (signal?.aborted || isRequestCancelledError(error)) {
+      return failure("cancelled", "LSP request cancelled.");
     }
-    return unavailable(
-      input.action,
-      resolvedRoute?.workspaceRoot ?? canonicalPath(ctx.cwd),
-      resolvedRoute?.kind ?? "typescript",
-      conciseError(error),
-      ctx,
-    );
-  }
-}
-
-function validate(input: LspInput): string | undefined {
-  if (
-    input.timeout !== undefined &&
-    (!Number.isFinite(input.timeout) || input.timeout <= 0)
-  ) {
-    return "timeout must be a positive number of seconds";
-  }
-  if (positionActions.has(input.action)) {
-    if (!input.file) {
-      return `${input.action} requires file`;
+    if (isRequestTimeoutError(error)) {
+      return failure("timeout", conciseError(error));
     }
-    if (!input.line || input.line < 1) {
-      return `${input.action} requires a 1-indexed line`;
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      error.code === -32601
+    ) {
+      return failure(
+        "unsupported",
+        "The language server does not implement this request.",
+      );
     }
-    if (input.column !== undefined && input.column < 1) {
-      return "column must be 1-indexed";
-    }
-    if (input.column === undefined && !input.symbol) {
-      return `${input.action} requires column or symbol`;
-    }
+    return failure("request_failed", conciseError(error));
   }
-  if (
-    ["document_symbols", "diagnostics"].includes(input.action) &&
-    !input.file
-  ) {
-    return `${input.action} requires file`;
-  }
-  if (input.action === "workspace_symbols" && input.query === undefined) {
-    return "workspace_symbols requires query";
-  }
-  if (input.occurrence !== undefined && input.occurrence < 1) {
-    return "occurrence must be a positive 1-indexed integer";
-  }
-  return undefined;
-}
-
-function targetFor(input: LspInput, cwd: string): string | undefined {
-  if (!input.file) {
-    return undefined;
-  }
-  const target = assertWorkspaceFile(cwd, resolve(cwd, input.file));
-  if (!existsSync(target)) {
-    throw new Error(`LSP target does not exist: ${input.file}`);
-  }
-  return target;
 }
 
 function routeFor(
-  input: LspInput,
   target: string | undefined,
   cwd: string,
-):
-  | {
-      kind: ServerKind;
-      workspaceRoot: string;
-      server: ResolvedServer | UnavailableServer;
-    }
-  | { error: string } {
+): Route | { error: string } {
   if (target) {
     const kind = serverForFile(target);
     if (!kind) {
-      return { error: `Unsupported LSP file type: ${input.file}` };
+      return { error: "Unsupported LSP file type." };
     }
     const workspaceRoot = nearestWorkspaceRoot(kind, target, cwd);
     return { kind, workspaceRoot, server: resolveServer(kind, workspaceRoot) };
@@ -486,11 +331,11 @@ function routeFor(
   const workspaceRoot = active?.workspaceRoot ?? workspace;
   return { kind, workspaceRoot, server: resolveServer(kind, workspaceRoot) };
 }
-
 function discoverKind(workspace: string): ServerKind | undefined {
   if (
-    existsSync(resolve(workspace, "Gemfile")) ||
-    existsSync(resolve(workspace, ".ruby-version"))
+    ["Gemfile", ".ruby-version"].some((name) =>
+      existsSync(resolve(workspace, name)),
+    )
   ) {
     return "ruby";
   }
@@ -513,16 +358,18 @@ function discoverKind(workspace: string): ServerKind | undefined {
   }
   return undefined;
 }
-
 function positionFor(
   input: LspInput,
   file: string,
 ): { line: number; character: number } {
   const line = readFileSync(file, "utf8").split(/\r?\n/)[input.line! - 1];
   if (line === undefined) {
-    throw new Error(`line ${input.line} is outside ${input.file}`);
+    throw new Error(`line ${input.line} is outside the source file`);
   }
   if (input.column !== undefined) {
+    if (input.column > line.length + 1) {
+      throw new Error("column is outside the source line");
+    }
     return { line: input.line! - 1, character: input.column - 1 };
   }
   const symbol = input.symbol!;
@@ -532,34 +379,25 @@ function positionFor(
     start = line.indexOf(symbol, from);
     if (start < 0) {
       throw new Error(
-        `symbol ${JSON.stringify(symbol)} occurrence ${input.occurrence ?? 1} was not found on line ${input.line}`,
+        `symbol occurrence ${input.occurrence ?? 1} was not found on line ${input.line}`,
       );
     }
     from = start + symbol.length;
   }
   return { line: input.line! - 1, character: start };
 }
-
 function semanticResult(
   action: Action,
   raw: unknown,
-  route: { kind: ServerKind; workspaceRoot: string },
   target: string | undefined,
-  displayWorkspace: string,
-): { content: Array<{ type: "text"; text: string }>; details: ToolDetails } {
-  const base = {
-    action,
-    available: true,
-    success: true,
-    server: route.kind,
-    workspace: route.workspaceRoot,
-  };
+  workspace: string,
+) {
   if (action === "hover") {
     const hover = normalizeHoverResult(raw);
-    return result(hover.text ?? "No hover information.", {
-      ...base,
-      hover: hover.text,
-      truncation: { hover: hover.truncated },
+    return result({
+      ok: true,
+      text: hover.text ?? "",
+      truncated: hover.truncated,
     });
   }
   if (action === "document_symbols" || action === "workspace_symbols") {
@@ -570,189 +408,51 @@ function semanticResult(
         ? pathToFileURL(target).href
         : undefined,
     );
-    const displayed = normalized.items.map(displayLocationOrSymbol);
-    const rendered = renderBoundedList(
-      `${countLabel(displayed.length, normalized.truncated)} LSP ${pluralize(action === "document_symbols" ? "document symbol" : "workspace symbol", displayed.length, normalized.truncated)}:`,
-      `No LSP ${action === "document_symbols" ? "document" : "workspace"} symbols found.`,
-      normalized.items.map((symbol) => renderSymbol(symbol, displayWorkspace)),
-      normalized.truncated,
-    );
-    return result(rendered.text, {
-      ...base,
-      symbols: displayed,
-      truncation: {
-        symbols: normalized.truncated,
-        content: rendered.truncated,
-      },
-    });
+    const symbols: DisplaySymbol[] = normalized.items.map((symbol) => ({
+      name: symbol.name,
+      ...(symbol.kind === undefined ? {} : { kind: symbol.kind }),
+      ...(symbol.location
+        ? { location: displayLocation(symbol.location, workspace) }
+        : {}),
+    }));
+    return result({ ok: true, symbols, truncated: normalized.truncated });
   }
   const normalized = normalizeLocations(raw, 100);
-  const displayed = normalized.items.map(displayLocation);
-  const label = locationLabel(action);
-  const rendered = renderBoundedList(
-    `${countLabel(displayed.length, normalized.truncated)} LSP ${pluralize(label, displayed.length, normalized.truncated)}:`,
-    `No LSP ${pluralize(label, 0, false)} found.`,
-    displayed.map((location) => renderLocation(location, displayWorkspace)),
-    normalized.truncated,
-  );
-  return result(rendered.text, {
-    ...base,
-    locations: displayed,
-    truncation: {
-      locations: normalized.truncated,
-      content: rendered.truncated,
-    },
+  return result({
+    ok: true,
+    locations: normalized.items.map((location) =>
+      displayLocation(location, workspace),
+    ),
+    truncated: normalized.truncated,
   });
 }
-
-function displayLocation(location: NormalizedLocation): {
-  file: string;
-  range: {
-    start: { line: number; column: number };
-    end: { line: number; column: number };
-  };
-} {
+function displayRange(range: NormalizedLocation["range"]) {
   return {
-    file: location.uri.startsWith("file:")
-      ? fileURLToPath(location.uri)
-      : location.uri,
-    range: {
-      start: {
-        line: location.range.start.line + 1,
-        column: location.range.start.character + 1,
-      },
-      end: {
-        line: location.range.end.line + 1,
-        column: location.range.end.character + 1,
-      },
-    },
+    line: range.start.line + 1,
+    column: range.start.character + 1,
+    endLine: range.end.line + 1,
+    endColumn: range.end.character + 1,
   };
 }
-type DisplayLocation = ReturnType<typeof displayLocation>;
-type DisplayDiagnostic = Omit<NormalizedDiagnostic, "range"> & {
-  file: string;
-  range: DisplayLocation["range"];
-};
-
-function displayLocationOrSymbol(symbol: NormalizedSymbol): {
-  name: string;
-  kind?: number;
-  location?: DisplayLocation;
-} {
-  return {
-    name: symbol.name,
-    ...(symbol.kind === undefined ? {} : { kind: symbol.kind }),
-    ...(symbol.location ? { location: displayLocation(symbol.location) } : {}),
-  };
-}
-function displayDiagnostic(
-  diagnostic: NormalizedDiagnostic,
-  file: string,
-): DisplayDiagnostic {
-  return {
-    ...diagnostic,
-    file,
-    range: {
-      start: {
-        line: diagnostic.range.start.line + 1,
-        column: diagnostic.range.start.character + 1,
-      },
-      end: {
-        line: diagnostic.range.end.line + 1,
-        column: diagnostic.range.end.character + 1,
-      },
-    },
-  };
-}
-function renderLocation(location: DisplayLocation, workspace: string): string {
-  return `${displayFile(location.file, workspace)}:${location.range.start.line}:${location.range.start.column}`;
-}
-function renderSymbol(symbol: NormalizedSymbol, workspace: string): string {
-  return symbol.location
-    ? `${symbol.name} — ${renderLocation(displayLocation(symbol.location), workspace)}`
-    : symbol.name;
-}
-function renderDiagnostic(
-  diagnostic: DisplayDiagnostic,
+function displayLocation(
+  location: NormalizedLocation,
   workspace: string,
-): string {
-  const severity =
-    ["unknown", "error", "warning", "information", "hint"][
-      diagnostic.severity
-    ] ?? `severity-${diagnostic.severity}`;
-  const origin = [diagnostic.source, diagnostic.code]
-    .filter((value) => value !== undefined)
-    .join(":");
-  return `${severity}${origin ? ` ${origin}` : ""} ${renderLocation({ file: diagnostic.file, range: diagnostic.range }, workspace)} — ${diagnostic.message}`;
-}
-function displayFile(file: string, workspace: string): string {
-  if (!isAbsolute(file) || !isWithin(workspace, file)) {
-    return file;
-  }
-  return (
-    relative(canonicalPath(workspace), canonicalPath(file))
-      .split(sep)
-      .join("/") || "."
-  );
-}
-function renderBoundedList(
-  header: string,
-  empty: string,
-  items: string[],
-  sourceTruncated: boolean,
-): { text: string; truncated: boolean } {
-  if (items.length === 0 && !sourceTruncated) {
-    return { text: empty, truncated: false };
-  }
-  const lines = [header];
-  let outputTruncated = false;
-  for (const [index, item] of items.entries()) {
-    const line = `- ${item}`;
-    const hasMore = index < items.length - 1 || sourceTruncated;
-    const candidate = [
-      ...lines,
-      line,
-      ...(hasMore ? [OMITTED_RESULTS_LINE] : []),
-    ].join("\n");
-    if (
-      truncateHead(candidate, {
-        maxLines: DEFAULT_MAX_LINES,
-        maxBytes: DEFAULT_MAX_BYTES,
-      }).truncated
-    ) {
-      outputTruncated = true;
-      break;
+): DisplayLocation {
+  let file = location.uri;
+  if (file.startsWith("file:")) {
+    try {
+      file = fileURLToPath(file);
+    } catch {
+      /* Keep legitimate non-local identifiers as URIs. */
     }
-    lines.push(line);
   }
-  if (outputTruncated || sourceTruncated) {
-    lines.push(OMITTED_RESULTS_LINE);
+  if (isAbsolute(file) && isWithin(workspace, file)) {
+    file =
+      relative(canonicalPath(workspace), canonicalPath(file))
+        .split(sep)
+        .join("/") || ".";
   }
-  return {
-    text: lines.join("\n"),
-    truncated: outputTruncated || sourceTruncated,
-  };
-}
-function countLabel(count: number, truncated: boolean): string {
-  return `${count}${truncated ? "+" : ""}`;
-}
-function pluralize(value: string, count: number, truncated: boolean): string {
-  return count === 1 && !truncated ? value : `${value}s`;
-}
-function locationLabel(action: Action): string {
-  const labels: Partial<Record<Action, string>> = {
-    definition: "definition location",
-    type_definition: "type definition location",
-    implementation: "implementation location",
-    references: "reference location",
-  };
-  return labels[action] ?? "location";
-}
-function boundedTimeout(seconds: number | undefined): number {
-  return Math.min(
-    MAX_TIMEOUT_MS,
-    Math.round((seconds ?? DEFAULT_TIMEOUT_MS / 1_000) * 1_000),
-  );
+  return { file: safeText(file), ...displayRange(location.range) };
 }
 function remainingTimeout(deadline: number): number {
   const timeoutMs = deadline - Date.now();
@@ -777,180 +477,130 @@ function languageId(kind: ServerKind, file: string): string {
   }
   return "typescript";
 }
-function result(
-  text: string,
-  details: ToolDetails,
-): { content: Array<{ type: "text"; text: string }>; details: ToolDetails } {
-  return { content: [{ type: "text", text }], details };
+function failure(code: ErrorCode, message: string) {
+  return result({
+    ok: false,
+    error: { code, message: safeText(message).slice(0, 500) },
+  });
 }
-function unavailable(
-  action: Action,
-  workspace: string,
-  kind: ServerKind,
-  reason: string,
-  ctx: Pick<ExtensionContext, "ui">,
-  coolingDown = false,
-) {
-  warnOnce(workspace, kind, reason, ctx);
-  return result(
-    `LSP ${kind} is unavailable: ${reason}. Continue with source search or project CLI tooling; do not install dependencies unless asked.`,
-    {
-      action,
-      available: false,
-      success: false,
-      server: kind,
-      workspace,
-      reason,
-      ...(coolingDown ? { coolingDown: true } : {}),
-    },
-  );
+function result(data: LspData) {
+  // Bound the actual shared payload, not just prose hiding a larger codemode result.
+  const items = data.ok
+    ? "locations" in data
+      ? data.locations
+      : "symbols" in data
+        ? data.symbols
+        : "diagnostics" in data
+          ? data.diagnostics
+          : "servers" in data
+            ? data.servers
+            : undefined
+    : undefined;
+  let text = JSON.stringify(data, null, 2);
+  while (
+    items?.length &&
+    truncateHead(text, {
+      maxLines: DEFAULT_MAX_LINES,
+      maxBytes: DEFAULT_MAX_BYTES,
+    }).truncated
+  ) {
+    items.pop();
+    if (data.ok) {
+      data.truncated = true;
+    }
+    text = JSON.stringify(data, null, 2);
+  }
+  return {
+    content: [{ type: "text" as const, text }],
+    structuredContent: data,
+    details: data,
+    isError: !data.ok,
+  };
 }
-function warnOnce(
-  workspace: string,
-  kind: ServerKind,
-  reason: string,
-  ctx: Pick<ExtensionContext, "ui">,
-): void {
+function unavailable(route: Route, reason: string, ctx: Context) {
+  const bounded = conciseError(reason);
   const scope = globalThis as Record<symbol, unknown>;
-  const warnings = (scope[warningKey] ??= new Set<string>()) as WarningStore;
-  const key = `${workspace}|${kind}|${reason}`;
+  const warnings = (scope[warningKey] ??= new Set<string>()) as Set<string>;
+  const key = `${route.workspaceRoot}|${route.kind}|${bounded}`;
   if (!warnings.has(key)) {
     warnings.add(key);
-    ctx.ui.notify(`LSP ${kind} unavailable: ${reason}`, "warning");
+    ctx.ui.notify(`LSP ${route.kind} unavailable: ${bounded}`, "warning");
   }
+  return failure(
+    "server_unavailable",
+    `LSP ${route.kind} is unavailable: ${bounded}. Continue with source search or project CLI tooling; do not install dependencies unless asked.`,
+  );
 }
 export function lspStatus(
   cwd: string,
   pool: LspPool = getLspPool(),
-): ToolDetails {
+): Extract<LspData, { servers: ServerState[] }> {
   const workspace = canonicalPath(cwd);
   const active = pool
     .status()
     .filter((entry) => isWithin(workspace, entry.workspaceRoot));
-  const discovered = (["typescript", "svelte", "ruby"] as ServerKind[]).map(
-    (kind) => {
+  const servers: ServerState[] = [];
+  for (const kind of ["typescript", "svelte", "ruby"] as const) {
+    const entries = active.filter((entry) => entry.kind === kind);
+    for (const entry of entries) {
+      servers.push({
+        kind,
+        configured: true,
+        available: entry.state !== "cooling-down",
+        running: entry.state === "running",
+        state: entry.state === "cooling-down" ? "unavailable" : entry.state,
+        workspace: entry.workspaceRoot,
+        ...(entry.reason ? { reason: conciseError(entry.reason) } : {}),
+      });
+    }
+    if (!entries.length) {
       const server = resolveServer(kind, workspace);
-      return "available" in server
-        ? { kind, state: "unavailable", reason: server.reason }
-        : { kind, state: "not-started" };
-    },
-  );
-  return {
-    action: "status",
-    available: true,
-    workspace,
-    servers: active.length > 0 ? active : discovered,
-  };
-}
-function renderStatus(details: ToolDetails): {
-  text: string;
-  truncated: boolean;
-} {
-  const servers = details.servers as Array<{
-    kind: string;
-    state: string;
-    workspaceRoot?: string;
-    reason?: string;
-  }>;
-  return renderBoundedList(
-    "LSP status (discovery does not start servers):",
-    "No LSP servers discovered.",
-    servers.map(
-      (server) =>
-        `${server.kind}: ${server.state}${server.workspaceRoot ? ` (${server.workspaceRoot})` : ""}${server.reason ? ` — ${server.reason}` : ""}`,
-    ),
-    false,
-  );
+      const available = !("available" in server);
+      servers.push({
+        kind,
+        configured: true,
+        available,
+        running: false,
+        state: available ? "available" : "unavailable",
+        workspace,
+        ...("reason" in server ? { reason: conciseError(server.reason) } : {}),
+      });
+    }
+  }
+  const truncated = servers.length > 100;
+  return { ok: true, servers: servers.slice(0, 100), truncated };
 }
 function conciseError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.replace(/\s+/g, " ").slice(0, 500);
+  return safeText(error instanceof Error ? error.message : String(error))
+    .replace(/\s+/g, " ")
+    .slice(0, 500);
 }
-
-function lspSummary(
-  details: unknown,
-  args: unknown,
-  result?: { content: unknown },
-): string[] {
-  const record = isRecord(details) ? details : {};
-  const action =
-    typeof record.action === "string"
-      ? record.action.replaceAll("_", " ")
-      : "request";
-  if (record.success === false) {
-    return [lspFailureSummary(record, result?.content)];
+function lspSummary(details: unknown): string[] {
+  const data = details as LspData | undefined;
+  if (!data) {
+    return [];
   }
-  if (action === "status") {
-    const count = Array.isArray(record.servers)
-      ? record.servers.length
-      : undefined;
-    return count === undefined
-      ? []
-      : [`${count} server${count === 1 ? "" : "s"}`];
+  if (!data.ok) {
+    return [compactDisplayText(data.error.message, 240)];
   }
-  const count = [record.locations, record.symbols, record.diagnostics].find(
-    Array.isArray,
-  )?.length;
-  return count === undefined
-    ? []
-    : [`${count} result${count === 1 ? "" : "s"}`];
-}
-
-function lspFailureSummary(
-  details: Record<string, unknown>,
-  content: unknown,
-): string {
-  if (details.stale === true) {
-    return details.timedOut === true
-      ? "Diagnostics are stale after the timeout."
-      : "Diagnostics are stale.";
+  if ("freshness" in data && data.freshness !== "current") {
+    return [
+      `Diagnostics are ${data.freshness}${data.timedOut ? " after the timeout" : ""}.`,
+    ];
   }
-  if (details.unsupported === true) {
-    const server = compactDisplayText(details.server, 80);
-    return `The requested capability is unsupported${server ? ` by ${server}` : ""}.`;
-  }
-  if (details.available === false) {
-    const server = compactDisplayText(details.server, 80);
-    const reason = compactDisplayText(details.reason, 160);
-    return `${server ? `${server} server ` : "Server "}is unavailable${reason ? `: ${reason}` : ""}.`;
-  }
-  if (details.invalidPosition === true) {
-    return `Position could not be resolved: ${compactDisplayText(firstText(content), 160)}.`;
-  }
-  const reason = compactDisplayText(firstText(content), 160);
-  return reason ? `Request is invalid: ${reason}.` : "Request is invalid.";
-}
-
-function lspTarget(args: unknown, action: string): string | undefined {
-  if (!isRecord(args)) {
-    return undefined;
-  }
-  const file = compactDisplayText(args.file, 100);
-  const symbol = compactDisplayText(args.symbol, 100);
-  const query = compactDisplayText(args.query, 100);
-  if (action === "workspace symbols") {
-    return query ? `query “${query}”` : undefined;
-  }
-  if (symbol) {
-    return file ? `symbol “${symbol}” in ${file}` : `symbol “${symbol}”`;
-  }
-  return file || query || undefined;
-}
-
-function firstText(content: unknown): string | undefined {
-  if (!Array.isArray(content)) {
-    return undefined;
-  }
-  const text = content.find(
-    (block): block is { type: "text"; text: string } =>
-      typeof block === "object" &&
-      block !== null &&
-      (block as { type?: unknown }).type === "text" &&
-      typeof (block as { text?: unknown }).text === "string",
-  );
-  return text?.text;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  const items =
+    "locations" in data
+      ? data.locations
+      : "symbols" in data
+        ? data.symbols
+        : "diagnostics" in data
+          ? data.diagnostics
+          : "servers" in data
+            ? data.servers
+            : undefined;
+  return items
+    ? [
+        `${items.length} ${"servers" in data ? "servers" : "results"}${data.truncated ? " (truncated)" : ""}`,
+      ]
+    : [data.truncated ? "Hover text (truncated)" : "Hover text"];
 }

@@ -24,7 +24,15 @@ const activeGatedTools = new Set([
   "process_stop",
   "output_list",
   "read_output",
-  "lsp",
+  "lsp_definition",
+  "lsp_type_definition",
+  "lsp_implementation",
+  "lsp_references",
+  "lsp_hover",
+  "lsp_document_symbols",
+  "lsp_workspace_symbols",
+  "lsp_diagnostics",
+  "lsp_status",
 ]);
 
 function unique(names: readonly string[]): string[] {

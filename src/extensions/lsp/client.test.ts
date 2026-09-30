@@ -19,6 +19,10 @@ class Fake extends EventEmitter {
 }
 
 const dirs: string[] = [];
+const diagnosticRange = {
+  start: { line: 0, character: 0 },
+  end: { line: 0, character: 3 },
+};
 function temp(): string {
   const value = mkdtempSync(join(tmpdir(), "pipkin-lsp-"));
   dirs.push(value);
@@ -76,6 +80,7 @@ describe("document synchronization and diagnostics", () => {
     const initialization = client.initialize(pathToFileURL(dir).href);
     await vi.waitFor(() => expect(requests.at(-1)?.method).toBe("initialize"));
     expect(requests.at(-1)?.params.capabilities).toMatchObject({
+      general: { positionEncodings: ["utf-16"] },
       textDocument: { publishDiagnostics: { versionSupport: true } },
     });
     process.stdout.write(
@@ -101,7 +106,7 @@ describe("document synchronization and diagnostics", () => {
         result: {
           kind: "full",
           resultId: "a",
-          items: [{ message: "bad", severity: 2, range: {} }],
+          items: [{ message: "bad", severity: 2, range: diagnosticRange }],
         },
       }),
     );
@@ -138,6 +143,73 @@ describe("document synchronization and diagnostics", () => {
       }),
     );
     await refreshed;
+  });
+
+  it("retains usable pull snapshots on timeout, including a previously clean file", async () => {
+    const dir = temp();
+    const file = join(dir, "sample.rb");
+    writeFileSync(file, "one");
+    const { client, process, requests } = setup(dir);
+    const first = client.diagnostics(file, "ruby", { diagnosticProvider: {} });
+    await vi.waitFor(() =>
+      expect(requests.at(-1)?.method).toBe("textDocument/diagnostic"),
+    );
+    process.stdout.write(
+      encodeMessage({
+        id: requests.at(-1)!.id,
+        result: { kind: "full", resultId: "clean", items: [] },
+      }),
+    );
+    await expect(first).resolves.toMatchObject({
+      fresh: true,
+      diagnostics: [],
+    });
+    writeFileSync(file, "two");
+    await expect(
+      client.diagnostics(
+        file,
+        "ruby",
+        { diagnosticProvider: {} },
+        { timeoutMs: 10 },
+      ),
+    ).resolves.toMatchObject({
+      fresh: false,
+      stale: true,
+      timedOut: true,
+      hasSnapshot: true,
+      diagnostics: [],
+      resultId: "clean",
+    });
+    await client.shutdown({ force: true });
+  });
+
+  it("retains stale push diagnostics instead of reporting a clean file after timeout", async () => {
+    const dir = temp();
+    const file = join(dir, "sample.ts");
+    writeFileSync(file, "one");
+    const { client, process } = setup(dir);
+    const first = await client.synchronize(file, "typescript");
+    process.stdout.write(
+      encodeMessage({
+        method: "textDocument/publishDiagnostics",
+        params: {
+          uri: first.uri,
+          version: 1,
+          diagnostics: [{ message: "old issue", range: diagnosticRange }],
+        },
+      }),
+    );
+    writeFileSync(file, "two");
+    await expect(
+      client.diagnostics(file, "typescript", {}, { timeoutMs: 10 }),
+    ).resolves.toMatchObject({
+      fresh: false,
+      stale: true,
+      timedOut: true,
+      hasSnapshot: true,
+      diagnostics: [expect.objectContaining({ message: "old issue" })],
+    });
+    await client.shutdown({ force: true });
   });
 
   it("does not let stale pull responses overwrite the current document snapshot", async () => {
@@ -197,7 +269,7 @@ describe("document synchronization and diagnostics", () => {
         method: "textDocument/publishDiagnostics",
         params: {
           uri: document.uri,
-          diagnostics: [{ message: "valid", range: {} }],
+          diagnostics: [{ message: "valid", range: diagnosticRange }],
         },
       }),
     );
@@ -230,7 +302,7 @@ describe("document synchronization and diagnostics", () => {
         method: "textDocument/publishDiagnostics",
         params: {
           uri: first.uri,
-          diagnostics: [{ message: "delayed", range: {} }],
+          diagnostics: [{ message: "delayed", range: diagnosticRange }],
         },
       }),
     );
@@ -252,7 +324,7 @@ describe("document synchronization and diagnostics", () => {
         params: {
           uri: first.uri,
           version: 1,
-          diagnostics: [{ message: "old", range: {} }],
+          diagnostics: [{ message: "old", range: diagnosticRange }],
         },
       }),
     );
@@ -269,7 +341,7 @@ describe("document synchronization and diagnostics", () => {
         params: {
           uri: first.uri,
           version: 1,
-          diagnostics: [{ message: "still old", range: {} }],
+          diagnostics: [{ message: "still old", range: diagnosticRange }],
         },
       }),
     );
@@ -279,7 +351,7 @@ describe("document synchronization and diagnostics", () => {
         params: {
           uri: first.uri,
           version: 2,
-          diagnostics: [{ message: "new", range: {} }],
+          diagnostics: [{ message: "new", range: diagnosticRange }],
         },
       }),
     );
@@ -364,7 +436,7 @@ describe("document synchronization and diagnostics", () => {
         params: {
           uri: `file://${file}`,
           version: 1,
-          diagnostics: [{ message: "outside", range: {} }],
+          diagnostics: [{ message: "outside", range: diagnosticRange }],
         },
       }),
     );

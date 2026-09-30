@@ -1,3 +1,5 @@
+import { stripVTControlCharacters } from "node:util";
+
 export type LspPosition = { line: number; character: number };
 export type LspRange = { start: LspPosition; end: LspPosition };
 export type NormalizedLocation = { uri: string; range: LspRange };
@@ -17,8 +19,12 @@ export type NormalizedResult<T> = { items: T[]; truncated: boolean };
 
 export const MAX_LSP_TEXT = 2_000;
 
+export function safeText(value: string): string {
+  return stripVTControlCharacters(value).replace(/\p{Cc}/gu, " ");
+}
+
 function text(value: unknown): { value: string; truncated: boolean } {
-  const normalized = String(value ?? "")
+  const normalized = safeText(String(value ?? ""))
     .replace(/\s+/g, " ")
     .trim();
   return {
@@ -28,18 +34,29 @@ function text(value: unknown): { value: string; truncated: boolean } {
 }
 function position(value: unknown): LspPosition {
   const item = value as Partial<LspPosition> | undefined;
-  return {
-    line: Math.max(0, Number(item?.line) || 0),
-    character: Math.max(0, Number(item?.character) || 0),
-  };
+  if (
+    !Number.isSafeInteger(item?.line) ||
+    !Number.isSafeInteger(item?.character) ||
+    item!.line! < 0 ||
+    item!.character! < 0
+  ) {
+    throw new Error("Invalid LSP range position");
+  }
+  return { line: item!.line!, character: item!.character! };
 }
 function range(value: unknown): LspRange {
   const item = value as { start?: unknown; end?: unknown } | undefined;
-  return { start: position(item?.start), end: position(item?.end) };
+  const start = position(item?.start);
+  const end = position(item?.end);
+  if (
+    end.line < start.line ||
+    (end.line === start.line && end.character < start.character)
+  ) {
+    throw new Error("Invalid LSP range end");
+  }
+  return { start, end };
 }
-export function normalizeLocation(
-  value: unknown,
-): NormalizedLocation | undefined {
+export function normalizeLocation(value: unknown): NormalizedLocation {
   const item = value as
     | {
         uri?: unknown;
@@ -56,7 +73,7 @@ export function normalizeLocation(
         ? item.targetUri
         : undefined;
   if (!uri) {
-    return undefined;
+    throw new Error("Invalid LSP location URI");
   }
   return {
     uri,
@@ -70,9 +87,9 @@ export function normalizeLocations(
   value: unknown,
   limit = 100,
 ): NormalizedResult<NormalizedLocation> {
-  const locations = (Array.isArray(value) ? value : [value])
-    .map(normalizeLocation)
-    .filter((location): location is NormalizedLocation => Boolean(location));
+  const locations = (
+    value === null ? [] : Array.isArray(value) ? value : [value]
+  ).map(normalizeLocation);
   return {
     items: locations.slice(0, limit),
     truncated: locations.length > limit,
@@ -83,9 +100,16 @@ export function normalizeDiagnosticsResult(
   value: unknown,
   limit = 100,
 ): NormalizedResult<NormalizedDiagnostic> {
+  if (!Array.isArray(value)) {
+    throw new Error("Invalid LSP diagnostic list");
+  }
   const seen = new Set<string>();
-  const diagnostics = (Array.isArray(value) ? value : [])
+  let textTruncated = false;
+  const diagnostics = value
     .flatMap((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        throw new Error("Invalid LSP diagnostic entry");
+      }
       const item = entry as {
         range?: unknown;
         severity?: unknown;
@@ -93,17 +117,43 @@ export function normalizeDiagnosticsResult(
         source?: unknown;
         code?: unknown;
       };
-      const message = text(item.message).value;
+      if (typeof item.message !== "string") {
+        throw new Error("Invalid LSP diagnostic message");
+      }
+      if (
+        (item.severity !== undefined &&
+          (!Number.isSafeInteger(item.severity) ||
+            (item.severity as number) < 1 ||
+            (item.severity as number) > 4)) ||
+        (item.source !== undefined && typeof item.source !== "string") ||
+        (item.code !== undefined &&
+          typeof item.code !== "string" &&
+          !(typeof item.code === "number" && Number.isFinite(item.code)))
+      ) {
+        throw new Error("Invalid LSP diagnostic fields");
+      }
+      const messageText = text(item.message);
+      const sourceText =
+        typeof item.source === "string" ? text(item.source) : undefined;
+      const codeText =
+        typeof item.code === "string" ? text(item.code) : undefined;
+      textTruncated ||=
+        messageText.truncated ||
+        Boolean(sourceText?.truncated) ||
+        Boolean(codeText?.truncated);
+      const message = messageText.value;
       const normalized = {
         range: range(item.range),
-        severity: typeof item.severity === "number" ? item.severity : 1,
+        severity: Number.isSafeInteger(item.severity)
+          ? (item.severity as number)
+          : 1,
         message,
-        ...(typeof item.source === "string"
-          ? { source: text(item.source).value }
-          : {}),
-        ...(typeof item.code === "string" || typeof item.code === "number"
-          ? { code: item.code }
-          : {}),
+        ...(sourceText ? { source: sourceText.value } : {}),
+        ...(codeText
+          ? { code: codeText.value }
+          : typeof item.code === "number" && Number.isFinite(item.code)
+            ? { code: item.code }
+            : {}),
       };
       const key = JSON.stringify(normalized);
       if (!message || seen.has(key)) {
@@ -115,7 +165,7 @@ export function normalizeDiagnosticsResult(
     .sort((a, b) => a.severity - b.severity);
   return {
     items: diagnostics.slice(0, limit),
-    truncated: diagnostics.length > limit,
+    truncated: textTruncated || diagnostics.length > limit,
   };
 }
 
@@ -130,20 +180,40 @@ export function normalizeHoverResult(value: unknown): {
   text?: string;
   truncated: boolean;
 } {
-  const contents = (value as { contents?: unknown } | undefined)?.contents;
-  const values =
-    typeof contents === "string"
-      ? [contents]
-      : Array.isArray(contents)
-        ? contents.map((part) =>
-            typeof part === "object" && part
-              ? ((part as { value?: unknown }).value ?? part)
-              : part,
-          )
-        : contents && typeof contents === "object"
-          ? [(contents as { value?: unknown }).value]
-          : [];
-  const combined = values.map((part) => String(part ?? "")).join("\n");
+  if (value === null) {
+    return { truncated: false };
+  }
+  const hover = value as { contents?: unknown; range?: unknown } | undefined;
+  if (hover?.range !== undefined) {
+    range(hover.range);
+  }
+  const contents = hover?.contents;
+  const values = (Array.isArray(contents) ? contents : [contents]).map(
+    (part) => {
+      if (typeof part === "string") {
+        return part;
+      }
+      const item = part as {
+        value?: unknown;
+        kind?: unknown;
+        language?: unknown;
+      } | null;
+      if (
+        !item ||
+        Array.isArray(item) ||
+        typeof item.value !== "string" ||
+        !(
+          item.kind === "plaintext" ||
+          item.kind === "markdown" ||
+          typeof item.language === "string"
+        )
+      ) {
+        throw new Error("Invalid LSP hover contents");
+      }
+      return item.value;
+    },
+  );
+  const combined = values.join("\n");
   const normalized = text(combined);
   return normalized.value
     ? { text: normalized.value, truncated: normalized.truncated }
@@ -159,9 +229,16 @@ export function normalizeSymbolsResult(
   limit = 100,
   defaultUri?: string,
 ): NormalizedResult<NormalizedSymbol> {
+  if (value !== null && !Array.isArray(value)) {
+    throw new Error("Invalid LSP symbol list");
+  }
   const symbols: NormalizedSymbol[] = [];
+  let textTruncated = false;
   const visit = (entries: unknown[]): void => {
     for (const entry of entries) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        throw new Error("Invalid LSP symbol entry");
+      }
       const item = entry as {
         name?: unknown;
         kind?: unknown;
@@ -171,21 +248,54 @@ export function normalizeSymbolsResult(
         uri?: unknown;
         children?: unknown;
       };
-      const name = text(item.name).value;
+      if (typeof item.name !== "string") {
+        throw new Error("Invalid LSP symbol name");
+      }
+      if (
+        (item.kind !== undefined && !Number.isSafeInteger(item.kind)) ||
+        (item.children !== undefined && !Array.isArray(item.children))
+      ) {
+        throw new Error("Invalid LSP symbol fields");
+      }
+      let resolvedLocation: NormalizedLocation | undefined;
+      if (item.location !== undefined) {
+        const location = item.location as {
+          uri?: unknown;
+          range?: unknown;
+        } | null;
+        if (
+          !location ||
+          Array.isArray(location) ||
+          typeof location.uri !== "string" ||
+          !location.uri
+        ) {
+          throw new Error("Invalid LSP symbol location");
+        }
+        // Workspace symbols may carry an unresolved URI without a range.
+        if (location.range !== undefined) {
+          resolvedLocation = normalizeLocation(location);
+        }
+      }
+      const symbolRange = item.selectionRange ?? item.range;
+      const normalizedRange =
+        symbolRange === undefined ? undefined : range(symbolRange);
+      const nameText = text(item.name);
+      textTruncated ||= nameText.truncated;
+      const name = nameText.value;
       if (name) {
         const location =
-          normalizeLocation(item.location) ??
-          (typeof item.uri === "string"
-            ? { uri: item.uri, range: range(item.selectionRange ?? item.range) }
-            : defaultUri
-              ? {
-                  uri: defaultUri,
-                  range: range(item.selectionRange ?? item.range),
-                }
-              : undefined);
+          resolvedLocation ??
+          (normalizedRange && (typeof item.uri === "string" || defaultUri)
+            ? {
+                uri: typeof item.uri === "string" ? item.uri : defaultUri!,
+                range: normalizedRange,
+              }
+            : undefined);
         symbols.push({
           name,
-          ...(typeof item.kind === "number" ? { kind: item.kind } : {}),
+          ...(Number.isSafeInteger(item.kind)
+            ? { kind: item.kind as number }
+            : {}),
           ...(location ? { location } : {}),
         });
       }
@@ -195,7 +305,10 @@ export function normalizeSymbolsResult(
     }
   };
   visit(Array.isArray(value) ? value : []);
-  return { items: symbols.slice(0, limit), truncated: symbols.length > limit };
+  return {
+    items: symbols.slice(0, limit),
+    truncated: textTruncated || symbols.length > limit,
+  };
 }
 
 export function normalizeSymbols(

@@ -689,7 +689,7 @@ function buildExplorePrompt(params: ExploreToolParams): string {
   return [
     "You are a repository-preserving nested Explore child. Answer the parent agent's bounded codebase exploration question.",
     "Inspect and verify only; leave the repository unchanged. Do not spawn agents or invoke explore recursively.",
-    "Use lsp when available for targeted language-semantic relationships that text search may miss. Use search for broad, literal, or non-semantic discovery and reads for surrounding behavior. Combine them when useful, and fall back to search and reads when LSP is unavailable or incomplete.",
+    "Use LSP operations when available for targeted language-semantic relationships that text search may miss. Use search for broad, literal, or non-semantic discovery and reads for surrounding behavior. Combine them when useful, and fall back to search and reads when LSP is unavailable or incomplete.",
     `Breadth: ${params.breadth ?? "medium"}`,
     "Lead with conclusions, then provide relevant evidence with absolute file paths and enough context for the parent to continue with targeted reads.",
     "",

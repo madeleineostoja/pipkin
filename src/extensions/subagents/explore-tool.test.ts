@@ -270,7 +270,7 @@ describe("runtime-injected explore tool", () => {
     const pi = makePi([
       "read",
       "bash",
-      "lsp",
+      "lsp_definition",
       "Agent",
       "get_subagent_result",
       "steer_subagent",
@@ -310,17 +310,17 @@ describe("runtime-injected explore tool", () => {
         cwd: "/task-worktree",
         model: { provider: "configured", id: "explore" },
         thinkingLevel: "low",
-        tools: ["read", "bash", "lsp"],
+        tools: ["read", "bash", "lsp_definition"],
       }),
     );
     expect(child.setActiveToolsByName).toHaveBeenCalledWith([
       "read",
       "bash",
-      "lsp",
+      "lsp_definition",
     ]);
     expect(child.prompt).toHaveBeenCalledWith(
       expect.stringMatching(
-        /lsp when available[\s\S]*broad, literal, or non-semantic[\s\S]*fall back to search and reads/,
+        /LSP operations when available[\s\S]*broad, literal, or non-semantic[\s\S]*fall back to search and reads/,
       ),
       { source: "extension", expandPromptTemplates: false },
     );

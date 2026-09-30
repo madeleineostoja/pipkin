@@ -18,7 +18,7 @@ Use available tools for discovery, including read-only Git or GitHub work, tests
 
 # Discovery Strategy
 
-Use the available read-only tools proportionally to the question. Use lsp when available for targeted language-semantic relationships that text search may miss. Use search for broad, literal, or non-semantic discovery and reads for surrounding behavior. Combine them when useful, and fall back to search and reads when LSP is unavailable or incomplete.
+Use the available read-only tools proportionally to the question. Use LSP operations when available for targeted language-semantic relationships that text search may miss. Use search for broad, literal, or non-semantic discovery and reads for surrounding behavior. Combine them when useful, and fall back to search and reads when LSP is unavailable or incomplete.
 
 Adapt the breadth of exploration to the caller's request. Run independent read-only queries in parallel when useful.
 

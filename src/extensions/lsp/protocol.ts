@@ -12,8 +12,24 @@ export type JsonRpcMessage = {
 };
 
 export class ProtocolError extends Error {}
-export class RequestTimeoutError extends Error {}
-export class RequestCancelledError extends Error {}
+export class RequestTimeoutError extends Error {
+  readonly code = "lsp_request_timeout";
+}
+export class RequestCancelledError extends Error {
+  readonly code = "lsp_request_cancelled";
+}
+
+// Pool clients can originate in another Pi Jiti loader, so constructor identity
+// is not a reliable discriminator for these runtime-owned errors.
+export function isRequestTimeoutError(error: unknown): boolean {
+  return hasErrorCode(error, "lsp_request_timeout");
+}
+export function isRequestCancelledError(error: unknown): boolean {
+  return hasErrorCode(error, "lsp_request_cancelled");
+}
+function hasErrorCode(error: unknown, code: string): boolean {
+  return error instanceof Error && "code" in error && error.code === code;
+}
 
 export class ContentLengthDecoder {
   #buffer = Buffer.alloc(0);
@@ -245,7 +261,11 @@ export class JsonRpcConnection {
   #receive(chunk: Buffer): void {
     try {
       for (const message of this.#decoder.push(chunk)) {
-        void this.#handle(message);
+        void this.#handle(message).catch((error: unknown) => {
+          this.#close(
+            error instanceof Error ? error : new Error(String(error)),
+          );
+        });
       }
     } catch (error) {
       this.#close(error instanceof Error ? error : new Error(String(error)));

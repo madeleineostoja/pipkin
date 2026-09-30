@@ -2105,7 +2105,7 @@ describe("SubagentRuntime", () => {
       "process_stop",
       "output_list",
       "read_output",
-      "lsp",
+      "lsp_definition",
       "docs",
       "web_fetch",
       "browser_snapshot",
@@ -2172,7 +2172,9 @@ describe("SubagentRuntime", () => {
     const session = makeSession();
     const createSession = vi.fn(async () => ({ session }));
     const runtime = new SubagentRuntime(
-      { getActiveTools: () => ["read", "lsp", "edit", "write"] } as never,
+      {
+        getActiveTools: () => ["read", "lsp_definition", "edit", "write"],
+      } as never,
       { createSession },
     );
 
@@ -2183,7 +2185,7 @@ describe("SubagentRuntime", () => {
       ctx: makeCtx() as never,
       tools: [
         "read",
-        "lsp",
+        "lsp_definition",
         "edit",
         "write",
         "Agent",
@@ -2196,9 +2198,12 @@ describe("SubagentRuntime", () => {
     });
 
     expect(createSession).toHaveBeenCalledWith(
-      expect.objectContaining({ tools: ["read", "lsp"] }),
+      expect.objectContaining({ tools: ["read", "lsp_definition"] }),
     );
-    expect(session.setActiveToolsByName).toHaveBeenCalledWith(["read", "lsp"]);
+    expect(session.setActiveToolsByName).toHaveBeenCalledWith([
+      "read",
+      "lsp_definition",
+    ]);
   });
 
   it("records explicitly supplied model and thinking metadata", () => {

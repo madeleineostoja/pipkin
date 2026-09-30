@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { JsonRpcConnection, RequestCancelledError } from "./protocol.js";
+import {
+  JsonRpcConnection,
+  RequestCancelledError,
+  isRequestTimeoutError,
+} from "./protocol.js";
 import {
   normalizeDiagnosticsResult,
   type NormalizedDiagnostic,
@@ -36,6 +40,7 @@ type PullDiagnostics = {
 };
 type PullDiagnosticsProvider = { identifier?: string };
 type ServerCapabilities = {
+  positionEncoding?: string;
   diagnosticProvider?: PullDiagnosticsProvider;
   definitionProvider?: unknown;
   typeDefinitionProvider?: unknown;
@@ -48,6 +53,8 @@ type ServerCapabilities = {
 export type DiagnosticsResult = {
   diagnostics: NormalizedDiagnostic[];
   fresh: boolean;
+  // An empty cached snapshot is still evidence, unlike no snapshot at all.
+  hasSnapshot?: boolean;
   truncated: boolean;
   stale?: boolean;
   timedOut?: boolean;
@@ -124,6 +131,7 @@ export class LspClient {
         processId: process.pid,
         rootUri,
         capabilities: {
+          general: { positionEncodings: ["utf-16"] },
           workspace: {
             configuration: true,
             workspaceEdit: { documentChanges: false },
@@ -143,6 +151,14 @@ export class LspClient {
         const capabilities = (result as { capabilities?: unknown })
           ?.capabilities;
         this.#capabilities = isCapabilities(capabilities) ? capabilities : {};
+        if (
+          this.#capabilities.positionEncoding &&
+          this.#capabilities.positionEncoding !== "utf-16"
+        ) {
+          throw new Error(
+            "LSP server selected an unsupported position encoding",
+          );
+        }
         this.#connection.notify("initialized", {});
         this.#initialized = true;
         return result;
@@ -195,22 +211,54 @@ export class LspClient {
           (this.#pullRequestSequences.get(document.uri) ?? 0) + 1;
         const refreshSequence = this.#pullRefreshSequence;
         this.#pullRequestSequences.set(document.uri, requestSequence);
-        const report = (await this.#request(
-          "textDocument/diagnostic",
-          {
-            textDocument: { uri: document.uri },
-            ...(previous?.resultId && !previous.invalidated
-              ? { previousResultId: previous.resultId }
-              : {}),
-          },
-          options,
-        )) as { kind?: string; items?: unknown[]; resultId?: string };
+        let report: { kind?: string; items?: unknown[]; resultId?: string };
+        try {
+          report = (await this.#request(
+            "textDocument/diagnostic",
+            {
+              textDocument: { uri: document.uri },
+              ...(previous?.resultId && !previous.invalidated
+                ? { previousResultId: previous.resultId }
+                : {}),
+            },
+            options,
+          )) as typeof report;
+        } catch (error) {
+          if (!isRequestTimeoutError(error)) {
+            throw error;
+          }
+          const cached = this.#pullResults.get(document.uri);
+          return {
+            diagnostics: cached?.diagnostics ?? [],
+            fresh: false,
+            stale: Boolean(cached),
+            hasSnapshot: Boolean(cached),
+            timedOut: true,
+            truncated: cached?.truncated ?? false,
+            ...(cached?.resultId === undefined
+              ? {}
+              : { resultId: cached.resultId }),
+          };
+        }
+        if (
+          !report ||
+          (report.kind !== "full" && report.kind !== "unchanged") ||
+          (report.kind === "full" && !Array.isArray(report.items)) ||
+          (report.resultId !== undefined && typeof report.resultId !== "string")
+        ) {
+          throw new Error("Invalid LSP diagnostic report");
+        }
         const current = this.#pullResultFor(document.uri, document);
         const currentRequest =
           this.#pullRequestSequences.get(document.uri) === requestSequence;
         const currentRefresh = this.#pullRefreshSequence === refreshSequence;
         if (report?.kind === "unchanged") {
-          if (current && currentRequest && currentRefresh) {
+          if (
+            current &&
+            !current.invalidated &&
+            currentRequest &&
+            currentRefresh
+          ) {
             return {
               diagnostics: current.diagnostics,
               fresh: true,
@@ -258,6 +306,7 @@ export class LspClient {
         options.timeoutMs ?? 1_500,
         options.signal,
       );
+      const latest = this.#pushDiagnostics.get(document.uri);
       return fresh
         ? {
             diagnostics: fresh.diagnostics,
@@ -265,10 +314,11 @@ export class LspClient {
             truncated: fresh.truncated,
           }
         : {
-            diagnostics: [],
+            diagnostics: latest?.diagnostics ?? [],
             fresh: false,
-            truncated: false,
-            stale: Boolean(cached),
+            hasSnapshot: Boolean(latest),
+            truncated: latest?.truncated ?? false,
+            stale: Boolean(latest),
             timedOut: true,
           };
     });
@@ -386,11 +436,11 @@ export class LspClient {
       return;
     }
     const value = params as {
-      uri?: string;
-      version?: number;
-      diagnostics?: unknown[];
-    };
-    if (!value.uri) {
+      uri?: unknown;
+      version?: unknown;
+      diagnostics?: unknown;
+    } | null;
+    if (!value || typeof value.uri !== "string") {
       return;
     }
     const file = workspaceFileFromUri(this.#workspaceRoot, value.uri);
@@ -398,12 +448,22 @@ export class LspClient {
       return;
     }
     const doc = this.#documents.get(value.uri);
-    const normalized = normalizeDiagnosticsResult(value.diagnostics);
+    let normalized;
+    try {
+      if (value.version !== undefined && !Number.isSafeInteger(value.version)) {
+        throw new Error("Invalid LSP diagnostic version");
+      }
+      normalized = normalizeDiagnosticsResult(value.diagnostics);
+    } catch {
+      // Invalid publications do not replace evidence or wake waiters as current.
+      // The bounded wait can still receive a valid update or return stale cache.
+      return;
+    }
     if (value.version === undefined && doc && doc.version > 1) {
       return;
     }
     const cache: PushDiagnostics = {
-      version: value.version,
+      version: value.version as number | undefined,
       hash:
         doc &&
         (value.version === doc.version ||

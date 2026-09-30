@@ -570,6 +570,9 @@ describe("Pipkin bundle", () => {
         undocumentedSchemaProperties(definition.parameters),
         definition.name,
       ).toEqual([]);
+      if (definition.name.startsWith("lsp_")) {
+        expect(definition.outputSchema, definition.name).toBeDefined();
+      }
       if (definition.name === "bash") {
         continue;
       }
@@ -641,7 +644,7 @@ describe("Pipkin bundle", () => {
           "tool_search",
         ]),
       );
-      expect(host.session.getActiveToolNames()).not.toContain("lsp");
+      expect(host.session.getActiveToolNames()).not.toContain("lsp_status");
       const commands = host.session.extensionRunner
         .getRegisteredCommands()
         .filter((command) => command.name === "mcp");
@@ -687,17 +690,45 @@ describe("Pipkin bundle", () => {
     const fixture = await loadBundle({ nativeFactories: true });
     const host = await nativeSession(fixture);
     try {
-      expect(host.session.getActiveToolNames()).not.toContain("lsp");
+      expect(host.session.getActiveToolNames()).not.toContain("lsp_status");
+      expect(
+        host.session.extensionRunner
+          .getAllRegisteredTools()
+          .some(({ definition }) => definition.name === "lsp"),
+      ).toBe(false);
       const results = await host.prompt([
         {
           name: "codemode",
-          args: { code: 'text(await tools.lsp({request:{action:"status"}}));' },
+          args: {
+            code: 'text(await tools.lsp_status({})); text(await tools.lsp_definition({file:"missing.ts",position:{line:1,column:1}}));',
+          },
           id: "nested",
         },
-        { name: "tool_search", args: { query: "+lsp" }, id: "search" },
-        { name: "lsp", args: { request: { action: "status" } }, id: "direct" },
+        {
+          name: "tool_search",
+          args: { query: "+lsp_status +lsp_definition" },
+          id: "search",
+        },
+        { name: "lsp_status", args: {}, id: "direct" },
+        {
+          name: "lsp_definition",
+          args: { file: "missing.ts", position: { line: 1, column: 1 } },
+          id: "rejected",
+        },
       ]);
-      expect(host.session.getActiveToolNames()).toContain("lsp");
+      expect(host.session.getActiveToolNames()).toContain("lsp_status");
+      const rejected = results.find(
+        (result) => result.toolCallId === "rejected",
+      );
+      expect(rejected).toMatchObject({ isError: true });
+      expect(rejected?.content).toEqual([
+        { type: "text", text: expect.stringContaining('"not_found"') },
+      ]);
+      expect(
+        JSON.stringify(
+          results.find((result) => result.toolCallId === "nested")?.content,
+        ),
+      ).toContain("not_found");
       expect(
         results.find((result) => result.toolCallId === "direct"),
       ).toMatchObject({ isError: false });
@@ -706,7 +737,13 @@ describe("Pipkin bundle", () => {
       ).toMatchObject({
         isError: false,
         nestedCalls: {
-          calls: [expect.objectContaining({ name: "lsp", status: "ok" })],
+          calls: [
+            expect.objectContaining({ name: "lsp_status", status: "ok" }),
+            expect.objectContaining({
+              name: "lsp_definition",
+              status: "error",
+            }),
+          ],
         },
       });
       expect(host.errors).toEqual([]);
@@ -802,7 +839,7 @@ describe("Pipkin bundle", () => {
         "bash",
         "codemode",
         "tool_search",
-        "lsp",
+        "lsp_status",
         "mcp__fixture__echo",
         "mcp__fixture__forbidden",
       ],
@@ -1045,7 +1082,7 @@ describe("Pipkin bundle", () => {
       expect(warnings[0]).toContain(
         '"defaultTools":["+codemode","+tool_search"]',
       );
-      expect(host.session.getActiveToolNames()).not.toContain("lsp");
+      expect(host.session.getActiveToolNames()).not.toContain("lsp_status");
       expect(host.errors).toEqual([]);
     } finally {
       await host.dispose();
