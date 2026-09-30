@@ -1,6 +1,12 @@
 import type { EntryRenderer } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { type ElisionReason, type EpochData, isEpochData } from "./policy.ts";
+import {
+  type ElisionReason,
+  type EpochData,
+  type PruningMilestone,
+  isEpochData,
+  isPruningMilestone,
+} from "./policy.ts";
 
 const REASON_LABELS: Record<ElisionReason, string> = {
   "superseded-read": "superseded reads",
@@ -53,6 +59,37 @@ export const renderEpochEntry: EntryRenderer<EpochData> = (
           : `  ${detail} · ${tokenEstimate(reasonSavings)}`,
       ),
     );
+  }
+  return new Text(lines.join("\n"), 0, 0);
+};
+
+export const renderPruningMilestone: EntryRenderer<PruningMilestone> = (
+  entry,
+  { expanded },
+  theme,
+) => {
+  if (!isPruningMilestone(entry.data)) {
+    return undefined;
+  }
+  const data = entry.data;
+  const lines = [
+    theme.fg(
+      "muted",
+      `Context pruned: ${tokenEstimate(data.estimatedTokensSaved)} tokens (${data.count} ${resultLabel(data.count)})`,
+    ),
+  ];
+  if (expanded) {
+    for (const reason of Object.keys(REASON_LABELS) as ElisionReason[]) {
+      const count = data.reasons[reason];
+      if (count) {
+        lines.push(
+          theme.fg(
+            "dim",
+            `  ${REASON_LABELS[reason]} · ${count} ${resultLabel(count)}`,
+          ),
+        );
+      }
+    }
   }
   return new Text(lines.join("\n"), 0, 0);
 };

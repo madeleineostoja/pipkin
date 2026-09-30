@@ -14,15 +14,15 @@ import {
   COMPACTION_FAILURE_ENTRY_TYPE,
   renderCompactionFailureEntry,
 } from "./compaction-failure-renderer.ts";
-import { renderEpochEntry } from "./epoch-renderer.ts";
-import { EPOCH_TYPE } from "./policy.ts";
+import { renderEpochEntry, renderPruningMilestone } from "./epoch-renderer.ts";
+import { EPOCH_TYPE, PRUNING_TYPE } from "./policy.ts";
 import { createCompactionCoordinator } from "./compaction.ts";
 import { createPruningFlow } from "./pruning.ts";
 import { registerOutputTools } from "./recall.ts";
 
 export default function (pi: ExtensionAPI): void {
   const config = loadPipkinConfig(getAgentDir());
-  const pruning = createPruningFlow(pi);
+  const pruning = createPruningFlow();
   let scope: OutputScope | undefined;
   let unbind: (() => void) | undefined;
   const compaction = createCompactionCoordinator({
@@ -46,6 +46,7 @@ export default function (pi: ExtensionAPI): void {
   });
 
   pi.registerEntryRenderer(EPOCH_TYPE, renderEpochEntry);
+  pi.registerEntryRenderer(PRUNING_TYPE, renderPruningMilestone);
   pi.registerEntryRenderer(
     COMPACTION_FAILURE_ENTRY_TYPE,
     renderCompactionFailureEntry,
@@ -73,10 +74,12 @@ export default function (pi: ExtensionAPI): void {
       fromExtension: event.fromExtension,
     });
   });
-  pi.on("context", pruning.context);
-  pi.on("before_provider_request", (event, ctx) =>
-    compaction.beforeProviderRequest(event.payload, ctx),
-  );
+  pi.on("turn_end", pruning.boundary);
+  pi.on("agent_before_settle", pruning.boundary);
+  pi.on("before_provider_request", (event, ctx) => {
+    pruning.requestStart(ctx);
+    return compaction.beforeProviderRequest(event.payload, ctx);
+  });
   pi.on("model_select", (event, ctx) => compaction.modelSelect(event, ctx));
   pi.on("session_shutdown", () => {
     unbind?.();

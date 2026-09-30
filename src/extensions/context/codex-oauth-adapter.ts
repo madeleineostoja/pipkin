@@ -30,7 +30,7 @@ type ResolvedRequestAuth =
 
 const ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
 const PROTOCOL = "pipkin-codex-compaction-trigger-v1";
-const MARKER =
+export const NATIVE_COMPACTION_MARKER =
   "[Context compacted by OpenAI Codex. The authoritative prior context is an opaque provider checkpoint and is not portable to another model or provider.]";
 const MAX_RETRIES = 2;
 const MAX_RETRY_DELAY_MS = 2_000;
@@ -58,7 +58,7 @@ type NativeCompactionDetails = {
 };
 
 type Checkpoint = {
-  summary: typeof MARKER;
+  summary: typeof NATIVE_COMPACTION_MARKER;
   details: NativeCompactionDetails;
   usage: Usage;
 };
@@ -198,7 +198,7 @@ export function createNativeCheckpoint(input: {
   usage: Usage;
 }): Checkpoint {
   return {
-    summary: MARKER,
+    summary: NATIVE_COMPACTION_MARKER,
     details: {
       kind: "pipkin-native-compaction",
       schemaVersion: 1,
@@ -266,18 +266,22 @@ export function createCodexOAuthAdapter(
 
     async capture(input: CaptureInput): Promise<JsonObject> {
       let captured: JsonObject | undefined;
-      const stream = serializer(input.model, normalizeContext(input.context), {
-        apiKey: input.auth.apiKey,
-        headers: input.auth.headers,
-        sessionId: input.sessionId,
-        signal: input.signal,
-        transport: "sse",
-        reasoning: input.thinking,
-        onPayload: (payload) => {
-          captured = payload as JsonObject;
-          throw new CaptureStop();
+      const stream = serializer(
+        { ...input.model, baseUrl: input.auth.baseUrl ?? input.model.baseUrl },
+        normalizeContext(input.context),
+        {
+          apiKey: input.auth.apiKey,
+          headers: input.auth.headers,
+          sessionId: input.sessionId,
+          signal: input.signal,
+          transport: "sse",
+          reasoning: input.thinking,
+          onPayload: (payload) => {
+            captured = payload as JsonObject;
+            throw new CaptureStop();
+          },
         },
-      });
+      );
       // Pi turns the deliberate stop into a terminal stream event. Consume it
       // so the serializer completes without dispatching a provider request.
       for await (const _event of stream) {

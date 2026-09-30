@@ -1,4 +1,7 @@
-import { createEventBus } from "@earendil-works/pi-coding-agent";
+import {
+  SessionManager,
+  createEventBus,
+} from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import { Value } from "typebox/value";
 import { registerOutputTools } from "./recall.ts";
@@ -22,7 +25,7 @@ function tools<T extends { id: string }>(entries: T[]) {
   };
 }
 const image = {
-  type: "image",
+  type: "image" as const,
   data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII=",
   mimeType: "image/png",
 };
@@ -62,6 +65,39 @@ describe("read_output", () => {
       (await f.run(undefined, "../../secret")).structuredContent.error.code,
     ).toBe("not_found");
   });
+  it("retrieves original evidence after native replacement and compaction remove it from the model view", async () => {
+    const manager = SessionManager.inMemory("/work");
+    const id = manager.appendMessage({
+      role: "toolResult",
+      toolName: "read",
+      toolCallId: "source",
+      content: [{ type: "text", text: "Original evidence" }, image],
+      isError: false,
+      timestamp: 1,
+    });
+    const reference = transcriptReference(manager.getEntry(id)!);
+    manager.appendContextEdit(id, {
+      content: [{ type: "text", text: `Elided; read_output(${reference})` }],
+    });
+    const tail = manager.appendMessage({
+      role: "user",
+      content: "later",
+      timestamp: 2,
+    });
+    manager.appendCompaction("opaque checkpoint marker", tail, 100, {
+      kind: "pipkin-native-compaction",
+    });
+    expect(
+      JSON.stringify(manager.buildSessionProjection().messages),
+    ).not.toContain("Original evidence");
+    const recalled = await tools(manager.getBranch()).run(undefined, reference);
+    expect(recalled.content).toEqual([
+      { type: "text", text: "Original evidence" },
+      image,
+    ]);
+    expect(recalled.structuredContent.ok).toBe(true);
+  });
+
   it("does not resolve a colliding entry ID to unrelated transcript evidence", async () => {
     const entry = {
       id: "0123abcd",

@@ -100,8 +100,4 @@ The paths are excluded through common Git `info/exclude`, not committed `.gitign
 /btw Why did we choose a file lease here?
 ```
 
-Pipkin sends the current model a bounded view of Pi's canonical session projection and the question, without historical system instructions or tool declarations, then shows the Markdown answer in a disposable surface. Virtual selectors with unknown limits use the model runtime's output defaults instead of a guessed context budget. Each invocation is independent: an unpromoted exchange is neither retained nor supplied to later BTW questions.
-
-After a completed answer, press `s` to promote the complete question and answer into one displayed `btw` transcript message. That message becomes ordinary session context without starting a turn while idle; during a response it is delivered as steering. Press Escape to abort generation or close the completed surface; arrow keys scroll the answer.
-
-BTW has no tools: it cannot inspect files, run commands, or mutate state beyond what is already in supplied context. Use Explore when the side task needs tools. Session replacement and shutdown dispose the active surface. BTW requires an interactive session, active model, and usable authentication.
+The disposable panel answers from readable canonical context without tools. Use Explore when the side task needs tools. See [BTW side questions](interface-and-personality.md#btw-side-questions) for cancellation, promotion, model defaults and opaque-history limits.

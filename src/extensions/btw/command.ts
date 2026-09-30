@@ -96,12 +96,11 @@ export function registerBtwCommand(pi: ExtensionAPI): void {
 
         const run = async () => {
           try {
-            const prompt = buildPrompt(ctx.sessionManager, question, model);
+            const prompt = buildPrompt(ctx.sessionManager, question);
             const result = await completeText(
               model,
               prompt.context,
               {
-                maxTokens: prompt.maxTokens,
                 signal: abortController.signal,
               },
               ctx.modelRegistry,

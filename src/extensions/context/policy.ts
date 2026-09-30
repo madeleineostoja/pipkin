@@ -24,26 +24,45 @@ export type EpochData = {
   decisions: EpochDecision[];
 };
 
+export const PRUNING_TYPE = "pipkin.context.pruning.v1";
+
+export type PruningMilestone = {
+  kind: EpochKind;
+  count: number;
+  estimatedTokensSaved: number;
+  reasons: Partial<Record<ElisionReason, number>>;
+};
+
 export type PruningState = {
-  decisions: Map<string, EpochDecision>;
   warmEpochEntryId?: string;
+  warmedMarkerId?: string;
+  pending?: { leafId: string | null; milestone: PruningMilestone };
   reportedInvalidEntry: boolean;
   reportedAppendFailure: boolean;
 };
 
 export function createPruningState(): PruningState {
   return {
-    decisions: new Map(),
     reportedInvalidEntry: false,
     reportedAppendFailure: false,
   };
 }
 
-export function resetPruningState(state: PruningState): void {
-  state.decisions.clear();
-  state.warmEpochEntryId = undefined;
-  state.reportedInvalidEntry = false;
-  state.reportedAppendFailure = false;
+export function isPruningMilestone(value: unknown): value is PruningMilestone {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ["kind", "count", "estimatedTokensSaved", "reasons"]) &&
+    isEpochKind(value.kind) &&
+    isPositiveSafeInteger(value.count) &&
+    isPositiveSafeInteger(value.estimatedTokensSaved) &&
+    isRecord(value.reasons) &&
+    hasOnlyKeys(value.reasons, ELISION_REASONS) &&
+    Object.values(value.reasons).every(isPositiveSafeInteger) &&
+    Object.values(value.reasons).reduce<number>(
+      (sum, count) => sum + (count as number),
+      0,
+    ) === value.count
+  );
 }
 
 export function isEpochData(value: unknown): value is EpochData {

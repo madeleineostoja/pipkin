@@ -5,24 +5,12 @@ import type { Context, Message, UserMessage } from "@earendil-works/pi-ai";
 const SYSTEM_PROMPT =
   "You are answering a side question about the current coding session. " +
   "You have no tools available and cannot read files, run commands, or mutate state. " +
-  "Answer from the provided conversation context and your general knowledge.";
-const ANSWER_RESERVE = 1_024;
-const OVERHEAD_RESERVE = 256;
+  "Answer concisely from the provided conversation context and your general knowledge.";
+const OPAQUE_LIMITATION =
+  " Prior history was compacted into an opaque provider checkpoint unavailable to this side request. " +
+  "Only the readable canonical summaries and tail supplied here are available; do not claim to reconstruct the missing history.";
 
-type ContextModel = {
-  contextWindow: number;
-  maxTokens: number;
-};
-
-export type BtwPrompt = {
-  context: Context;
-  maxTokens?: number;
-  overheadTokens: number;
-};
-
-function estimateTokens(value: unknown): number {
-  return Math.ceil(JSON.stringify(value).length / 3);
-}
+export type BtwPrompt = { context: Context };
 
 function questionMessage(question: string): UserMessage {
   return {
@@ -85,108 +73,41 @@ function sessionGroups(messages: readonly Message[]): readonly Message[][] {
   return groups;
 }
 
-function contextFor(
-  sessionMessages: readonly Message[],
-  currentQuestion: UserMessage,
-): Context {
-  return {
-    systemPrompt: SYSTEM_PROMPT,
-    messages: [...sessionMessages, currentQuestion],
-    tools: [],
-  };
-}
-
-function fitNewest<T>(
-  values: readonly T[],
-  fits: (retained: readonly T[]) => boolean,
-): readonly T[] {
-  const retained: T[] = [];
-  for (const value of [...values].reverse()) {
-    const candidate = [value, ...retained];
-    if (!fits(candidate)) {
-      break;
-    }
-    retained.unshift(value);
-  }
-  return retained;
-}
-
-function boundedQuestion(question: string, inputLimit: number): UserMessage {
-  const fits = (value: string) =>
-    estimateTokens(contextFor([], questionMessage(value))) <= inputLimit;
-  if (fits(question)) {
-    return questionMessage(question);
-  }
-
-  const characters = Array.from(question);
-  let low = 0;
-  let high = characters.length;
-  while (low < high) {
-    const midpoint = Math.ceil((low + high) / 2);
-    if (fits(`${characters.slice(0, midpoint).join("")}…`)) {
-      low = midpoint;
-    } else {
-      high = midpoint - 1;
-    }
-  }
-  return questionMessage(`${characters.slice(0, low).join("")}…`);
-}
-
 export function buildPrompt(
   sessionManager: ExtensionContext["sessionManager"],
   question: string,
-  model: ContextModel,
 ): BtwPrompt {
-  const built = sessionManager.buildSessionProjection();
-  let sessionMessages: Message[] = [];
-  try {
-    const converted = convertToLlm(built.messages);
-    if (Array.isArray(converted)) {
-      sessionMessages = converted.filter(
-        (message) => message.role !== "system",
-      );
+  const projection = sessionManager.buildSessionProjection();
+  let opaque = false;
+  const readable = projection.entries.flatMap(({ sourceEntry, messages }) => {
+    if (
+      sourceEntry.type === "compaction" &&
+      (sourceEntry.summary.includes(
+        "authoritative prior context is an opaque provider checkpoint",
+      ) ||
+        (typeof sourceEntry.details === "object" &&
+          sourceEntry.details !== null &&
+          "kind" in sourceEntry.details &&
+          sourceEntry.details.kind === "pipkin-native-compaction"))
+    ) {
+      opaque = true;
+      return [];
     }
-  } catch {}
-
-  // Virtual selectors may not declare limits; the model runtime owns dispatch
-  // and output defaults in that case, not a guessed physical-model budget.
-  if (!(model.contextWindow > 0) || !(model.maxTokens > 0)) {
-    return {
-      context: contextFor(
-        sessionGroups(sessionMessages).flat(),
-        questionMessage(question),
-      ),
-      overheadTokens: 0,
-    };
-  }
-
-  const maxTokens = Math.min(
-    Math.max(1, model.maxTokens),
-    ANSWER_RESERVE,
-    Math.max(1, Math.floor(model.contextWindow / 4)),
+    return messages;
+  });
+  // System messages include both prompt sections and tool-loadout deltas.
+  // tools:[] alone cannot revoke historical toolsAdded during normalization.
+  const conversation = convertToLlm(readable).filter(
+    (message) => message.role !== "system",
   );
-  const overheadTokens = Math.min(
-    OVERHEAD_RESERVE,
-    Math.max(1, Math.floor(model.contextWindow / 8)),
-  );
-  const inputLimit = Math.max(
-    1,
-    model.contextWindow - maxTokens - overheadTokens,
-  );
-  const currentQuestion = boundedQuestion(question, inputLimit);
-  const groups = sessionGroups(sessionMessages);
-  const retainedSessionGroups = fitNewest(
-    groups,
-    (candidate) =>
-      estimateTokens(contextFor(candidate.flat(), currentQuestion)) <=
-      inputLimit,
-  );
-
   return {
-    context: contextFor(retainedSessionGroups.flat(), currentQuestion),
-    maxTokens,
-    overheadTokens,
+    context: {
+      systemPrompt: SYSTEM_PROMPT + (opaque ? OPAQUE_LIMITATION : ""),
+      messages: [
+        ...sessionGroups(conversation).flat(),
+        questionMessage(question),
+      ],
+      tools: [],
+    },
   };
 }
-
-export { estimateTokens as estimateBtwTokens };

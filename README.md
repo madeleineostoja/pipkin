@@ -55,7 +55,7 @@ Implement coordinates trusted workers in disposable Git worktrees, publishes thr
 
 - **Sandbox** contains model Bash and direct `write`/`edit` calls on macOS. Inspection children can protect source and Git while retaining disposable dependency runtime writes; Linux remains instruction-only.
 - **Readonly** independently asks for confirmation before resolved `edit` and `write` calls.
-- **Context** prunes stale or superseded tool output, routes textual compaction through `models.low`, uses server checkpoints for eligible Codex OAuth sessions with visible fallback diagnostics and turn cancellation when checkpoints cannot be replayed, and preserves original results and immutable execution evidence for `read_output`.
+- **Context** conservatively prunes consumed stale or superseded tool output through native boundary edits, routes textual compaction through `models.low`, uses server checkpoints for eligible Codex OAuth sessions with visible fallback diagnostics and turn cancellation when checkpoints cannot be replayed, and preserves original results and immutable execution evidence for `read_output`.
 - **Processes** runs foreground non-interactive commands while the main agent continues independent work.
 
 [Safety →](docs/features/safety.md) · [Context →](docs/features/context.md)
@@ -81,7 +81,7 @@ Native Pi owns MCP configuration, authentication, discovery, and `/mcp`, includi
 - **UI** presents compact session status and bounded live activity.
 - **Personality** gives fresh sessions a contextual welcome and unnamed sessions useful titles.
 - **Papercuts** records recurring incidental friction only after an agent exercises a workaround and completes or safely continues its actual task.
-- **BTW** answers one ephemeral side question with the current model and session context; press `s` after completion to promote a useful exchange into the transcript and context.
+- **BTW** answers one ephemeral no-tools side question from readable canonical context using the selected model's ordinary defaults; press `s` after completion to promote a useful exchange into the transcript and context.
 
 [Interface and Personality →](docs/features/interface-and-personality.md) · [Workflow tools →](docs/features/workflow-tools.md)
 

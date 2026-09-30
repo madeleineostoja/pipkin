@@ -1,5 +1,6 @@
 import {
   SessionManager,
+  buildSessionProjection,
   convertToLlm,
   type ExtensionContext,
   type SessionBeforeCompactEvent,
@@ -103,7 +104,7 @@ function assistantStream(response: () => Promise<AssistantMessage>) {
   return stream;
 }
 
-function assistant(text: string) {
+function assistant(text: string): AssistantMessage {
   return {
     role: "assistant" as const,
     content: [{ type: "text" as const, text }],
@@ -203,6 +204,60 @@ describe("CompactionCoordinator textual route", () => {
     );
   });
 
+  it("cancels already-aborted requests before resolving any native or low model", async () => {
+    const fixture = context();
+    const controller = new AbortController();
+    controller.abort();
+    const coordinator = createCompactionCoordinator({
+      low: undefined,
+      configPath: "config.json",
+    });
+    fixture.ctx.model = {
+      ...model,
+      provider: "openai-codex",
+      api: "openai-codex-responses",
+    };
+
+    await expect(
+      coordinator.beforeCompact(
+        event({ signal: controller.signal }),
+        fixture.ctx,
+      ),
+    ).resolves.toEqual({ cancel: true });
+    expect(fixture.ctx.modelRegistry.find).not.toHaveBeenCalled();
+    expect(fixture.streamSimple).not.toHaveBeenCalled();
+    expect(fixture.notify).not.toHaveBeenCalled();
+  });
+
+  it.each(["stop", "error"] as const)(
+    "cancels when the low request aborts even if it finishes with %s",
+    async (stopReason) => {
+      const controller = new AbortController();
+      const fixture = context(
+        vi.fn(async () => {
+          controller.abort();
+          return { ...assistant("summary"), stopReason };
+        }),
+      );
+      const coordinator = createCompactionCoordinator({
+        low: { model: "test/low-model", thinking: "minimal" },
+        configPath: "config.json",
+      });
+
+      await expect(
+        coordinator.beforeCompact(
+          event({
+            signal: controller.signal,
+            customInstructions: "Keep decisions",
+          }),
+          fixture.ctx,
+        ),
+      ).resolves.toEqual({ cancel: true });
+      expect(fixture.streamSimple).toHaveBeenCalledOnce();
+      expect(fixture.notify).not.toHaveBeenCalled();
+    },
+  );
+
   it("returns no hook result when the low completion fails", async () => {
     const fixture = context(
       vi.fn(async () => {
@@ -262,6 +317,7 @@ describe("CompactionCoordinator textual route", () => {
       ui: { notify },
       sessionManager: {
         getBranch: () => [],
+        buildSessionProjection: () => buildSessionProjection([kept]),
         getLeafId: () => null,
         getSessionId: () => "session",
       },
@@ -427,6 +483,7 @@ describe("CompactionCoordinator textual route", () => {
       ui: { notify },
       sessionManager: {
         getBranch: () => entries,
+        buildSessionProjection: () => buildSessionProjection(entries),
         getLeafId: () => "textual",
         getSessionId: () => "session",
       },
@@ -532,9 +589,28 @@ describe("CompactionCoordinator textual route", () => {
         message: { role: "user" as const, content: "kept", timestamp: 1 },
       },
       {
+        type: "message" as const,
+        id: "overflow",
+        parentId: "kept",
+        timestamp: new Date(1).toISOString(),
+        message: {
+          role: "user" as const,
+          content: "abandoned overflow input",
+          timestamp: 1,
+        },
+      },
+      {
+        type: "context_edit" as const,
+        id: "overflow-omission",
+        parentId: "overflow",
+        timestamp: new Date(1).toISOString(),
+        targetId: "overflow",
+        replacement: null,
+      },
+      {
         type: "context_edit" as const,
         id: "projected",
-        parentId: "kept",
+        parentId: "overflow-omission",
         timestamp: new Date(1).toISOString(),
         targetId: "kept",
         replacement: { content: "canonical kept text" },
@@ -599,7 +675,7 @@ describe("CompactionCoordinator textual route", () => {
         context: {
           systemPrompt: contextFor(sessionManager).getSystemPrompt(),
           messages: convertToLlm(
-            sessionManager.buildSessionContext().messages,
+            sessionManager.buildSessionProjection().messages,
           ).filter((message) => message.role !== "system"),
         },
       });
@@ -675,6 +751,94 @@ describe("CompactionCoordinator textual route", () => {
       { role: "user", content: [{ type: "input_text", text: "later" }] },
       { type: "compaction", id: "cmp-next", encrypted_content: "next opaque" },
     ]);
+  });
+
+  it("refuses instructed, incompatible and corrupt opaque authority without any textual fallback", async () => {
+    const nativeModel = {
+      ...model,
+      id: "gpt-5-codex",
+      provider: "openai-codex",
+      api: "openai-codex-responses",
+      baseUrl: "https://chatgpt.com/backend-api",
+    } as Model<"openai-codex-responses">;
+    const apiKey = `header.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "original-account" } })).toString("base64url")}.signature`;
+    const auth = { ok: true as const, apiKey };
+    const manager = SessionManager.inMemory("/work");
+    const kept = manager.appendMessage({
+      role: "user",
+      content: "kept",
+      timestamp: 1,
+    });
+    const checkpoint = createNativeCheckpoint({
+      identity: createCodexIdentity(nativeModel, auth, true)!,
+      artifact: [{ type: "compaction", encrypted_content: "opaque fixture" }],
+      lineage: { firstKeptEntryId: kept, leafId: kept },
+      usage,
+    });
+    const checkpointId = manager.appendCompaction(
+      checkpoint.summary,
+      kept,
+      100,
+      checkpoint.details,
+    );
+    const fetch = vi.fn();
+    const adapter = createCodexOAuthAdapter({ fetch });
+    const textual = context();
+    const abort = vi.fn();
+    const ctx = {
+      ...textual.ctx,
+      model: nativeModel,
+      abort,
+      sessionManager: manager,
+      modelRegistry: {
+        ...textual.ctx.modelRegistry,
+        getApiKeyAndHeaders: vi.fn(async () => auth),
+        isUsingOAuth: () => true,
+      },
+    } as unknown as ExtensionContext;
+    const reportNativeFailure = vi.fn();
+    const coordinator = createCompactionCoordinator({
+      low: { model: "test/low-model", thinking: "low" },
+      configPath: "config.json",
+      adapter,
+      reportNativeFailure,
+    });
+    const attempt = (customInstructions?: string) =>
+      coordinator.beforeCompact(
+        event({
+          branchEntries: manager.getBranch(),
+          customInstructions,
+          preparation: { ...event().preparation, firstKeptEntryId: kept },
+        }),
+        ctx,
+      );
+    expect(await attempt("summarize differently")).toEqual({ cancel: true });
+    ctx.model = model;
+    await coordinator.modelSelect({ model } as never, ctx);
+    expect(textual.notify).toHaveBeenCalledWith(
+      expect.stringContaining("original compatible Codex model/account"),
+      "warning",
+    );
+    expect(await attempt()).toEqual({ cancel: true });
+    expect(
+      await coordinator.beforeProviderRequest({ input: [] }, ctx),
+    ).toBeUndefined();
+    expect(abort).toHaveBeenCalledOnce();
+    ctx.model = nativeModel;
+    manager.appendCompaction(checkpoint.summary, kept, 100, {
+      ...checkpoint.details,
+      kind: "corrupt-kind",
+    });
+    expect(await attempt()).toEqual({ cancel: true });
+    manager.branch(checkpointId);
+    manager.appendCompaction("unrelated textual summary", kept, 100);
+    expect(await attempt()).toEqual({ cancel: true });
+    expect(textual.streamSimple).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(reportNativeFailure).toHaveBeenCalledWith(
+      "compatible Codex OAuth route is unavailable",
+      "cancelled",
+    );
   });
 
   it("does not replay a checkpoint whose persisted lineage differs from its entry", async () => {

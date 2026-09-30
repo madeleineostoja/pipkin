@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Type } from "typebox";
+import { streamSimple } from "@earendil-works/pi-ai/api/openai-codex-responses";
 import type { Context, Model, Usage } from "@earendil-works/pi-ai";
 import {
   createCodexIdentity,
@@ -173,13 +174,20 @@ describe("Codex OAuth adapter", () => {
         },
       ],
     };
-    const payload = await createCodexOAuthAdapter().capture({
-      model,
+    const serializer = vi.fn(streamSimple);
+    const headers = { "x-codex-beta-features": "configured_beta" };
+    const payload = await createCodexOAuthAdapter({ serializer }).capture({
+      model: { ...model, baseUrl: "https://not-the-resolved-endpoint.test" },
       context,
-      auth,
+      auth: { ...auth, baseUrl: model.baseUrl, headers },
       thinking: "high",
     });
     expect(fetch).not.toHaveBeenCalled();
+    expect(serializer.mock.calls[0]?.[0].baseUrl).toBe(model.baseUrl);
+    expect(serializer.mock.calls[0]?.[2]).toMatchObject({
+      transport: "sse",
+      headers,
+    });
     expect(payload.instructions).toContain(instructions);
     expect(payload.tools).toEqual([
       expect.objectContaining({ name: "inspect", description }),

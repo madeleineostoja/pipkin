@@ -106,6 +106,7 @@ function context(
       },
       sessionManager: {
         buildSessionProjection: () => ({
+          entries: [],
           messages: [],
           thinkingLevel: "off",
           model: null,
@@ -195,7 +196,7 @@ describe("/btw", () => {
     expect(completeTextMock).toHaveBeenCalledWith(
       value.model,
       expect.anything(),
-      expect.objectContaining({ maxTokens: 1_024 }),
+      { signal: expect.any(AbortSignal) },
       value.modelRegistry,
     );
     resolveCompletion({
@@ -210,9 +211,33 @@ describe("/btw", () => {
     expect(completeTextMock).toHaveBeenCalledWith(
       value.model,
       expect.anything(),
-      expect.objectContaining({ maxTokens: 1_024 }),
+      { signal: expect.any(AbortSignal) },
       value.modelRegistry,
     );
+  });
+
+  it("keeps overflow local to the panel without compaction, parent mutation or fallback", async () => {
+    const { command, sendMessage } = fixture();
+    const custom = customFixture();
+    const { value } = context(custom);
+    const before = value.sessionManager.buildSessionProjection();
+    completeTextMock.mockResolvedValue({
+      ok: false,
+      reason: "error",
+      message: "context_length_exceeded: side request is too large",
+    });
+    const running = command("full question".repeat(10_000), value);
+    await flush();
+    expect(
+      custom.component
+        ?.render(100)
+        .some((line) => line.includes("context_length_exceeded")),
+    ).toBe(true);
+    expect(completeTextMock).toHaveBeenCalledOnce();
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(value.sessionManager.buildSessionProjection()).toEqual(before);
+    custom.close();
+    await running;
   });
 
   it("does not thread an earlier side exchange into a later request", async () => {

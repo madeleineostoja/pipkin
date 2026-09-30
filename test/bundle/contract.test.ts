@@ -499,6 +499,7 @@ describe("Pipkin bundle", () => {
       expectedProvenance({
         "pipkin.context.compaction-failure.v1": "context",
         "pipkin.context.epoch.v1": "context",
+        "pipkin.context.pruning.v1": "context",
         "pipkin.implement.terminal-handoff": "implement",
       }),
     );

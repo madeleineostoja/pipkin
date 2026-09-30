@@ -1,12 +1,16 @@
 import {
+  SessionManager,
   createReadToolDefinition,
+  truncateHead,
   estimateTokens,
+  type BoundaryState,
 } from "@earendil-works/pi-coding-agent";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
-import { makeContextHook, restoreEpochs } from "./elision.ts";
-import { EPOCH_TYPE, createPruningState } from "./policy.ts";
+import { createPruningFlow } from "./pruning.ts";
+import { PRUNING_TYPE, type PruningMilestone } from "./policy.ts";
 
-function toolResult(id: string, text = "x".repeat(4_000), name = "bash") {
+function result(id: string, text = "x".repeat(4_000), name = "web_fetch") {
   return {
     role: "toolResult" as const,
     toolCallId: id,
@@ -16,472 +20,279 @@ function toolResult(id: string, text = "x".repeat(4_000), name = "bash") {
     timestamp: 1,
   };
 }
-
-function context(
-  messages: unknown[],
-  entries: unknown[],
-  append: (type: string, data: unknown) => void,
-) {
-  return {
-    messages,
-    ctx: {
-      cwd: "/work",
-      model: undefined,
-      sessionManager: {
-        getBranch: () => [
-          ...messages.flatMap((message: any) =>
-            message.role === "toolResult"
-              ? [{ id: message.toolCallId, type: "message", message }]
-              : [],
-          ),
-          ...entries,
-        ],
-      },
-      ui: { notify: () => {} },
-      append,
-    },
+function users(manager: SessionManager, count: number) {
+  for (let i = 0; i < count; i++) {
+    manager.appendMessage({
+      role: "user",
+      content: `request ${i}`,
+      timestamp: 2,
+    });
+  }
+}
+function fixture() {
+  const manager = SessionManager.inMemory("/work");
+  const flow = createPruningFlow();
+  const ctx = {
+    cwd: "/work",
+    sessionManager: manager,
+    model: { provider: "test", id: "model" },
+    ui: { notify: () => {} },
   };
+  const boundary = () => {
+    const projection = manager.buildSessionProjection();
+    return (
+      flow.boundary(
+        {
+          entries: [],
+          continue: false,
+          outcome: "completed",
+          context: {
+            contextEntries: projection.entries,
+            contextMessages: projection.messages,
+            llmMessages: [],
+            pendingMessages: [],
+            canContinue: false,
+          },
+        } satisfies BoundaryState,
+        ctx as never,
+      )?.entries ?? []
+    );
+  };
+  return { manager, flow, ctx, boundary };
+}
+function milestone(drafts: ReturnType<ReturnType<typeof fixture>["boundary"]>) {
+  const entry = drafts.find(
+    (entry) => entry.type === "custom" && entry.customType === PRUNING_TYPE,
+  );
+  return entry?.type === "custom"
+    ? (entry.data as PruningMilestone)
+    : undefined;
 }
 
-describe("context epochs", () => {
-  it("persists a complete tail epoch before changing outgoing copies and restores it after reinstantiation", () => {
-    const source = toolResult("source");
-    const messages = [
-      source,
-      { role: "user" as const, content: "one" },
-      { role: "user" as const, content: "two" },
-      { role: "user" as const, content: "three" },
-      { role: "user" as const, content: "four" },
-    ];
-    const entries: any[] = [];
-    const appended: any[] = [];
-    const append = (type: string, data: any) => {
-      appended.push({ type, data });
-      entries.push({ type: "custom", id: "epoch-1", customType: type, data });
-    };
-    const first = makeContextHook(createPruningState(), append);
-    const input = context(messages, entries, append);
-    const result = first(
-      { type: "context", messages } as any,
-      input.ctx as any,
-    );
-
-    expect(appended).toEqual([
-      expect.objectContaining({
-        type: EPOCH_TYPE,
-        data: {
-          kind: "tail",
-          decisions: [
-            expect.objectContaining({
-              sourceToolCallId: "source",
-              reason: "standard-stale",
-              estimatedTokensSaved: expect.any(Number),
-            }),
-          ],
-        },
+describe("native pruning eligibility", () => {
+  it("keeps first exposure, errors and unsuccessful assistant attempts full", () => {
+    const { manager, boundary } = fixture();
+    manager.appendMessage(
+      fauxAssistantMessage(fauxToolCall("bash", {}, { id: "fresh" }), {
+        stopReason: "toolUse",
       }),
+    );
+    manager.appendMessage(result("fresh", "passed\n".repeat(200), "bash"));
+    expect(boundary()).toEqual([]);
+    manager.appendMessage(fauxAssistantMessage("", { stopReason: "error" }));
+    users(manager, 4);
+    expect(boundary()).toEqual([]);
+    manager.appendMessage(fauxAssistantMessage("consumed"));
+    manager.appendMessage({
+      ...result("failure", "failure ".repeat(400)),
+      isError: true,
+    });
+    manager.appendMessage(fauxAssistantMessage("saw failure"));
+    users(manager, 4);
+    expect(milestone(boundary())?.reasons).toEqual({
+      "after-consumption-bash": 1,
+    });
+  });
+
+  it("requires four later users and 256 tokens for ordinary stale Web Fetch output without changing the source", () => {
+    const { manager, boundary } = fixture();
+    const source = result("large");
+    manager.appendMessage(source);
+    manager.appendMessage(result("small", "short"));
+    manager.appendMessage(fauxAssistantMessage("consumed"));
+    users(manager, 3);
+    expect(boundary()).toEqual([]);
+    users(manager, 1);
+    const drafts = boundary();
+    expect(milestone(drafts)?.reasons).toEqual({ "standard-stale": 1 });
+    const edit = drafts[0];
+    if (edit?.type !== "context_edit" || !edit.replacement) {
+      throw new Error("missing edit");
+    }
+    expect(edit.replacement.content).toEqual([
+      {
+        type: "text",
+        text: expect.stringContaining('read_output({reference:"transcript:v1:'),
+      },
     ]);
-    expect(result.messages[0]).not.toBe(source);
-    expect((result.messages[0] as any).content[0].text).toContain(
-      'read_output({reference:"transcript:v1:',
-    );
-    const decision = appended[0]?.data.decisions[0];
-    expect(decision.estimatedTokensSaved).toBe(
-      estimateTokens(source) -
-        estimateTokens({
-          ...source,
-          content: [{ type: "text", text: decision.stub }],
-        }),
-    );
     expect(source.content[0].text).toHaveLength(4_000);
-
-    const reloaded = makeContextHook(createPruningState(), append);
-    const restored = reloaded(
-      { type: "context", messages } as any,
-      input.ctx as any,
-    );
-    expect((restored.messages[0] as any).content).toEqual(
-      (result.messages[0] as any).content,
-    );
+    expect(
+      manager.getBranch().find((entry) => entry.id === edit.targetId),
+    ).toMatchObject({
+      type: "message",
+      message: source,
+    });
   });
 
-  it("treats successful Web Fetch results as ordinary standard-stale results", () => {
-    const content = `Requested URL: https://example.com/one\n\n${"first result ".repeat(400)}`;
-    const source = toolResult("web-single", content, "web_fetch");
-    const messages = [
-      source,
-      { role: "user" as const, content: "one" },
-      { role: "user" as const, content: "two" },
-      { role: "user" as const, content: "three" },
-      { role: "user" as const, content: "four" },
-    ];
-    const appended: any[] = [];
-    const append = (type: string, data: any) => appended.push({ type, data });
-    const result = makeContextHook(createPruningState(), append)(
-      { type: "context", messages } as any,
-      context(messages, [], append).ctx as any,
-    );
-
-    expect(appended[0]?.data.decisions).toEqual([
-      expect.objectContaining({
-        sourceToolCallId: source.toolCallId,
-        reason: "standard-stale",
-      }),
-    ]);
-    expect((result.messages[0] as any).content[0].text).toContain(
-      'read_output({reference:"transcript:v1:',
-    );
-    expect(source.content[0].text).toBe(content);
-  });
-
-  it("replays a legacy v1 epoch without changing its stored stub", () => {
-    const stub =
-      '[tool result elided: stale. Call context_recall("source") to retrieve.]';
-    const legacy = {
-      kind: "tail",
-      decisions: [
-        {
-          sourceToolCallId: "source",
-          reason: "standard-stale",
-          stub,
-        },
-      ],
-    };
-    const messages = [toolResult("source")];
-    const result = makeContextHook(createPruningState(), () => {})(
-      { type: "context", messages } as any,
-      context(
-        messages,
-        [
-          {
-            type: "custom",
-            id: "legacy",
-            customType: EPOCH_TYPE,
-            data: legacy,
-          },
-        ],
-        () => {},
-      ).ctx as any,
-    );
-
-    expect((result.messages[0] as any).content).toEqual([
-      { type: "text", text: stub },
-    ]);
-  });
-
-  it("persists exact savings for known-cold and warm epochs", () => {
-    const source = toolResult("source", "x".repeat(150_000));
-    const messages = [
-      source,
-      { role: "user" as const, content: "one" },
-      { role: "user" as const, content: "two" },
-      { role: "user" as const, content: "three" },
-      { role: "user" as const, content: "four" },
-    ];
-    const knownCold: any[] = [];
-    const knownColdContext = context(
-      messages,
-      [
-        { type: "model_change", provider: "other", modelId: "other" },
-        { type: "model_change", provider: "test", modelId: "model" },
-      ],
-      () => {},
-    );
-    (knownColdContext.ctx as any).model = { provider: "test", id: "model" };
-    makeContextHook(createPruningState(), (type, data) =>
-      knownCold.push({ type, data }),
-    )({ type: "context", messages } as any, knownColdContext.ctx as any);
-
-    const warm: any[] = [];
-    makeContextHook(createPruningState(), (type, data) =>
-      warm.push({ type, data }),
-    )(
-      { type: "context", messages } as any,
-      context(
-        messages,
-        Array.from({ length: 8 }, (_, index) => ({
-          type: "message",
-          message: { role: "user", content: `turn ${index}` },
-        })),
-        () => {},
-      ).ctx as any,
-    );
-
-    for (const epoch of [knownCold[0], warm[0]]) {
-      const decision = epoch.data.decisions[0];
-      expect(epoch.data.kind).toBe(
-        epoch === knownCold[0] ? "known-cold" : "warm",
+  it("uses successful superseding edits and verified returned intervals for duplicate/covered reads", async () => {
+    const read = createReadToolDefinition("/work", {
+      operations: {
+        access: async () => {},
+        readFile: async () => Buffer.from("line content\n".repeat(150)),
+      },
+    });
+    const metadata = (count: number) => ({
+      truncation: {
+        ...truncateHead(
+          Array.from({ length: count }, () => "line content").join("\n"),
+        ),
+      },
+    });
+    for (const reason of [
+      "superseded-read",
+      "duplicate-read",
+      "covered-read",
+    ] as const) {
+      const { manager, boundary } = fixture();
+      const args = { path: "a.ts", offset: 1, limit: 100 };
+      const early = await read.execute(
+        "early",
+        args,
+        undefined,
+        undefined,
+        {} as never,
       );
-      expect(decision.estimatedTokensSaved).toBe(
-        estimateTokens(source) -
-          estimateTokens({
-            ...source,
-            content: [{ type: "text", text: decision.stub }],
-          }),
+      manager.appendMessage(
+        fauxAssistantMessage(fauxToolCall("read", args, { id: "early" })),
       );
+      manager.appendMessage({
+        ...result("early", "", "read"),
+        content: early.content,
+        details: metadata(100),
+      });
+      const name = reason === "superseded-read" ? "edit" : "read";
+      const laterArgs = {
+        ...args,
+        limit: reason === "covered-read" ? 150 : 100,
+      };
+      manager.appendMessage(
+        fauxAssistantMessage(fauxToolCall(name, laterArgs, { id: "later" })),
+      );
+      const late = await read.execute(
+        "later",
+        laterArgs,
+        undefined,
+        undefined,
+        {} as never,
+      );
+      manager.appendMessage({
+        ...result("later", "", name),
+        content: late.content,
+        details: metadata(laterArgs.limit),
+      });
+      manager.appendMessage(fauxAssistantMessage("consumed"));
+      expect(milestone(boundary())?.reasons).toEqual({ [reason]: 1 });
     }
   });
-
-  it("does not latch or transform a proposed epoch when persistence fails", () => {
-    const messages = [
-      toolResult("source"),
-      { role: "user" as const, content: "one" },
-      { role: "user" as const, content: "two" },
-      { role: "user" as const, content: "three" },
-      { role: "user" as const, content: "four" },
-    ];
-    const state = createPruningState();
-    const hook = makeContextHook(state, () => {
-      throw new Error("disk unavailable");
-    });
-    const result = hook(
-      { type: "context", messages } as any,
-      context(messages, [], () => {}).ctx as any,
-    );
-
-    expect(result.messages[0]).toBe(messages[0]);
-    expect(state.decisions.size).toBe(0);
-  });
-
-  it("treats only the first request after compaction as known cold", () => {
-    const messages = [
-      toolResult("source", "x".repeat(40_000)),
-      { role: "user" as const, content: "one" },
-      { role: "user" as const, content: "two" },
-      { role: "user" as const, content: "three" },
-      { role: "user" as const, content: "four" },
-    ];
-    for (const assistantAfter of [false, true]) {
-      const appended: any[] = [];
-      const entries: any[] = [
-        { type: "compaction", id: "compaction", summary: "summary" },
-      ];
-      if (assistantAfter) {
-        entries.push({
-          type: "message",
-          id: "assistant",
-          message: { role: "assistant", content: [] },
-        });
-      }
-      makeContextHook(createPruningState(), (type, data) =>
-        appended.push({ type, data }),
-      )(
-        { type: "context", messages } as any,
-        context(messages, entries, () => {}).ctx as any,
-      );
-
-      expect(appended.map((entry) => entry.data.kind)).toEqual(
-        assistantAfter ? [] : ["known-cold"],
-      );
-    }
-  });
-
-  it("does not treat Pi's initial model record as a known-cold transition", () => {
-    const messages = [
-      toolResult("source", "x".repeat(40_000)),
-      { role: "user" as const, content: "one" },
-      { role: "user" as const, content: "two" },
-      { role: "user" as const, content: "three" },
-      { role: "user" as const, content: "four" },
-    ];
-    const appended: any[] = [];
-    const hook = makeContextHook(createPruningState(), (type, data) =>
-      appended.push({ type, data }),
-    );
-    const input = context(
-      messages,
-      [{ type: "model_change", provider: "test", modelId: "model" }],
-      () => {},
-    );
-    (input.ctx as any).model = { provider: "test", id: "model" };
-
-    hook({ type: "context", messages } as any, input.ctx as any);
-
-    expect(appended).toEqual([]);
-  });
-
-  it("rejects an entire repeated epoch while preserving earlier accepted decisions", () => {
-    const state = createPruningState();
-    const first = {
-      kind: "tail",
-      decisions: [
-        {
-          sourceToolCallId: "one",
-          reason: "standard-stale",
-          stub: '[tool result elided: stale. Call context_recall("one") to retrieve.]',
-        },
-      ],
-    };
-    const repeated = {
-      kind: "warm",
-      decisions: [
-        {
-          sourceToolCallId: "one",
-          reason: "standard-stale",
-          stub: '[tool result elided: stale. Call context_recall("one") to retrieve.]',
-        },
-        {
-          sourceToolCallId: "two",
-          reason: "standard-stale",
-          stub: '[tool result elided: stale. Call context_recall("two") to retrieve.]',
-        },
-      ],
-    };
-    const replay = restoreEpochs(state, [
-      { type: "custom", id: "one", customType: EPOCH_TYPE, data: first },
-      { type: "custom", id: "two", customType: EPOCH_TYPE, data: repeated },
-    ]);
-
-    expect(replay.invalid).toBe(true);
-    expect([...state.decisions.keys()]).toEqual(["one"]);
-  });
-
-  it("rejects byte-limit-inconsistent read metadata for containment", () => {
-    const readCall = (id: string) => ({
-      role: "assistant" as const,
-      content: [
-        {
-          type: "toolCall" as const,
-          id,
-          name: "read",
-          arguments: { path: "a.ts" },
-        },
-      ],
-    });
-    const early = {
-      ...toolResult("early", "x".repeat(100), "read"),
-      details: {
-        truncation: {
-          content: "x".repeat(80),
-          totalLines: 3,
-          totalBytes: 100,
-          outputLines: 2,
-          outputBytes: 80,
-          truncated: true,
-          truncatedBy: "lines",
-          lastLinePartial: false,
-          firstLineExceedsLimit: false,
-          maxLines: 2,
-          maxBytes: 50_000,
-        },
-      },
-    };
-    const late = {
-      ...toolResult("late", "x".repeat(20_000), "read"),
-      details: {
-        truncation: {
-          content: "x".repeat(20_000),
-          totalLines: 100,
-          totalBytes: 40_000,
-          outputLines: 100,
-          outputBytes: 20_000,
-          truncated: true,
-          truncatedBy: "bytes",
-          lastLinePartial: false,
-          firstLineExceedsLimit: false,
-          maxLines: 2_000,
-          maxBytes: 50_000,
-        },
-      },
-    };
-    const messages = [
-      readCall("early"),
-      early,
-      readCall("late"),
-      late,
-      { role: "assistant" as const, content: [] },
-    ];
-    const appended: any[] = [];
-    const hook = makeContextHook(createPruningState(), (type, data) =>
-      appended.push({ type, data }),
-    );
-    const input = context(
-      messages,
-      [
-        { type: "model_change", provider: "other", modelId: "other" },
-        { type: "model_change", provider: "test", modelId: "model" },
-      ],
-      () => {},
-    );
-    (input.ctx as any).model = { provider: "test", id: "model" };
-
-    hook({ type: "context", messages } as any, input.ctx as any);
-
-    expect(appended).toEqual([]);
-  });
-
-  it("uses Pi's returned read intervals for containment", async () => {
-    const definition = createReadToolDefinition("/work", {
+  it("recognizes duplicate intervals in a genuinely native truncated read result", async () => {
+    const { manager, boundary } = fixture();
+    manager.appendModelChange("other", "other");
+    const read = createReadToolDefinition("/work", {
       operations: {
         access: async () => {},
         readFile: async () =>
           Buffer.from(
-            Array.from(
-              { length: 2_001 },
-              (_, index) => `a b c d e f g ${index}`,
-            ).join("\n"),
+            "line content with several descriptive words\n".repeat(2_001),
           ),
       },
     });
-    const result = await definition.execute(
+    const output = await read.execute(
       "read",
       { path: "a.ts" },
       undefined,
       undefined,
       {} as never,
     );
-    const readCall = (id: string) => ({
-      role: "assistant" as const,
-      content: [
-        {
-          type: "toolCall" as const,
-          id,
-          name: "read",
-          arguments: { path: "a.ts" },
-        },
-      ],
-    });
-    const read = (id: string) => ({
-      ...toolResult(id, "", "read"),
-      content: result.content,
-      details: result.details,
-    });
-    const messages = [
-      readCall("early"),
-      read("early"),
-      readCall("late"),
-      read("late"),
-      { role: "assistant" as const, content: [] },
-    ];
-    const appended: any[] = [];
-    const hook = makeContextHook(createPruningState(), (type, data) =>
-      appended.push({ type, data }),
-    );
-    const input = context(
-      messages,
-      [
-        { type: "model_change", provider: "other", modelId: "other" },
-        { type: "model_change", provider: "test", modelId: "model" },
-      ],
-      () => {},
-    );
-    (input.ctx as any).model = { provider: "test", id: "model" };
-    hook({ type: "context", messages } as any, input.ctx as any);
+    for (const id of ["early", "later"]) {
+      manager.appendMessage(
+        fauxAssistantMessage(fauxToolCall("read", { path: "a.ts" }, { id })),
+      );
+      manager.appendMessage({
+        ...result(id, "", "read"),
+        content: output.content,
+        details: output.details as never,
+      });
+    }
+    manager.appendMessage(fauxAssistantMessage("consumed"));
+    manager.appendModelChange("test", "model");
+    expect(milestone(boundary())?.reasons).toEqual({ "duplicate-read": 1 });
+  });
+});
 
-    expect(result.details?.truncation).toMatchObject({
-      truncated: true,
-      truncatedBy: "lines",
-      outputLines: 2_000,
-    });
-    expect(result.content).toHaveLength(1);
-    expect(result.content[0]).toMatchObject({ type: "text" });
-    expect(appended[0]?.data.decisions).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          sourceToolCallId: "early",
-          reason: "duplicate-read",
-        }),
-      ]),
+describe("cache damage safeguards at supported boundaries", () => {
+  it("uses a real cold window only before a warming request, with at least 8000 savings", () => {
+    for (const warmed of [false, true]) {
+      const { manager, flow, ctx, boundary } = fixture();
+      manager.appendModelChange("other", "other");
+      manager.appendMessage(result("source", "x".repeat(40_000)));
+      manager.appendMessage(fauxAssistantMessage("consumed"));
+      users(manager, 4);
+      manager.appendModelChange("test", "model");
+      if (warmed) {
+        flow.requestStart(ctx as never);
+      }
+      const data = milestone(boundary());
+      expect(data?.kind).toBe(warmed ? undefined : "known-cold");
+      if (data) {
+        expect(data.estimatedTokensSaved).toBeGreaterThanOrEqual(8_000);
+      }
+    }
+    const { manager, boundary } = fixture();
+    manager.appendModelChange("other", "other");
+    manager.appendMessage(result("source", "x".repeat(20_000)));
+    manager.appendMessage(fauxAssistantMessage("consumed"));
+    users(manager, 4);
+    manager.appendModelChange("test", "model");
+    expect(boundary()).toEqual([]);
+  });
+
+  it("keeps the warm eight-user/32000-savings and 1.5 damage-ratio safeguards", () => {
+    const { manager, boundary } = fixture();
+    const source = result("source", "x".repeat(150_000));
+    manager.appendMessage(source);
+    manager.appendMessage(fauxAssistantMessage("consumed"));
+    users(manager, 7);
+    expect(boundary()).toEqual([]);
+    users(manager, 1);
+    const drafts = boundary();
+    const data = milestone(drafts)!;
+    expect(data.kind).toBe("warm");
+    expect(data.estimatedTokensSaved).toBeGreaterThanOrEqual(32_000);
+    const edit = drafts[0];
+    if (edit?.type !== "context_edit" || !edit.replacement) {
+      throw new Error("missing edit");
+    }
+    expect(data.estimatedTokensSaved).toBe(
+      estimateTokens(source) -
+        estimateTokens({
+          ...source,
+          content: edit.replacement.content,
+        } as never),
     );
+    manager.appendMessage({
+      role: "user",
+      content: "tail".repeat(40_000),
+      timestamp: 3,
+    });
+    expect(boundary()).toEqual([]);
+
+    const smaller = fixture();
+    smaller.manager.appendMessage(result("source", "x".repeat(40_000)));
+    smaller.manager.appendMessage(fauxAssistantMessage("consumed"));
+    users(smaller.manager, 8);
+    expect(smaller.boundary()).toEqual([]);
+  });
+
+  it("limits changed-tail damage to 2000 tokens even for consumed low-risk Bash", () => {
+    const { manager, boundary } = fixture();
+    manager.appendMessage(result("source", "passed\n".repeat(200), "bash"));
+    manager.appendMessage(fauxAssistantMessage("consumed"));
+    expect(milestone(boundary())?.kind).toBe("tail");
+    manager.appendMessage({
+      role: "user",
+      content: "x".repeat(8_000),
+      timestamp: 2,
+    });
+    expect(boundary()).toEqual([]);
   });
 });

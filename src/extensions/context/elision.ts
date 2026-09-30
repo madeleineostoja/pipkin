@@ -1,20 +1,23 @@
 import type {
   ContextEvent,
+  BoundaryState,
+  BoundaryResult,
   ExtensionContext,
+  SessionEntry,
+  ProjectedSessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { estimateTokens } from "@earendil-works/pi-coding-agent";
+import { isDeepStrictEqual } from "node:util";
 import { transcriptReference } from "./retained-output.ts";
 import { classifyBashOutput } from "./bash-classifier.ts";
 import { extractFilePath, normalizePath } from "./paths.ts";
 import {
-  EPOCH_TYPE,
+  PRUNING_TYPE,
   type ElisionReason,
-  type EpochData,
-  type EpochDecision,
   type EpochKind,
+  type PruningMilestone,
   type PruningState,
-  createPruningState,
-  isEpochData,
+  isPruningMilestone,
 } from "./policy.ts";
 
 type AgentMessage = ContextEvent["messages"][number];
@@ -22,13 +25,20 @@ type ToolResultMessage = Extract<AgentMessage, { role: "toolResult" }>;
 type ToolCallInfo = { name: string; input: unknown };
 type ReadInterval = { path: string; start: number; end: number };
 type ReadRelation = { path: string; keptUserTurn: number };
+type Source = {
+  id: string;
+  reference: string;
+  consumed: boolean;
+  staleUsers: number;
+  originalContent: boolean;
+};
 type Candidate = {
   index: number;
   id: string;
   netSavings: number;
-  decision: EpochDecision;
+  reason: ElisionReason;
+  stub: string;
 };
-type EpochReplay = { warmEpochEntryId?: string; invalid: boolean };
 
 const STALE_USER_ENTRIES = 4;
 const STALE_RESULT_TOKENS = 256;
@@ -65,180 +75,174 @@ function formatCommand(command: string): string {
   return escaped.length > 120 ? `${escaped.slice(0, 119)}…` : escaped;
 }
 
-export function makeContextHook(
+export function pruneAtBoundary(
   state: PruningState,
-  appendEntry: (
-    customType: string,
-    data: EpochData,
-    ctx: ExtensionContext,
-  ) => void,
-) {
-  return function handleContext(
-    event: ContextEvent,
-    ctx: ExtensionContext,
-  ): { messages: AgentMessage[] } {
-    const entries = ctx.sessionManager.getBranch();
-    const replay = restoreEpochs(state, entries);
-    if (replay.invalid && !state.reportedInvalidEntry) {
-      state.reportedInvalidEntry = true;
-      ctx.ui.notify(
-        "Context: ignoring an invalid persisted pruning epoch",
-        "warning",
+  event: BoundaryState,
+  ctx: ExtensionContext,
+): BoundaryResult | undefined {
+  const entries = ctx.sessionManager.getBranch();
+  restorePolicy(state, entries, ctx);
+  if (state.pending) {
+    const pending = state.pending;
+    const start = pending.leafId
+      ? entries.findIndex((entry) => entry.id === pending.leafId) + 1
+      : 0;
+    const accepted = entries
+      .slice(start)
+      .some(
+        (entry) =>
+          entry.type === "custom" &&
+          entry.customType === PRUNING_TYPE &&
+          isDeepStrictEqual(entry.data, pending.milestone),
       );
+    state.pending = undefined;
+    if (!accepted) {
+      warnAppendFailure(state, ctx);
     }
+  }
 
-    const activeIds = new Set(
-      event.messages.filter(isToolResult).map((message) => message.toolCallId),
-    );
-    for (const id of state.decisions.keys()) {
-      if (!activeIds.has(id)) {
-        state.decisions.delete(id);
+  // The boundary preview includes preceding extensions' ordered drafts. Never
+  // reconstruct a target from raw content or undo someone else's omission.
+  const baseline = event.context.contextEntries.flatMap(
+    ({ sourceEntry, messages }) =>
+      messages.map((message) => {
+        // Raw read-interval metadata describes the original output, not another
+        // owner's replacement. Replacements may still become ordinary stale output.
+        if (
+          isToolResult(message) &&
+          message.toolName === "read" &&
+          sourceEntry.type === "message" &&
+          sourceEntry.message.role === "toolResult" &&
+          !isDeepStrictEqual(message.content, sourceEntry.message.content)
+        ) {
+          return { ...message, details: undefined };
+        }
+        return message;
+      }),
+  );
+  const exposure = exposureAfterEach(event.context.contextEntries);
+  const sources = new Map<number, Source>();
+  let index = 0;
+  for (const item of event.context.contextEntries) {
+    for (const message of item.messages) {
+      if (
+        isToolResult(message) &&
+        item.sourceEntry.type === "message" &&
+        item.sourceEntry.message.role === "toolResult"
+      ) {
+        sources.set(index, {
+          id: item.sourceEntry.id,
+          reference: transcriptReference(item.sourceEntry),
+          ...exposure.get(item.sourceEntry.id)!,
+          originalContent: isDeepStrictEqual(
+            message.content,
+            item.sourceEntry.message.content,
+          ),
+        });
       }
+      index++;
     }
-
-    const baseline = event.messages.slice();
-    applyPersistedDecisions(baseline, state.decisions);
-    const entryIds = new Map(
-      entries.flatMap((entry) =>
-        entry.type === "message" && entry.message.role === "toolResult"
-          ? [[entry.message.toolCallId, transcriptReference(entry)] as const]
-          : [],
-      ),
-    );
-    const candidates = buildCandidates(
-      baseline,
-      state.decisions,
-      ctx.cwd,
-      entryIds,
-    );
-    const epoch = selectEpoch(candidates, baseline, entries, ctx, state);
-    if (!epoch) {
-      return { messages: baseline };
-    }
-
-    const data: EpochData = {
-      kind: epoch.kind,
-      decisions: epoch.candidates.map((candidate) => candidate.decision),
-    };
-    try {
-      appendEntry(EPOCH_TYPE, data, ctx);
-    } catch {
-      if (!state.reportedAppendFailure) {
-        state.reportedAppendFailure = true;
-        ctx.ui.notify("Context: could not persist pruning epoch", "warning");
-      }
-      return { messages: baseline };
-    }
-
-    for (const candidate of epoch.candidates) {
-      state.decisions.set(candidate.id, candidate.decision);
-      replaceWithStub(baseline, candidate.index, candidate.decision.stub);
-    }
-    return { messages: baseline };
+  }
+  const checkpoint = entries
+    .slice()
+    .reverse()
+    .find((entry) => entry.type === "compaction");
+  const opaque =
+    checkpoint &&
+    isRecord(checkpoint.details) &&
+    checkpoint.details.kind === "pipkin-native-compaction";
+  const checkpointIndex = opaque ? entries.indexOf(checkpoint) : -1;
+  // The opaque replay segment is exact authority, not readable history we can
+  // rewrite. Prune only later output rather than invalidating our own replay.
+  const candidates = buildCandidates(baseline, ctx.cwd, sources).filter(
+    (candidate) =>
+      checkpointIndex < 0 ||
+      entries.findIndex((entry) => entry.id === candidate.id) > checkpointIndex,
+  );
+  const epoch = selectEpoch(candidates, baseline, entries, ctx, state);
+  if (!epoch) {
+    return undefined;
+  }
+  const reasons: PruningMilestone["reasons"] = {};
+  for (const candidate of epoch.candidates) {
+    const reason = candidate.reason;
+    reasons[reason] = (reasons[reason] ?? 0) + 1;
+  }
+  const milestone: PruningMilestone = {
+    kind: epoch.kind,
+    count: epoch.candidates.length,
+    estimatedTokensSaved: sumSavings(epoch.candidates),
+    reasons,
+  };
+  state.pending = { leafId: ctx.sessionManager.getLeafId(), milestone };
+  return {
+    entries: [
+      ...event.entries,
+      ...epoch.candidates.map((candidate) => ({
+        type: "context_edit" as const,
+        targetId: candidate.id,
+        replacement: {
+          content: [{ type: "text" as const, text: candidate.stub }],
+        },
+      })),
+      { type: "custom", customType: PRUNING_TYPE, data: milestone },
+    ],
   };
 }
 
-export function restoreEpochs(
+export function restorePolicy(
   state: PruningState,
-  entries: readonly unknown[],
-): EpochReplay {
-  state.decisions.clear();
+  entries: SessionEntry[],
+  ctx: ExtensionContext,
+): void {
   state.warmEpochEntryId = undefined;
-  let invalid = false;
   for (const entry of entries) {
-    if (!isContextEpochEntry(entry)) {
+    if (entry.type !== "custom" || entry.customType !== PRUNING_TYPE) {
       continue;
     }
-    if (!isEpochData(entry.data)) {
-      invalid = true;
-      continue;
-    }
-    if (
-      entry.data.decisions.some((decision) =>
-        state.decisions.has(decision.sourceToolCallId),
-      )
-    ) {
-      invalid = true;
-      continue;
-    }
-    for (const decision of entry.data.decisions) {
-      state.decisions.set(decision.sourceToolCallId, decision);
-    }
-    if (entry.data.kind === "warm") {
+    if (!isPruningMilestone(entry.data)) {
+      if (!state.reportedInvalidEntry) {
+        state.reportedInvalidEntry = true;
+        ctx.ui.notify(
+          "Context: ignoring an invalid persisted pruning milestone",
+          "warning",
+        );
+      }
+    } else if (entry.data.kind === "warm") {
       state.warmEpochEntryId = entry.id;
     }
   }
-  return { warmEpochEntryId: state.warmEpochEntryId, invalid };
 }
 
-function isContextEpochEntry(
-  value: unknown,
-): value is { type: "custom"; id: string; customType: string; data: unknown } {
-  return (
-    isRecord(value) &&
-    value.type === "custom" &&
-    value.customType === EPOCH_TYPE &&
-    typeof value.id === "string"
-  );
-}
-
-export function projectPersistedPruning(
-  entries: readonly unknown[],
-  messages: AgentMessage[],
-): AgentMessage[] {
-  const state = createPruningState();
-  restoreEpochs(state, entries);
-  const projected = messages.slice();
-  applyPersistedDecisions(projected, state.decisions);
-  return projected;
-}
-
-function applyPersistedDecisions(
-  messages: AgentMessage[],
-  decisions: ReadonlyMap<string, EpochDecision>,
+export function warnAppendFailure(
+  state: PruningState,
+  ctx: ExtensionContext,
 ): void {
-  for (let index = 0; index < messages.length; index++) {
-    const message = messages[index];
-    if (!isToolResult(message)) {
-      continue;
-    }
-    const decision = !message.isError
-      ? decisions.get(message.toolCallId)
-      : undefined;
-    if (decision) {
-      replaceWithStub(messages, index, decision.stub);
-    }
+  if (!state.reportedAppendFailure) {
+    state.reportedAppendFailure = true;
+    ctx.ui.notify("Context: could not persist pruning edits", "warning");
   }
 }
 
-function replaceWithStub(
-  messages: AgentMessage[],
-  index: number,
-  stub: string,
-): void {
-  const message = messages[index];
-  if (!isToolResult(message)) {
-    return;
-  }
-  messages[index] = {
-    ...message,
-    content: [{ type: "text", text: stub }],
-  };
+export function coldMarkerId(entries: SessionEntry[]): string | undefined {
+  return entries
+    .slice()
+    .reverse()
+    .find(
+      (entry) => entry.type === "compaction" || entry.type === "model_change",
+    )?.id;
 }
 
 function buildCandidates(
   messages: AgentMessage[],
-  decisions: ReadonlyMap<string, EpochDecision>,
   cwd: string,
-  entryIds: ReadonlyMap<string, string>,
+  sources: ReadonlyMap<number, Source>,
 ): Candidate[] {
   const toolCalls = collectToolCalls(messages);
   const mutations = collectMutations(messages, toolCalls, cwd);
   const reads = collectReads(messages, toolCalls, cwd);
   const duplicateReads = relationMap(reads, mutations, true);
   const coveredReads = relationMap(reads, mutations, false);
-  const staleUsers = userEntriesAfter(messages);
-  const assistantAfter = assistantAfterEach(messages);
   const candidates: Candidate[] = [];
   const seenToolCallIds = new Set<string>();
 
@@ -248,49 +252,50 @@ function buildCandidates(
       continue;
     }
     seenToolCallIds.add(message.toolCallId);
-    if (message.isError || decisions.has(message.toolCallId)) {
+    const source = sources.get(index);
+    if (message.isError || !source?.consumed || isPruningStub(message)) {
       continue;
     }
     const toolCall = toolCalls.get(message.toolCallId);
-    const path = readPath(message, toolCall, cwd);
+    const path = source.originalContent
+      ? readPath(message, toolCall, cwd)
+      : undefined;
     const superseded = path && hasLaterMutation(mutations.get(path), index);
     const duplicate = duplicateReads.get(message.toolCallId);
     const covered = coveredReads.get(message.toolCallId);
     const command = bashCommand(toolCall);
     const lowRiskBash =
       message.toolName === "bash" &&
-      assistantAfter[index] &&
       classifyBashOutput(message.content, estimateTokens(message), 0).lowRisk;
 
     let reason: ElisionReason | undefined;
     let details: { path?: string; keptUserTurn?: number; command?: string } =
       {};
-    if (assistantAfter[index] && superseded && path) {
+    if (superseded && path) {
       reason = "superseded-read";
       details = { path };
-    } else if (assistantAfter[index] && duplicate) {
+    } else if (duplicate) {
       reason = "duplicate-read";
       details = duplicate;
-    } else if (assistantAfter[index] && covered) {
+    } else if (covered) {
       reason = "covered-read";
       details = covered;
     } else if (lowRiskBash) {
       reason = "after-consumption-bash";
       details = command ? { command } : {};
     } else if (
-      staleUsers[index] >= STALE_USER_ENTRIES &&
+      source.staleUsers >= STALE_USER_ENTRIES &&
       estimateTokens(message) >= STALE_RESULT_TOKENS
     ) {
       reason = "standard-stale";
     }
-    const reference = entryIds.get(message.toolCallId);
-    if (!reason || !reference) {
+    if (!reason) {
       continue;
     }
 
     const stub = formatStub(
       message.toolName ?? "tool",
-      reference,
+      source.reference,
       reason,
       details,
     );
@@ -304,14 +309,10 @@ function buildCandidates(
     }
     candidates.push({
       index,
-      id: message.toolCallId,
+      id: source.id,
       netSavings,
-      decision: {
-        sourceToolCallId: message.toolCallId,
-        reason,
-        stub,
-        estimatedTokensSaved: netSavings,
-      },
+      reason,
+      stub,
     });
   }
   return candidates.sort(
@@ -602,18 +603,6 @@ function bashCommand(call: ToolCallInfo | undefined): string | undefined {
     : undefined;
 }
 
-function userEntriesAfter(messages: AgentMessage[]): number[] {
-  const result = Array<number>(messages.length).fill(0);
-  let count = 0;
-  for (let index = messages.length - 1; index >= 0; index--) {
-    result[index] = count;
-    if (messages[index]?.role === "user") {
-      count++;
-    }
-  }
-  return result;
-}
-
 function userEntriesUpTo(messages: AgentMessage[]): number[] {
   const result = Array<number>(messages.length).fill(0);
   let count = 0;
@@ -626,27 +615,55 @@ function userEntriesUpTo(messages: AgentMessage[]): number[] {
   return result;
 }
 
-function assistantAfterEach(messages: AgentMessage[]): boolean[] {
-  const result = Array<boolean>(messages.length).fill(false);
-  let found = false;
-  for (let index = messages.length - 1; index >= 0; index--) {
-    result[index] = found;
-    if (messages[index]?.role === "assistant") {
-      found = true;
+function exposureAfterEach(entries: readonly ProjectedSessionEntry[]) {
+  const edits = new Map<string, number>();
+  const after: Array<{ consumed: boolean; staleUsers: number }> = [];
+  let consumed = false;
+  let staleUsers = 0;
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const { sourceEntry, messages } = entries[index];
+    if (
+      sourceEntry.type === "context_edit" &&
+      !edits.has(sourceEntry.targetId)
+    ) {
+      edits.set(sourceEntry.targetId, index);
     }
+    after[index] = { consumed, staleUsers };
+    if (
+      messages.some(
+        (message) =>
+          message.role === "assistant" &&
+          (message.stopReason === "stop" ||
+            message.stopReason === "length" ||
+            message.stopReason === "toolUse"),
+      )
+    ) {
+      consumed = true;
+    }
+    staleUsers += messages.filter((message) => message.role === "user").length;
   }
-  return result;
+  // A replacement is fresh content at its edit, not at the old source position.
+  // Old assistants/users therefore establish neither consumption nor staleness.
+  return new Map(
+    entries.map(
+      ({ sourceEntry }, index) =>
+        [sourceEntry.id, after[edits.get(sourceEntry.id) ?? index]] as const,
+    ),
+  );
 }
 
 function selectEpoch(
   candidates: Candidate[],
   baseline: AgentMessage[],
-  entries: readonly unknown[],
+  entries: SessionEntry[],
   ctx: ExtensionContext,
   state: PruningState,
 ): { kind: EpochKind; candidates: Candidate[] } | undefined {
   const suffixes = candidates.map((_, start) => candidates.slice(start));
-  if (isKnownCold(entries, ctx)) {
+  if (
+    coldMarkerId(entries) !== state.warmedMarkerId &&
+    isKnownCold(entries, ctx)
+  ) {
     const suffix = suffixes.find(
       (members) => sumSavings(members) >= KNOWN_COLD_SAVINGS,
     );
@@ -735,6 +752,7 @@ function isKnownCold(
     }
     return (
       entry.type === "compaction" ||
+      entry.type === "usage" ||
       (entry.type === "message" &&
         isRecord(entry.message) &&
         entry.message.role === "assistant")
@@ -757,9 +775,10 @@ function isAfterCompaction(entries: readonly unknown[]): boolean {
   return !entries.slice(compactionIndex + 1).some((entry) => {
     return (
       isRecord(entry) &&
-      entry.type === "message" &&
-      isRecord(entry.message) &&
-      entry.message.role === "assistant"
+      (entry.type === "usage" ||
+        (entry.type === "message" &&
+          isRecord(entry.message) &&
+          entry.message.role === "assistant"))
     );
   });
 }
@@ -782,6 +801,16 @@ function usersSinceWarmEpoch(
         isRecord(entry.message) &&
         entry.message.role === "user",
     ).length;
+}
+
+function isPruningStub(message: ToolResultMessage): boolean {
+  return (
+    message.content.length === 1 &&
+    message.content[0]?.type === "text" &&
+    /^\[.* result elided: .*Call read_output\(\{reference:"transcript:v1:/s.test(
+      message.content[0].text,
+    )
+  );
 }
 
 function isToolResult(message: AgentMessage): message is ToolResultMessage {

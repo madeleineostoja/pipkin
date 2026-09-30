@@ -21,6 +21,18 @@ UI also owns the generic bounded Activity view. Processes, Subagents, and Implem
 
 UI does not replace Pi's editor, working indicator, selectors, built-in tool renderers, or custom-message presentation.
 
+## BTW side questions
+
+Use `/btw <question>` in the TUI with an active authenticated model for a no-tools side answer. The panel keeps one active request; opening another cancels the previous one. Each unpromoted exchange stays ephemeral and is not supplied to later side questions. Escape aborts generation or closes the panel, and arrow keys scroll the Markdown answer. Session replacement and shutdown close the active panel.
+
+After completion, press `s` to promote the full question/answer as one displayed `btw` transcript message. Promotion adds ordinary parent context through steering without triggering a new turn; close/cancel otherwise leaves the parent unchanged.
+
+BTW reads Pi's canonical conversation projection, including native edits, textual compaction and branch summaries. It removes parent system instructions and all historical tool-loadout declarations/deltas before provider normalization, then supplies only BTW's own no-tools instruction and an empty effective tool set. Complete tool exchanges remain evidence; unfinished or orphan exchanges are omitted without invented results.
+
+The full question and readable evidence are passed to the selected model through Pi's model runtime, including virtual models. There is no custom token estimator, history packing, silent truncation or fixed response cap. Provider overflow and other errors appear in the panel; BTW never compacts or mutates the parent to recover. Cancellation does not launch a fallback.
+
+An authoritative opaque Codex checkpoint is unavailable to this side request. BTW excludes its marker/artifact, supplies the readable canonical summaries/tail available, and explicitly states that earlier history cannot be reconstructed. Ordinary parent-native replay is unchanged; see [Context](context.md#compaction).
+
 ## Session naming
 
 Personality gives an unnamed session a short title from up to three early non-empty prompts. It uses the `utility` model preset asynchronously, so naming never delays the main agent turn, and writes Pi's canonical session name for `/resume`, terminal titles, and window titles. Bounded branch, changed-area, recent-commit, and recent-session context can disambiguate the request, but the request remains the title's subject. Evidence from recent sessions may support a compact continuity touch such as `Continue …` or `— again`; incidental Git activity does not.

@@ -10,7 +10,7 @@ import {
   type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import {
-  getCurrentSystemMessage,
+  getCurrentTools,
   type Api,
   type Context,
   type Model,
@@ -19,10 +19,10 @@ import type { ModelPreset } from "#lib/config";
 import { parseModelRef } from "#lib/model-ref";
 import {
   CodexAdapterError,
+  NATIVE_COMPACTION_MARKER,
   createCodexOAuthAdapter,
   type CaptureInput,
 } from "./codex-oauth-adapter.ts";
-import { projectPersistedPruning } from "./elision.ts";
 
 const NATIVE_KIND = "pipkin-native-compaction";
 
@@ -71,12 +71,15 @@ export class CompactionCoordinator {
     event: SessionBeforeCompactEvent,
     ctx: ExtensionContext,
   ): Promise<CompactionHookResult> {
+    if (event.signal.aborted) {
+      return { cancel: true };
+    }
     const active = latestNative(event.branchEntries);
     if (active.kind === "candidate") {
       this.warn(
         ctx,
         "native-invalid",
-        "Context: native checkpoint is invalid; select the original compatible Codex model to recover.",
+        "Context: native checkpoint metadata is invalid; compaction was cancelled to preserve its opaque context.",
       );
       return { cancel: true };
     }
@@ -175,7 +178,7 @@ export class CompactionCoordinator {
       this.warn(
         ctx,
         "native-invalid",
-        "Context: this branch has an unrecognized native checkpoint. Select its original compatible Codex model/account to recover.",
+        "Context: this branch has an unrecognized native checkpoint. Its original checkpoint must be restored before safe continuation.",
       );
       return;
     }
@@ -211,6 +214,9 @@ export class CompactionCoordinator {
     event: SessionBeforeCompactEvent,
     ctx: ExtensionContext,
   ): Promise<CompactionHookResult> {
+    if (event.signal.aborted) {
+      return { cancel: true };
+    }
     const preset = this.options.low;
     if (!preset || this.options.lowIssue) {
       this.warn(
@@ -231,9 +237,6 @@ export class CompactionCoordinator {
       );
       return undefined;
     }
-    if (event.signal.aborted) {
-      return undefined;
-    }
     try {
       const result = await compact(
         event.preparation,
@@ -245,8 +248,10 @@ export class CompactionCoordinator {
         preset.thinking,
         registryStream(ctx),
       );
+      if (event.signal.aborted) {
+        return { cancel: true };
+      }
       if (
-        event.signal.aborted ||
         !result.summary.trim() ||
         !result.firstKeptEntryId ||
         !Number.isFinite(result.tokensBefore)
@@ -255,13 +260,14 @@ export class CompactionCoordinator {
       }
       return { compaction: result };
     } catch {
-      if (!event.signal.aborted) {
-        this.warn(
-          ctx,
-          "low-failure",
-          "Context: low model compaction failed; using Pi's current model compaction.",
-        );
+      if (event.signal.aborted) {
+        return { cancel: true };
       }
+      this.warn(
+        ctx,
+        "low-failure",
+        "Context: low model compaction failed; using Pi's current model compaction.",
+      );
       return undefined;
     }
   }
@@ -297,7 +303,7 @@ export class CompactionCoordinator {
       const current = await this.capture(
         model,
         resolvedAuth,
-        currentContext(event.branchEntries, ctx, this.options.tools?.()),
+        currentContext(ctx, this.options.tools?.()),
         ctx,
         event.signal,
       );
@@ -398,23 +404,13 @@ export class CompactionCoordinator {
     ctx: ExtensionContext,
     signal: AbortSignal | undefined,
   ): Promise<Json[]> {
-    return this.itemsFromContext(
+    const payload = await this.capture(
       model,
       auth,
-      checkpointSegment(entry, entries, entries, ctx, this.options.tools?.()),
+      checkpointSegment(entry, entries, ctx, this.options.tools?.()),
       ctx,
       signal,
     );
-  }
-
-  private async itemsFromContext(
-    model: Model<"openai-codex-responses">,
-    auth: CaptureInput["auth"],
-    context: Context,
-    ctx: ExtensionContext,
-    signal: AbortSignal | undefined,
-  ): Promise<Json[]> {
-    const payload = await this.capture(model, auth, context, ctx, signal);
     return payload.input as Json[];
   }
 
@@ -501,17 +497,11 @@ function registryStream(ctx: ExtensionContext) {
 }
 
 function currentContext(
-  entries: SessionEntry[],
   ctx: ExtensionContext,
   tools: Context["tools"],
 ): Context {
   return contextWithCurrentSystem(
-    convertToLlm(
-      projectPersistedPruning(
-        entries,
-        buildSessionProjection(entries).messages,
-      ),
-    ),
+    convertToLlm(ctx.sessionManager.buildSessionProjection().messages),
     ctx,
     tools,
   );
@@ -520,12 +510,11 @@ function currentContext(
 function checkpointSegment(
   entry: CompactionEntry,
   entries: SessionEntry[],
-  pruningEntries: SessionEntry[],
   ctx: ExtensionContext,
   tools: Context["tools"],
 ): Context {
-  // Project the branch at the checkpoint itself. Persisted pruning decisions
-  // from later entries still apply, but later turns are never replay targets.
+  // Checkpoint-era edits are part of its identity. Later edits must match this
+  // exact segment or replay fails closed; later turns stay outside the target.
   const projection = buildSessionProjection(entries, entry.id);
   const start = projection.entries.findIndex(
     (item) => item.sourceEntry.id === entry.id,
@@ -535,10 +524,7 @@ function checkpointSegment(
   }
   return contextWithCurrentSystem(
     convertToLlm(
-      projectPersistedPruning(
-        pruningEntries,
-        projection.entries.slice(start).flatMap((item) => item.messages),
-      ),
+      projection.entries.slice(start).flatMap((item) => item.messages),
     ),
     ctx,
     tools,
@@ -555,7 +541,7 @@ function contextWithCurrentSystem(
   return {
     systemPrompt: ctx.getSystemPrompt(),
     messages: messages.filter((message) => message.role !== "system"),
-    tools: tools ?? getCurrentSystemMessage(messages)?.toolsAdded,
+    tools: tools ?? getCurrentTools(messages),
   };
 }
 
@@ -575,8 +561,20 @@ function latestNative(
   | { kind: "candidate"; entry: CompactionEntry }
   | { kind: "valid"; entry: NativeEntry } {
   const entry = getLatestCompactionEntry(entries);
-  if (!entry || !isNativeCandidate(entry.details)) {
+  if (!entry) {
     return { kind: "none" };
+  }
+  const candidates = entries.filter(
+    (item) =>
+      item.type === "compaction" &&
+      (item.summary === NATIVE_COMPACTION_MARKER ||
+        isNativeCandidate(item.details)),
+  );
+  if (!candidates.length) {
+    return { kind: "none" };
+  }
+  if (!candidates.includes(entry)) {
+    return { kind: "candidate", entry };
   }
   const details = createCodexOAuthAdapter().validate(entry.details);
   return details
