@@ -49,7 +49,7 @@ export type InspectionActivity =
     }
   | {
       kind: "steering";
-      status: "queued" | "delivered" | "failed" | "discarded";
+      status: "queued" | "handled" | "delivered" | "failed" | "discarded";
       text: string;
       error?: string;
       timestamp: string;

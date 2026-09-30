@@ -1,10 +1,8 @@
 import {
-  buildContextEntries,
-  buildSessionContext,
+  buildSessionProjection,
   compact,
   convertToLlm,
   getLatestCompactionEntry,
-  sessionEntryToContextMessages,
   type CompactionEntry,
   type ExtensionContext,
   type ExtensionEvent,
@@ -489,26 +487,11 @@ async function resolveCodexAuth(
   if (!requestAuth.ok || !requestAuth.apiKey) {
     return undefined;
   }
-  // The compatibility facade deliberately omits baseUrl. Its provider-auth
-  // result preserves the resolved override used to construct Pi requests.
-  const getProviderAuth = (
-    ctx.modelRegistry as typeof ctx.modelRegistry & {
-      getProviderAuth?: (provider: string) => Promise<
-        | {
-            auth: { baseUrl?: string };
-          }
-        | undefined
-      >;
-    }
-  ).getProviderAuth;
-  const providerAuth = getProviderAuth
-    ? await getProviderAuth.call(ctx.modelRegistry, model.provider)
-    : undefined;
   return {
     ok: true,
     apiKey: requestAuth.apiKey,
     headers: requestAuth.headers,
-    baseUrl: providerAuth?.auth.baseUrl,
+    baseUrl: requestAuth.baseUrl,
   };
 }
 
@@ -524,7 +507,10 @@ function currentContext(
 ): Context {
   return contextWithCurrentSystem(
     convertToLlm(
-      projectPersistedPruning(entries, buildSessionContext(entries).messages),
+      projectPersistedPruning(
+        entries,
+        buildSessionProjection(entries).messages,
+      ),
     ),
     ctx,
     tools,
@@ -540,30 +526,18 @@ function checkpointSegment(
 ): Context {
   // Project the branch at the checkpoint itself. Persisted pruning decisions
   // from later entries still apply, but later turns are never replay targets.
-  const contextEntries = buildContextEntries(entries, entry.id);
-  const start = contextEntries.findIndex((item) => item.id === entry.id);
+  const projection = buildSessionProjection(entries, entry.id);
+  const start = projection.entries.findIndex(
+    (item) => item.sourceEntry.id === entry.id,
+  );
   if (start < 0) {
     throw new Error("native checkpoint is not in the projected branch");
   }
-  return contextForSegment(
-    contextEntries.slice(start),
-    pruningEntries,
-    ctx,
-    tools,
-  );
-}
-
-function contextForSegment(
-  entries: SessionEntry[],
-  pruningEntries: SessionEntry[],
-  ctx: ExtensionContext,
-  tools: Context["tools"],
-): Context {
   return contextWithCurrentSystem(
     convertToLlm(
       projectPersistedPruning(
         pruningEntries,
-        entries.flatMap(sessionEntryToContextMessages),
+        projection.entries.slice(start).flatMap((item) => item.messages),
       ),
     ),
     ctx,

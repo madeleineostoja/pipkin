@@ -14,7 +14,7 @@ const model = { contextWindow: 1_600, maxTokens: 1_024 };
 
 function session(messages: unknown[]) {
   return {
-    buildSessionContext: () => ({ messages }),
+    buildSessionProjection: () => ({ messages }),
   } as never;
 }
 
@@ -24,12 +24,36 @@ function expectWithinModelWindow(
 ) {
   expect(
     estimateBtwTokens(prompt.context) +
-      prompt.maxTokens +
+      (prompt.maxTokens ?? 0) +
       prompt.overheadTokens,
   ).toBeLessThanOrEqual(contextWindow);
 }
 
 describe("BTW prompt", () => {
+  it("uses runtime defaults for virtual selectors and excludes historical system authority", () => {
+    const messages = [
+      {
+        role: "system",
+        content: "parent instructions",
+        toolsAdded: [{ name: "write" }],
+        timestamp: 1,
+      },
+      { role: "user", content: "evidence", timestamp: 2 },
+    ];
+    convertToLlmMock.mockReturnValue(messages as never);
+    const question = "full question ".repeat(1000);
+    const prompt = buildPrompt(session(messages), question, {
+      contextWindow: 0,
+      maxTokens: 0,
+    });
+    expect(prompt.maxTokens).toBeUndefined();
+    expect(prompt.context.messages).toEqual([
+      messages[1],
+      expect.objectContaining({ content: [{ type: "text", text: question }] }),
+    ]);
+    expect(prompt.context.tools).toEqual([]);
+  });
+
   it("uses only Pi's current compaction-aware session context and question", () => {
     const builtMessages = [{ role: "user", content: "kept" }];
     convertToLlmMock.mockReturnValue(builtMessages as never);

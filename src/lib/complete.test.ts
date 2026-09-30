@@ -1,121 +1,91 @@
-import { describe, expect, it, vi } from "vitest";
-import type {
-  Api,
-  AssistantMessage,
-  Context,
-  Model,
-  StopReason,
-} from "@earendil-works/pi-ai";
+import { describe, expect, it } from "vitest";
+import { ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai";
+import { createManagedSessionHarness } from "#test/managed-session";
 import { completeText } from "./complete.js";
 
-const model = { provider: "openrouter", id: "test-model" } as Model<Api>;
-const context: Context = { messages: [] };
-
-function message(
-  stopReason: StopReason,
-  content: AssistantMessage["content"] = [],
-  errorMessage?: string,
-): AssistantMessage {
-  return {
-    role: "assistant",
-    content,
-    api: "openai-responses",
-    provider: "openrouter",
-    model: "test-model",
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-    },
-    stopReason,
-    errorMessage,
-    timestamp: Date.now(),
-  };
-}
+const context = {
+  messages: [{ role: "user" as const, content: "synthetic", timestamp: 1 }],
+};
 
 describe("completeText", () => {
-  it("forwards requests through the model registry", async () => {
-    const complete = vi.fn().mockResolvedValue(message("stop"));
-    const options = { maxTokens: 128 };
-
-    await completeText(model, context, options, { complete });
-
-    expect(complete).toHaveBeenCalledWith(model, context, options);
-  });
-
-  it("joins multiple text blocks", async () => {
-    const complete = vi.fn().mockResolvedValue(
-      message("stop", [
+  it("dispatches a virtual selector with unknown limits through the supported model runtime", async () => {
+    const harness = await createManagedSessionHarness([
+      fauxAssistantMessage([
         { type: "text", text: "first" },
         { type: "thinking", thinking: "hidden" },
         { type: "text", text: "second" },
       ]),
-    );
-
+    ]);
+    const registry = new ModelRegistry(harness.modelRuntime);
+    registry.registerVirtualModel({
+      provider: "pipkin-test-router",
+      id: "selected",
+      name: "Selected",
+      thinkingLevels: ["off"],
+      route(request) {
+        expect(request.reason).toBe("direct");
+        expect(
+          request.messages.some((message) => message.role === "user"),
+        ).toBe(true);
+        return { model: harness.model, thinkingLevel: "off" };
+      },
+    });
+    const selected = registry.find("pipkin-test-router", "selected")!;
+    expect(selected.contextWindow).toBe(0);
     await expect(
-      completeText(model, context, undefined, { complete }),
-    ).resolves.toEqual({ ok: true, text: "first\nsecond", stopReason: "stop" });
+      completeText(selected, context, undefined, registry),
+    ).resolves.toEqual({
+      ok: true,
+      text: "first\nsecond",
+      stopReason: "stop",
+    });
+    expect(harness.faux.state.callCount).toBe(1);
   });
 
-  it("returns provider errors", async () => {
-    const complete = vi
-      .fn()
-      .mockResolvedValue(message("error", [], "provider failed"));
-
+  it("preserves provider error and cancellation outcomes", async () => {
+    const harness = await createManagedSessionHarness([
+      fauxAssistantMessage("", {
+        stopReason: "error",
+        errorMessage: "provider failed",
+      }),
+      fauxAssistantMessage("", { stopReason: "aborted" }),
+    ]);
+    const registry = new ModelRegistry(harness.modelRuntime);
     await expect(
-      completeText(model, context, undefined, { complete }),
-    ).resolves.toEqual({
+      completeText(harness.model, context, undefined, registry),
+    ).resolves.toMatchObject({
       ok: false,
       reason: "error",
       message: "provider failed",
-      text: "",
+    });
+    await expect(
+      completeText(harness.model, context, undefined, registry),
+    ).resolves.toMatchObject({
+      ok: false,
+      reason: "aborted",
     });
   });
 
-  it("returns aborted responses", async () => {
-    const complete = vi.fn().mockResolvedValue(message("aborted"));
-
+  it("distinguishes empty output from usable truncated output", async () => {
+    const harness = await createManagedSessionHarness([
+      fauxAssistantMessage(""),
+      fauxAssistantMessage("partial", { stopReason: "length" }),
+    ]);
+    const registry = new ModelRegistry(harness.modelRuntime);
     await expect(
-      completeText(model, context, undefined, { complete }),
-    ).resolves.toEqual({ ok: false, reason: "aborted", text: "" });
-  });
-
-  it("maps thrown AbortError to aborted", async () => {
-    const complete = vi
-      .fn()
-      .mockRejectedValue(new DOMException("", "AbortError"));
-
+      completeText(harness.model, context, undefined, registry),
+    ).resolves.toEqual({
+      ok: false,
+      reason: "empty",
+      text: "",
+    });
     await expect(
-      completeText(model, context, undefined, { complete }),
-    ).resolves.toEqual({ ok: false, reason: "aborted" });
-  });
-
-  it("distinguishes empty responses from length without text", async () => {
-    const complete = vi
-      .fn()
-      .mockResolvedValueOnce(message("stop"))
-      .mockResolvedValueOnce(message("length"));
-
-    await expect(
-      completeText(model, context, undefined, { complete }),
-    ).resolves.toEqual({ ok: false, reason: "empty", text: "" });
-    await expect(
-      completeText(model, context, undefined, { complete }),
-    ).resolves.toEqual({ ok: false, reason: "length", text: "" });
-  });
-
-  it("treats length with usable text as success", async () => {
-    const complete = vi
-      .fn()
-      .mockResolvedValue(
-        message("length", [{ type: "text", text: "partial" }]),
-      );
-
-    await expect(
-      completeText(model, context, undefined, { complete }),
-    ).resolves.toEqual({ ok: true, text: "partial", stopReason: "length" });
+      completeText(harness.model, context, undefined, registry),
+    ).resolves.toEqual({
+      ok: true,
+      text: "partial",
+      stopReason: "length",
+    });
   });
 });

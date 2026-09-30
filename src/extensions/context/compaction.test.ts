@@ -517,7 +517,7 @@ describe("CompactionCoordinator textual route", () => {
     const checkpoint = createNativeCheckpoint({
       identity: createCodexIdentity(nativeModel, auth, true)!,
       artifact: [{ type: "compaction", encrypted_content: "opaque" }],
-      lineage: { firstKeptEntryId: "kept", leafId: "kept" },
+      lineage: { firstKeptEntryId: "kept", leafId: "projected" },
       usage,
     });
     if (!checkpoint) {
@@ -532,9 +532,17 @@ describe("CompactionCoordinator textual route", () => {
         message: { role: "user" as const, content: "kept", timestamp: 1 },
       },
       {
+        type: "context_edit" as const,
+        id: "projected",
+        parentId: "kept",
+        timestamp: new Date(1).toISOString(),
+        targetId: "kept",
+        replacement: { content: "canonical kept text" },
+      },
+      {
         type: "compaction" as const,
         id: "native",
-        parentId: "kept",
+        parentId: "projected",
         timestamp: new Date(2).toISOString(),
         summary: checkpoint.summary,
         details: checkpoint.details,
@@ -617,6 +625,23 @@ describe("CompactionCoordinator textual route", () => {
         contextFor(forkBeforeCheckpoint),
       ),
     ).resolves.toBeUndefined();
+
+    const invalidated = SessionManager.inMemory(
+      "/invalidated",
+      undefined,
+      restoredEntries(),
+    );
+    invalidated.appendContextEdit("kept", {
+      content: "changed after checkpoint",
+    });
+    const invalidatedContext = contextFor(invalidated);
+    await expect(
+      coordinator.beforeProviderRequest(
+        await payloadFor(invalidated),
+        invalidatedContext,
+      ),
+    ).resolves.toBeUndefined();
+    expect(invalidatedContext.abort).toHaveBeenCalledOnce();
 
     const compacted = await coordinator.beforeCompact(
       event({

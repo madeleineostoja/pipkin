@@ -9,10 +9,6 @@ const SYSTEM_PROMPT =
 const ANSWER_RESERVE = 1_024;
 const OVERHEAD_RESERVE = 256;
 
-type ContextBuilder = {
-  buildSessionContext: () => { messages: Parameters<typeof convertToLlm>[0] };
-};
-
 type ContextModel = {
   contextWindow: number;
   maxTokens: number;
@@ -20,7 +16,7 @@ type ContextModel = {
 
 export type BtwPrompt = {
   context: Context;
-  maxTokens: number;
+  maxTokens?: number;
   overheadTokens: number;
 };
 
@@ -141,16 +137,28 @@ export function buildPrompt(
   question: string,
   model: ContextModel,
 ): BtwPrompt {
-  const built = (
-    sessionManager as unknown as ContextBuilder
-  ).buildSessionContext();
+  const built = sessionManager.buildSessionProjection();
   let sessionMessages: Message[] = [];
   try {
     const converted = convertToLlm(built.messages);
     if (Array.isArray(converted)) {
-      sessionMessages = converted;
+      sessionMessages = converted.filter(
+        (message) => message.role !== "system",
+      );
     }
   } catch {}
+
+  // Virtual selectors may not declare limits; the model runtime owns dispatch
+  // and output defaults in that case, not a guessed physical-model budget.
+  if (!(model.contextWindow > 0) || !(model.maxTokens > 0)) {
+    return {
+      context: contextFor(
+        sessionGroups(sessionMessages).flat(),
+        questionMessage(question),
+      ),
+      overheadTokens: 0,
+    };
+  }
 
   const maxTokens = Math.min(
     Math.max(1, model.maxTokens),

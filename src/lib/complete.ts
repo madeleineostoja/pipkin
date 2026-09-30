@@ -4,11 +4,11 @@ import type {
   AssistantMessage,
   Context,
   Model,
-  ModelsApiStreamOptions,
+  ModelsSimpleStreamOptions,
   StopReason,
 } from "@earendil-works/pi-ai";
 
-export type CompleteTextDeps = Pick<ModelRegistry, "complete">;
+export type CompleteTextDeps = Pick<ModelRegistry, "streamSimple">;
 
 export type CompleteTextResult =
   | { ok: true; text: string; stopReason: StopReason }
@@ -22,11 +22,11 @@ export type CompleteTextResult =
 export async function completeText(
   model: Model<Api>,
   context: Context,
-  options: ModelsApiStreamOptions<Api> | undefined,
+  options: ModelsSimpleStreamOptions | undefined,
   deps: CompleteTextDeps,
 ): Promise<CompleteTextResult> {
   try {
-    const response = await deps.complete(model, context, options);
+    const response = await deps.streamSimple(model, context, options).result();
     return completionResult(response);
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {

@@ -38,10 +38,10 @@ function makeSession(result = "done") {
     emit: vi.fn(async () => undefined),
   };
   return asAgentSession({
-    agent: { shouldStopAfterTurn: undefined },
+    agent: { finishTurn: undefined },
     bindExtensions: vi.fn(async () => undefined),
     prompt: vi.fn(async () => undefined),
-    steer: vi.fn(async () => undefined),
+    steer: vi.fn(async () => "queued" as const),
     clearQueue: vi.fn(() => ({ steering: [], followUp: [] })),
     abort: vi.fn(async () => undefined),
     dispose: vi.fn(),

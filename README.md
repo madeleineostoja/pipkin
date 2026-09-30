@@ -13,7 +13,7 @@ Pipkin is an extension bundle for the [Pi](https://pi.dev) coding-agent harness.
 
 ## Getting started
 
-Pipkin requires Node.js 24 or later and an existing Pi installation.
+Pipkin requires Node.js 24 or later and Pi `^0.99.0`. Windows is unsupported. See [Development](docs/development.md#runtime-baseline) for verified versions.
 
 ```sh
 pi install git:github.com/madeleineostoja/pipkin

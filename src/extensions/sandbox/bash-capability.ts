@@ -5,6 +5,7 @@ import type {
   BashToolInput,
   ExtensionAPI,
   ExtensionContext,
+  ExtensionToolContext,
 } from "@earendil-works/pi-coding-agent";
 
 export type SandboxBashHost = ExtensionAPI["events"];
@@ -14,7 +15,7 @@ export type SandboxBashRequest = Readonly<{
   params: BashToolInput;
   signal: AbortSignal | undefined;
   onUpdate: AgentToolUpdateCallback<BashToolDetails | undefined> | undefined;
-  ctx: ExtensionContext;
+  ctx: ExtensionToolContext;
 }>;
 
 type SandboxBashExecutor = (

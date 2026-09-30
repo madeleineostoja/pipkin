@@ -164,7 +164,7 @@ export function registerPublicAgentTools({
     name: "steer_subagent",
     label: "steer_subagent",
     description:
-      "Queue guidance for a running managed subagent after its current assistant turn's tool calls. Fails for unknown or completed agents.",
+      "Send guidance to a running managed subagent. Reports whether Pi queued it after the current turn's tool calls or an extension handled it. Fails for unknown or completed agents.",
     parameters: SteerSubagentParameters,
     renderCall: toolCallRenderer({
       name: "steer_subagent",
@@ -172,8 +172,8 @@ export function registerPublicAgentTools({
       pending: "Queueing guidance…",
     }),
     async execute(_toolCallId, params) {
-      const snapshot = await runtime.steer(params.id, params.message);
-      return toolResult(snapshot, "steer");
+      const result = await runtime.steer(params.id, params.message);
+      return toolResult(result.snapshot, "steer", undefined, result.delivery);
     },
     renderResult: renderAgentResult,
   });

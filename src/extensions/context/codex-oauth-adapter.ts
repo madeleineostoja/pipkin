@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { arch, platform, release } from "node:os";
+import { createRequire } from "node:module";
 import { isDeepStrictEqual } from "node:util";
 import { calculateCost, normalizeContext } from "@earendil-works/pi-ai";
-import { openAICodexResponsesApi } from "@earendil-works/pi-ai/compat";
 import { createParser } from "eventsource-parser";
 import type {
   AssistantMessageEventStream,
@@ -12,6 +12,12 @@ import type {
   TranscriptContext,
   Usage,
 } from "@earendil-works/pi-ai";
+
+// Pi 0.99's Jiti root alias also matches API subpaths. A native ESM bridge
+// keeps this public export on Node's resolver instead of the compat.js alias.
+const { streamSimple } = createRequire(import.meta.url)(
+  "./codex-api.mjs",
+) as typeof import("@earendil-works/pi-ai/api/openai-codex-responses");
 
 type ResolvedRequestAuth =
   | {
@@ -252,8 +258,7 @@ export function createCodexOAuthAdapter(
   dependencies: CodexAdapterDependencies = {},
 ) {
   const fetchFn = dependencies.fetch ?? globalThis.fetch;
-  const serializer =
-    dependencies.serializer ?? openAICodexResponsesApi().streamSimple;
+  const serializer = dependencies.serializer ?? streamSimple;
   const sleep = dependencies.sleep ?? wait;
 
   return {

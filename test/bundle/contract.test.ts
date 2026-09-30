@@ -1,6 +1,9 @@
 import {
   createAgentSession,
   createBashToolDefinition,
+  createCodemodeExtension,
+  createMcpExtension,
+  createToolSearchExtension,
   DefaultResourceLoader,
   ExtensionRunner,
   ModelRegistry,
@@ -101,9 +104,9 @@ const expectedCommands = {
   implement: "src/extensions/implement/index.ts",
   papercuts: "src/extensions/papercuts/index.ts",
   btw: "src/extensions/btw/index.ts",
+  mcp: "src/extensions/mcp/index.ts",
 };
 const expectedOptionalCommands = {
-  mcp: "src/extensions/mcp/index.ts",
   "mcp-auth": "src/extensions/mcp/index.ts",
 };
 
@@ -192,6 +195,7 @@ function restoreGlobalSymbols(states: readonly GlobalSymbolState[]): void {
 async function loadBundle(
   mcp?: Record<string, { url: string }>,
   cwd = ROOT,
+  options: { nativeFactories?: boolean; additionalPaths?: string[] } = {},
 ): Promise<BundleFixture> {
   const agentDir = mkdtempSync(join(tmpdir(), "pipkin-bundle-"));
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -260,7 +264,22 @@ async function loadBundle(
       agentDir,
       eventBus,
       settingsManager: SettingsManager.inMemory(),
-      additionalExtensionPaths: [ROOT],
+      additionalExtensionPaths: [ROOT, ...(options.additionalPaths ?? [])],
+      extensionFactories: options.nativeFactories
+        ? [
+            {
+              name: "codemode",
+              replaceable: true,
+              factory: createCodemodeExtension({ mode: "on" }),
+            },
+            {
+              name: "tool_search",
+              replaceable: true,
+              factory: createToolSearchExtension(),
+            },
+            { name: "mcp", replaceable: true, factory: createMcpExtension() },
+          ]
+        : [],
       noExtensions: true,
       noSkills: true,
       noPromptTemplates: true,
@@ -380,6 +399,7 @@ async function createBundleRunner(
       setModel: async () => false,
       getThinkingLevel: () => "off",
       setThinkingLevel: () => {},
+      getSettings: () => ({}),
     },
     {
       getModel: () => undefined,
@@ -1313,6 +1333,109 @@ describe("Pipkin bundle", () => {
     await runner.emit({ type: "session_shutdown", reason: "quit" });
   });
 
+  it("binds the complete bundle beside native factories without a second MCP owner", async () => {
+    const fixture = await loadBundle(undefined, ROOT, {
+      nativeFactories: true,
+    });
+    expect(fixture.result.errors).toEqual([]);
+    expect(fixture.result.extensions.map(relativeExtensionPath)).toEqual(
+      expect.arrayContaining(expectedExtensionPaths),
+    );
+    expect(
+      fixture.result.extensions.some(
+        (extension) => extension.path === "<inline:mcp>",
+      ),
+    ).toBe(false);
+    const { session } = await createAgentSession({
+      cwd: ROOT,
+      resourceLoader: fixture.loader,
+      sessionManager: SessionManager.inMemory(ROOT),
+      settingsManager: SettingsManager.inMemory({
+        defaultTools: ["+codemode", "+tool_search"],
+      }),
+    });
+    const errors: string[] = [];
+    session.extensionRunner.onError((error) => errors.push(error.error));
+    try {
+      await session.bindExtensions({ mode: "print" });
+      expect(session.getActiveToolNames()).toEqual(
+        expect.arrayContaining([
+          "codemode",
+          "tool_search",
+          "bash",
+          ...Object.keys(expectedTools),
+        ]),
+      );
+      expect(
+        session.extensionRunner
+          .getRegisteredCommands()
+          .filter((command) => command.name === "mcp"),
+      ).toHaveLength(1);
+      expect(errors).toEqual([]);
+    } finally {
+      await session.extensionRunner.emit({
+        type: "session_shutdown",
+        reason: "quit",
+      });
+      session.dispose();
+    }
+  });
+
+  it("captures the public Codex API through Pi's real Jiti loader without fetching", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "pipkin-capture-loader-"));
+    const extensionPath = join(directory, "capture.ts");
+    const fetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("Unexpected network request"));
+    try {
+      writeFileSync(
+        extensionPath,
+        `
+        import { Type } from "typebox";
+        import { createCodexOAuthAdapter } from ${JSON.stringify(join(ROOT, "src/extensions/context/codex-oauth-adapter.ts"))};
+        export default async function (pi) {
+          const payload = await createCodexOAuthAdapter().capture({
+            model: {
+              id: "gpt-5-codex", name: "Codex", provider: "openai-codex", api: "openai-codex-responses",
+              baseUrl: "https://chatgpt.com/backend-api", reasoning: true, input: ["text"],
+              cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}, contextWindow: 100000, maxTokens: 1000,
+            },
+            auth: {ok: true, apiKey: "header." + Buffer.from(JSON.stringify({
+              "https://api.openai.com/auth": {chatgpt_account_id: "fixture"}
+            })).toString("base64url") + ".signature"},
+            context: {systemPrompt: "capture only", messages: [{role: "user", content: "synthetic", timestamp: 1}]},
+          });
+          pi.registerTool({name: "capture_fixture", label: "capture", description: "Fixture", parameters: Type.Object({}),
+            execute: async () => ({content: [{type: "text", text: JSON.stringify(payload)}], details: undefined}),
+          });
+        }
+      `,
+      );
+      const fixture = await loadBundle(undefined, ROOT, {
+        additionalPaths: [extensionPath],
+      });
+      expect(fixture.result.errors).toEqual([]);
+      const capture = fixture.result.extensions
+        .flatMap((extension) => [...extension.tools.values()])
+        .find((tool) => tool.definition.name === "capture_fixture");
+      expect(capture).toBeDefined();
+      const result = await capture!.definition.execute(
+        "fixture",
+        {},
+        undefined,
+        undefined,
+        {} as never,
+      );
+      expect(result.content).toEqual([
+        { type: "text", text: expect.stringContaining("synthetic") },
+      ]);
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      fetch.mockRestore();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("persists a native error result for a forbidden web target", async () => {
     const fixture = await loadBundle();
     const faux = createFauxCore({});
@@ -1328,16 +1451,7 @@ describe("Pipkin bundle", () => {
       fauxAssistantMessage("acknowledged"),
     ]);
     const sessionManager = SessionManager.inMemory(ROOT);
-    const resourceLoader = Object.create(
-      fixture.loader,
-    ) as DefaultResourceLoader;
-    resourceLoader.getExtensions = () => ({
-      ...fixture.result,
-      extensions: fixture.result.extensions.filter(
-        (extension) =>
-          relativeExtensionPath(extension) === "src/extensions/web/index.ts",
-      ),
-    });
+    const resourceLoader = fixture.loader;
     const { session } = await createAgentSession({
       cwd: ROOT,
       model: faux.getModel(),
@@ -1348,7 +1462,7 @@ describe("Pipkin bundle", () => {
     });
 
     try {
-      await session.bindExtensions({ mode: "tui", uiContext: {} as never });
+      await session.bindExtensions({ mode: "print" });
       session.agent.streamFunction = faux.streamSimple;
       await session.agent.prompt("fetch localhost");
       const result = sessionManager
@@ -1364,9 +1478,10 @@ describe("Pipkin bundle", () => {
         content: [{ type: "text", text: expect.stringContaining("localhost") }],
       });
     } finally {
-      await (
-        session as unknown as { _extensionRunner: ExtensionRunner }
-      )._extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+      await session.extensionRunner.emit({
+        type: "session_shutdown",
+        reason: "quit",
+      });
       session.dispose();
     }
   });

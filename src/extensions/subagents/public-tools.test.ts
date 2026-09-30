@@ -21,10 +21,10 @@ function deferred<T>() {
 
 function session(result = "complete") {
   return {
-    agent: { shouldStopAfterTurn: undefined },
+    agent: { finishTurn: undefined },
     bindExtensions: vi.fn(async () => {}),
     prompt: vi.fn(async () => {}),
-    steer: vi.fn(async () => {}),
+    steer: vi.fn(async () => "queued" as const),
     clearQueue: vi.fn(() => ({ steering: [], followUp: [] })),
     abort: vi.fn(async () => {}),
     dispose: vi.fn(),

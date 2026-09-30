@@ -89,7 +89,7 @@ The paths are excluded through common Git `info/exclude`, not committed `.gitign
 /btw Why did we choose a file lease here?
 ```
 
-Pipkin sends the current model a bounded view of the current session context and the question, then shows the Markdown answer in a disposable surface. Each invocation is independent: an unpromoted exchange is neither retained nor supplied to later BTW questions.
+Pipkin sends the current model a bounded view of Pi's canonical session projection and the question, without historical system instructions or tool declarations, then shows the Markdown answer in a disposable surface. Virtual selectors with unknown limits use the model runtime's output defaults instead of a guessed context budget. Each invocation is independent: an unpromoted exchange is neither retained nor supplied to later BTW questions.
 
 After a completed answer, press `s` to promote the complete question and answer into one displayed `btw` transcript message. That message becomes ordinary session context without starting a turn while idle; during a response it is delivered as steering. Press Escape to abort generation or close the completed surface; arrow keys scroll the answer.
 

@@ -117,7 +117,15 @@ export async function createManagedSessionHarness(
     sessions.push(created.session);
     return { session: created.session };
   };
-  return { createSession, eventBuses, faux, model, modelRegistry, sessions };
+  return {
+    createSession,
+    eventBuses,
+    faux,
+    model,
+    modelRegistry,
+    modelRuntime,
+    sessions,
+  };
 }
 
 export function managedSessionContext(harness: {

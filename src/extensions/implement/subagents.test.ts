@@ -50,6 +50,7 @@ describe("managed Pipkin Implement worker tools", () => {
       () =>
         ({
           bindExtensions: vi.fn(async () => undefined),
+          agent: { finishTurn: undefined },
           prompt: vi.fn(async () => undefined),
           steer: vi.fn(async () => undefined),
           abort: vi.fn(async () => undefined),

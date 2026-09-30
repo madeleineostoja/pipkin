@@ -60,6 +60,14 @@ export function registerMcpSession(
   const resolveProjectRoot = input.resolveProjectRoot ?? resolveMcpProjectRoot;
   let registration: ReturnType<typeof registerContainedMcpAdapter> | undefined;
 
+  // Pi detects replacement of its native MCP owner during extension loading,
+  // before session_start constructs the configured adapter.
+  registerUnconfiguredMcpCommand({
+    pi: input.pi,
+    globalPath: getConfigPath(input.agentDir),
+    projectResolutionFailed: false,
+  });
+
   input.pi.on("session_start", async (event, ctx) => {
     registration?.dispose();
     registration = undefined;

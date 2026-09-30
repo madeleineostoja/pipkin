@@ -254,10 +254,15 @@ type Waiter = {
 
 type SteeringActivity = Extract<InspectionActivity, { kind: "steering" }>;
 
+export type RuntimeSteeringResult = {
+  snapshot: RuntimeSnapshot;
+  delivery: "queued" | "handled";
+};
+
 type SteeringDelivery = {
   message: string;
   activity: SteeringActivity;
-  resolve: (snapshot: RuntimeSnapshot) => void;
+  resolve: (result: RuntimeSteeringResult) => void;
   reject: (error: Error) => void;
   settled?: boolean;
 };
@@ -1121,7 +1126,7 @@ export class SubagentRuntime {
     return projectSnapshot(record);
   }
 
-  async steer(id: string, message: string): Promise<RuntimeSnapshot> {
+  async steer(id: string, message: string): Promise<RuntimeSteeringResult> {
     const record = this.#requireRecord(id);
     if (isTerminal(record.status)) {
       throw new Error(`Cannot steer subagent ${id}; it is ${record.status}`);
@@ -1136,7 +1141,7 @@ export class SubagentRuntime {
     if (trimmed === "") {
       throw new Error("Steer message must not be empty");
     }
-    return new Promise<RuntimeSnapshot>((resolve, reject) => {
+    return new Promise<RuntimeSteeringResult>((resolve, reject) => {
       const activity: SteeringActivity = {
         kind: "steering",
         status: "queued",
@@ -1681,6 +1686,7 @@ export class SubagentRuntime {
         "Complete the managed task with its required structured result.",
       parameters: completion.definition.schema,
       executionMode: "sequential",
+      exposure: "model-only",
       execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
         if (completion.accepted) {
           throw new Error("Managed completion has already been accepted.");
@@ -1757,7 +1763,7 @@ export class SubagentRuntime {
         }
         record.steeringInFlight = delivery;
         try {
-          await record.session.steer(delivery.message);
+          const outcome = await record.session.steer(delivery.message);
           if (delivery.settled) {
             continue;
           }
@@ -1767,9 +1773,16 @@ export class SubagentRuntime {
             continue;
           }
           delivery.settled = true;
+          if (outcome === "handled") {
+            delivery.activity.status = "handled";
+            delivery.activity.timestamp = now();
+          }
           record.updatedAt = now();
           refreshHealth(record);
-          delivery.resolve(projectSnapshot(record));
+          delivery.resolve({
+            snapshot: projectSnapshot(record),
+            delivery: outcome,
+          });
         } catch (error) {
           if (!delivery.settled) {
             delivery.settled = true;
@@ -1807,17 +1820,16 @@ export class SubagentRuntime {
     record: RuntimeRecord,
     session: AgentSession,
   ): void {
-    const inheritedBoundary = session.agent.shouldStopAfterTurn;
-    session.agent.shouldStopAfterTurn = async (context, signal) => {
+    const inheritedBoundary = session.agent.finishTurn;
+    session.agent.finishTurn = async (context, signal) => {
       const hasToolCalls = context.message.content.some(
         (content) => content.type === "toolCall",
       );
       const isFinalResult =
         !hasToolCalls && context.message.stopReason === "stop";
-      const inheritedStop =
-        (await inheritedBoundary?.(context, signal)) === true;
+      const inheritedDecision = await inheritedBoundary?.(context, signal);
       if (!isFinalResult) {
-        return inheritedStop;
+        return inheritedDecision || undefined;
       }
 
       // A completed tool-free assistant turn is the subagent's committed result.
@@ -1826,7 +1838,7 @@ export class SubagentRuntime {
       record.canSteer = false;
       await record.steeringDraining;
       this.#clearSessionQueue(session);
-      return true;
+      return { action: "end" };
     };
   }
 

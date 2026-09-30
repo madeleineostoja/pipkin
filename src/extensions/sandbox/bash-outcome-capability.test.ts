@@ -70,7 +70,9 @@ describe("bash_outcome Sandbox composition", () => {
       ctx,
     );
 
-    expect(decodeRetainedResult(projected.details)).toEqual(publicResult);
+    expect(decodeRetainedResult(projected.details)?.content).toEqual(
+      publicResult.content,
+    );
     expect(updates).not.toHaveLength(0);
     await expect(
       bash.execute(

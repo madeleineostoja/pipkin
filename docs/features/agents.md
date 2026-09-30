@@ -34,7 +34,7 @@ Continue useful independent work when available, then join once when the result 
 }
 ```
 
-An immediate `wait: true` join is appropriate when nothing else can proceed. The separate call deliberately distinguishes starting durable work from waiting for it. Use `wait: false` only for an intentional point-in-time inspection; do not poll. Add `include_progress: true` to inspect one bounded partial-progress excerpt or recover partial work. Steering queues updated direction after the child's current assistant turn finishes its tool calls; it fails for queued, stopped, unknown, or completed agents.
+An immediate `wait: true` join is appropriate when nothing else can proceed. The separate call deliberately distinguishes starting durable work from waiting for it. Use `wait: false` only for an intentional point-in-time inspection; do not poll. Add `include_progress: true` to inspect one bounded partial-progress excerpt or recover partial work. Steering reports Pi's actual outcome: `queued` guidance enters after the child's current assistant turn finishes its tool calls; `handled` means a child extension consumed it rather than queued it. It fails for queued, stopped, unknown, or completed agents.
 
 Progress is untrusted child-generated content, may be incomplete, and is not a final answer. Queued agents report that progress is not available yet; running agents return immediately; stopped and failed agents return immediately with currently available work when `wait` is false. With `wait: true`, stopped and failed agents wait for terminal cleanup and use the frozen post-abort inspection. Completed agents always return only their authoritative final result, even when progress is requested.
 

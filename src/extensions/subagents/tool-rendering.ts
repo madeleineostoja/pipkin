@@ -19,6 +19,7 @@ type AgentToolDetails = Pick<
   >;
   error?: string;
   presentation: AgentPresentation;
+  delivery?: "queued" | "handled";
   progress?: string;
 };
 type AgentToolResultWithStatus = AgentToolResult<AgentToolDetails> & {
@@ -29,13 +30,17 @@ export function toolResult(
   snapshot: RuntimeSnapshot,
   presentation: AgentPresentation = "status",
   progress?: string,
+  delivery?: "queued" | "handled",
 ): AgentToolResultWithStatus {
-  const content = resultContent(snapshot, presentation);
+  const content = resultContent(snapshot, presentation, delivery);
   return {
     content: [
       { type: "text", text: progress ? `${content}\n${progress}` : content },
     ],
-    details: presentationDetails(snapshot, presentation, progress),
+    details: {
+      ...presentationDetails(snapshot, presentation, progress),
+      ...(delivery ? { delivery } : {}),
+    },
     isError: snapshot.status === "failed" || snapshot.status === "stopped",
   } satisfies AgentToolResultWithStatus;
 }
@@ -123,7 +128,7 @@ function completedSummary(details: AgentToolDetails): string | string[] {
       return startSummary(details);
     }
     if (details.presentation === "steer") {
-      return `Guidance queued for subagent ${details.id}.`;
+      return steeringSummary(details.id, details.delivery);
     }
     return `Subagent ${details.id} is ${details.status}.`;
   }
@@ -131,7 +136,7 @@ function completedSummary(details: AgentToolDetails): string | string[] {
     details.presentation === "start"
       ? `Managed subagent ${details.id} completed.`
       : details.presentation === "steer"
-        ? `Guidance was queued for subagent ${details.id}.`
+        ? steeringSummary(details.id, details.delivery)
         : `Retrieved result for ${description(details)}.`;
   const metrics = realMetrics(details);
   return metrics ? [sentence, metrics] : sentence;
@@ -309,6 +314,7 @@ function errorVerb(
 function resultContent(
   snapshot: RuntimeSnapshot,
   presentation: AgentPresentation,
+  delivery?: "queued" | "handled",
 ): string {
   if (snapshot.status === "completed") {
     if (presentation === "start") {
@@ -318,7 +324,7 @@ function resultContent(
       ].join("\n");
     }
     if (presentation === "steer") {
-      return `Guidance was queued for subagent ${snapshot.id}.`;
+      return steeringSummary(snapshot.id, delivery);
     }
     return resultText(snapshot.result);
   }
@@ -334,12 +340,18 @@ function resultContent(
     ].join("\n");
   }
   if (presentation === "steer") {
-    return `Guidance queued for subagent ${snapshot.id}.`;
+    return steeringSummary(snapshot.id, delivery);
   }
   return [
     `Subagent ${snapshot.id} (${snapshot.type}) is ${snapshot.status}.`,
     `Use get_subagent_result with id "${snapshot.id}" to retrieve the final result.`,
   ].join("\n");
+}
+
+function steeringSummary(id: string, delivery?: "queued" | "handled"): string {
+  return delivery === "handled"
+    ? `Guidance handled by a child extension for subagent ${id}.`
+    : `Guidance queued for subagent ${id}.`;
 }
 
 function resultText(value: unknown): string {

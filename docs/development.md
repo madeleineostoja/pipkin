@@ -13,6 +13,27 @@ Pipkin is developed and released as one root npm package. Run commands from the 
 | Test one feature path   | `npm run test -- src/extensions/<feature>` |
 | Test one Vitest project | `npm run test -- --project <project>`      |
 
+## Runtime baseline
+
+Pipkin declares `^0.99.0` for `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, and `@earendil-works/pi-tui`. Node.js remains `>=24`; Windows is unsupported. The manifest is one complete ordered bundle, not a supported menu of entrypoints.
+
+| Verification environment                         | Pi integration packages        | Other Pi runtime packages                            | Node.js   |
+| ------------------------------------------------ | ------------------------------ | ---------------------------------------------------- | --------- |
+| Intended root installation (`package-lock.json`) | AI, coding-agent, TUI `0.99.1` | agent-core, codemode, MCP, Chord, telemetry `0.99.1` | `24.20.0` |
+| Controlled minimum installation                  | AI, coding-agent, TUI `0.99.0` | agent-core, codemode, MCP, Chord, telemetry `0.99.0` | `24.20.0` |
+
+Both used `pi-mcp-adapter@2.34.0`, TypeScript `5.7.3`, and Vitest `4.1.10`; unrelated root dependencies retained their lockfile versions. Both installations were typechecked and tested, including complete bundle loading/binding, native factory coexistence, virtual-model dispatch, managed final-action completion, queued/handled steering, cancellation, cleanup-before-wait delivery, and fixture-based native Codex compaction/replay. These are verified versions; the rest of the caret range is a dependency assumption, not a claim of testing every release. No live credential/provider operation or remote Codex compaction smoke was performed.
+
+To repeat minimum-version verification in a disposable checkout:
+
+1. Save `package.json` and `package-lock.json` outside the checkout. Install the intended root lockfile first with `npm ci`.
+2. Temporarily pin the three Pi dev dependencies to `0.99.0`. Override those same packages throughout the tree using npm's `$<dependency-name>` references, and override `@earendil-works/pi-agent-core`, `@earendil-works/pi-codemode`, `@earendil-works/pi-mcp`, `@earendil-works/chord`, and `@earendil-works/pi-telemetry` to `0.99.0`. Retain the existing adapter override.
+3. Run `npm install` using the saved root lockfile as the starting point; do not ignore the lockfile and accidentally upgrade unrelated dependencies. Check `npm ls` for every package listed above, including nested copies.
+4. Run `npm run check` and `npm run test`. The bundle and managed lifecycle tests use local fixtures, not provider credentials.
+5. Restore both manifests in a `finally`/shell exit trap and run `npm ci`. Check that the intended versions are installed again. Never commit the temporary pins or fixture lockfile.
+
+Pi's public SDK lifecycle includes `bindExtensions()` before prompting and `session_shutdown` before child disposal. Managed completion remains a directly declared, model-only final action; callers join cleanup before receiving terminal delivery. See [MCP containment](architecture.md#mcp-containment) for native-owner suppression while the adapter remains in the bundle. Context's tiny native ESM bridge resolves the public Codex API subpath outside Pi 0.99's Jiti root alias; the bundle suite proves capture alone does not fetch.
+
 ## Test the boundary you changed
 
 `npm run test` runs explicit Vitest projects for adjacent feature tests, shared-library tests, Implement's serialized suites, and the bundle contract under `test/bundle/`.

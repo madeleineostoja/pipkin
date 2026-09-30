@@ -57,10 +57,10 @@ function makeSession(result = "done") {
     emit: vi.fn(async () => undefined),
   } as never;
   return asAgentSession({
-    agent: { shouldStopAfterTurn: undefined },
+    agent: { finishTurn: undefined },
     bindExtensions: vi.fn(async () => undefined),
     prompt: vi.fn(async (): Promise<void> => undefined),
-    steer: vi.fn(async () => undefined),
+    steer: vi.fn(async () => "queued" as const),
     clearQueue: vi.fn(() => ({ steering: [], followUp: [] })),
     abort: vi.fn(async () => undefined),
     dispose: vi.fn(),
@@ -585,8 +585,8 @@ describe("SubagentRuntime", () => {
   it("serializes steering and continues after one rejected delivery", async () => {
     const { pi } = fakePi();
     const promptDone = deferred<void>();
-    const first = deferred<void>();
-    const second = deferred<void>();
+    const first = deferred<"queued" | "handled">();
+    const second = deferred<"queued" | "handled">();
     const calls: string[] = [];
     const session = makeSession();
     session.prompt = vi.fn(() => promptDone.promise);
@@ -616,8 +616,11 @@ describe("SubagentRuntime", () => {
     first.reject(new Error("rejected"));
     await expect(one).rejects.toThrow("rejected");
     await vi.waitFor(() => expect(calls).toEqual(["first", "second"]));
-    second.resolve();
-    await expect(two).resolves.toMatchObject({ status: "running" });
+    second.resolve("queued");
+    await expect(two).resolves.toMatchObject({
+      snapshot: { status: "running" },
+      delivery: "queued",
+    });
     expect(runtime.snapshot(started.id)?.health?.pendingSteering).toBe(0);
     expect(runtime.inspect(started.id)?.activity).toEqual(
       expect.arrayContaining([
@@ -660,7 +663,11 @@ describe("SubagentRuntime", () => {
     });
 
     await responseStarted.promise;
-    await runtime.steer(started.id, "wrap it up");
+    await expect(
+      runtime.steer(started.id, "wrap it up"),
+    ).resolves.toMatchObject({
+      delivery: "queued",
+    });
     releaseResponse.resolve();
 
     await expect(runtime.wait(started.id)).resolves.toMatchObject({
@@ -678,6 +685,59 @@ describe("SubagentRuntime", () => {
         }),
       ]),
     );
+  });
+
+  it("reports extension-handled steering without claiming queued delivery", async () => {
+    const { pi } = fakePi();
+    const responseStarted = deferred<void>();
+    const releaseResponse = deferred<void>();
+    const { createSession, model, modelRegistry } =
+      await createManagedSessionHarness(
+        [
+          async () => {
+            responseStarted.resolve();
+            await releaseResponse.promise;
+            return fauxAssistantMessage("done");
+          },
+        ],
+        {
+          extensionFactories: [
+            (childPi) => {
+              childPi.on("input", (event) =>
+                event.streamingBehavior === "steer"
+                  ? { action: "handled" }
+                  : { action: "continue" },
+              );
+            },
+          ],
+        },
+      );
+    const runtime = new SubagentRuntime(pi as never, { createSession });
+    const started = await runtime.runManagedAgent({
+      type: "General",
+      prompt: "work",
+      cwd: TEST_CWD,
+      ctx: realContext(model, modelRegistry),
+      mode: "background",
+    });
+    await responseStarted.promise;
+    await expect(
+      runtime.steer(started.id, "handled guidance"),
+    ).resolves.toMatchObject({
+      delivery: "handled",
+      snapshot: { status: "running" },
+    });
+    expect(runtime.inspect(started.id)?.activity).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "steering",
+          status: "handled",
+          text: "handled guidance",
+        }),
+      ]),
+    );
+    releaseResponse.resolve();
+    await runtime.wait(started.id);
   });
 
   it("clears guidance that finishes queueing across the final-turn boundary", async () => {
@@ -754,7 +814,7 @@ describe("SubagentRuntime", () => {
     });
     await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
 
-    const boundary = (session as AgentSession).agent.shouldStopAfterTurn;
+    const boundary = (session as AgentSession).agent.finishTurn;
     if (!boundary) {
       throw new Error("Expected the runtime to install a completion boundary.");
     }
@@ -767,7 +827,7 @@ describe("SubagentRuntime", () => {
         } as never,
         new AbortController().signal,
       ),
-    ).resolves.toBe(false);
+    ).resolves.toBeUndefined();
     expect(runtime.snapshot(started.id)?.canSteer).toBe(true);
 
     runtime.stop(started.id);

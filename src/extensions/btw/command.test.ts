@@ -105,7 +105,7 @@ function context(
         ),
       },
       sessionManager: {
-        buildSessionContext: () => ({
+        buildSessionProjection: () => ({
           messages: [],
           thinkingLevel: "off",
           model: null,
