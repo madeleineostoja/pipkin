@@ -1,3 +1,4 @@
+import Ajv from "ajv";
 import { describe, expect, it } from "vitest";
 import { Check } from "typebox/value";
 import { BrowserError } from "./errors.js";
@@ -82,16 +83,20 @@ describe("Browser operation inputs", () => {
       }),
     ).toBe(false);
   });
-  it("preserves strict kind rules and selector spelling", () => {
+  it("rejects kind-specific fields in the public target schema and preserves selector spelling", () => {
+    const validate = new Ajv().compile(actionParameters.click);
+    const target = { kind: "role", value: "button", name: "Save", exact: true };
+    expect(validate({ target })).toBe(true);
+    expect(normalizeTarget(target)).toEqual(target);
+    expect(
+      validate({ target: { kind: "css", value: "main", name: "Main" } }),
+    ).toBe(false);
+    expect(
+      validate({ target: { kind: "ref", value: "e12", exact: false } }),
+    ).toBe(false);
     expect(() => normalizeTarget({ kind: "css", value: "   " })).toThrow(
       BrowserError,
     );
-    expect(() =>
-      normalizeTarget({ kind: "css", value: "main", name: "Main" }),
-    ).toThrow(BrowserError);
-    expect(() =>
-      normalizeTarget({ kind: "ref", value: "e12", exact: false }),
-    ).toThrow(BrowserError);
     expect(() =>
       normalizeTarget({ kind: "ref", value: "e12 >> text=other" }),
     ).toThrow(BrowserError);

@@ -109,7 +109,7 @@ Native Pi separately supplies `/mcp` for server management and authentication.
 
 ## Model tools
 
-These tools are called by the agent rather than typed as slash commands. They use native deferred discovery and codemode invocation; Sandbox `bash` stays direct. Native `read`, `edit`, `write`, and other user-enabled built-ins remain available. Private completion stays model-only; discovery never grants permission.
+These tools are called by the agent rather than typed as slash commands. A small decision-shaping core is eagerly declared; specialist and follow-up tools use native deferred discovery or codemode. See [Native discovery](docs/configuration.md#native-discovery) for the exact exposure inventory and setup. Native `read`, `edit`, `write`, and other user-enabled built-ins remain available. Private completion stays model-only; discovery never grants permission.
 
 | Tool                                                                    | Purpose                                                                             |
 | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |

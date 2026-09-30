@@ -69,7 +69,13 @@ export const WorkspaceParameters = Type.Object(
     query: Type.String({
       description: "Workspace symbol query sent to the selected server.",
     }),
-    file: Type.Optional(file),
+    file: Type.Optional(
+      Type.String({
+        minLength: 1,
+        description:
+          "Workspace-relative or absolute source file used to select the language server and workspace; does not restrict matches to this file. Omit for automatic workspace selection.",
+      }),
+    ),
     timeout,
   },
   closed,

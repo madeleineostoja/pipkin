@@ -79,7 +79,7 @@ const range = {
 };
 
 describe("on-demand LSP operation contracts", () => {
-  it("registers nine deferred operations, without lifecycle output or independent clients", () => {
+  it("registers nine operations with eager navigation, without lifecycle output or independent clients", () => {
     const api = { registerTool: vi.fn(), on: vi.fn() };
     registerLsp(api as unknown as ExtensionAPI);
     expect(api.registerTool.mock.calls.map(([tool]) => tool.name)).toEqual(
@@ -88,7 +88,10 @@ describe("on-demand LSP operation contracts", () => {
     expect(api.on).not.toHaveBeenCalled();
     for (const [tool] of api.registerTool.mock.calls) {
       expect(tool).toMatchObject({
-        exposure: "deferred",
+        exposure:
+          tool.name === "lsp_definition" || tool.name === "lsp_references"
+            ? "direct"
+            : "deferred",
         namespace: { name: "lsp" },
       });
       expect(tool.parameters.additionalProperties).toBe(false);

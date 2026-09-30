@@ -5,46 +5,85 @@ import { BrowserError } from "./errors.js";
 import { LIMITS } from "./limits.js";
 import { isSnapshotRef } from "./target.js";
 
-const targetKinds = [
-  "ref",
-  "role",
-  "text",
-  "label",
-  "placeholder",
-  "test_id",
-  "css",
-] as const;
-const target = Type.Object(
-  {
-    kind: StringEnum(targetKinds, {
-      description:
-        "Strict resolution kind: snapshot ref, semantic locator, or explicit CSS fallback.",
-    }),
-    value: Type.String({
-      minLength: 1,
-      maxLength: LIMITS.targetChars,
-      description:
-        "Non-empty snapshot ref from browser_snapshot, semantic locator value, or CSS selector, at most 1,000 characters.",
-    }),
-    name: Type.Optional(
-      Type.String({
-        minLength: 1,
-        maxLength: LIMITS.nameChars,
-        description:
-          "Accessible name for role targets only, at most 500 characters.",
-      }),
+const targetValue = (description: string) =>
+  Type.String({
+    minLength: 1,
+    maxLength: LIMITS.targetChars,
+    description,
+  });
+const exact = Type.Optional(
+  Type.Boolean({
+    description: "Require exact semantic matching; defaults to false.",
+  }),
+);
+const target = Type.Union(
+  [
+    Type.Object(
+      {
+        kind: Type.Literal("ref", {
+          description: "Resolve an opaque ref returned by browser_snapshot.",
+        }),
+        value: targetValue(
+          "Live snapshot ref, at most 1,000 characters; do not invent or modify it.",
+        ),
+      },
+      { additionalProperties: false },
     ),
-    exact: Type.Optional(
-      Type.Boolean({
-        description:
-          "Exact matching for role, text, label, or placeholder targets only; defaults to false.",
-      }),
+    Type.Object(
+      {
+        kind: Type.Literal("role", {
+          description:
+            "Resolve an element by accessible role and optional name.",
+        }),
+        value: targetValue(
+          "Accessible role such as button or checkbox, not the element's label; at most 1,000 characters.",
+        ),
+        name: Type.Optional(
+          Type.String({
+            minLength: 1,
+            maxLength: LIMITS.nameChars,
+            description: "Accessible name, at most 500 characters.",
+          }),
+        ),
+        exact,
+      },
+      { additionalProperties: false },
     ),
-  },
+    Type.Object(
+      {
+        kind: StringEnum(["text", "label", "placeholder"] as const, {
+          description:
+            "Resolve by visible text, associated form label, or placeholder.",
+        }),
+        value: targetValue(
+          "Non-empty semantic locator text, at most 1,000 characters.",
+        ),
+        exact,
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        kind: Type.Literal("test_id", {
+          description: "Resolve by test ID.",
+        }),
+        value: targetValue("Exact test ID, at most 1,000 characters."),
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        kind: Type.Literal("css", {
+          description: "Resolve by an explicit CSS selector fallback.",
+        }),
+        value: targetValue("Explicit CSS selector, at most 1,000 characters."),
+      },
+      { additionalProperties: false },
+    ),
+  ],
   {
-    additionalProperties: false,
     description:
-      "One unique target in the active page. Refs bind to the live snapshot/document generation; stale or ambiguous targets fail without fallback.",
+      "One unique target in the active page, selected by kind. Refs bind to the live snapshot/document generation; stale or ambiguous targets fail without fallback.",
   },
 );
 export type Target = Static<typeof target>;
@@ -345,20 +384,16 @@ export function normalizeTarget(value: unknown): Target {
     !Check(target, value) ||
     !value.value.trim() ||
     !controlSafe(value.value) ||
-    (value.name !== undefined &&
+    (value.kind === "role" &&
+      value.name !== undefined &&
       (!value.name.trim() || !controlSafe(value.name)))
   ) {
     throw new BrowserError("target", "Browser target is invalid.");
   }
-  if (
-    (value.name !== undefined && value.kind !== "role") ||
-    (value.exact !== undefined &&
-      !["role", "text", "label", "placeholder"].includes(value.kind)) ||
-    (value.kind === "ref" && !isSnapshotRef(value.value))
-  ) {
+  if (value.kind === "ref" && !isSnapshotRef(value.value)) {
     throw new BrowserError(
       "target",
-      "Browser target has unsupported field combinations.",
+      "Browser snapshot ref has an invalid spelling.",
     );
   }
   return { ...value };

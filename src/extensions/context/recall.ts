@@ -37,7 +37,7 @@ export function registerOutputTools(pi: ExtensionAPI): void {
     namespace,
     annotations: { readOnlyHint: true, openWorldHint: false },
     description:
-      "List bounded metadata of execution captures authorized by raw active history; never output bodies.",
+      "Recover retained execution references available to the current session branch. Returns bounded metadata, never output bodies; use read_output when the reference is already known.",
     parameters: PageParams,
     outputSchema: OutputListSchema,
     renderCall: toolCallRenderer({
@@ -81,18 +81,18 @@ export function registerOutputTools(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "read_output",
     label: "read_output",
-    exposure: "deferred",
+    exposure: "direct",
     namespace,
     annotations: { readOnlyHint: true, openWorldHint: false },
     description:
-      "Read an immutable execution capture or original transcript entry without replaying execution. Selectors require one textual source. Forward returned image blocks explicitly with image(block), not the whole JSON payload.",
+      "Retrieve retained command output or an elided tool result without rerunning execution. Use selector to read a line range, search for text, or inspect the tail; omission returns bounded content, not necessarily the entire source. Selectors require one textual source. In codemode, forward returned image blocks explicitly with image(block), not the whole JSON payload.",
     parameters: Type.Object(
       {
         reference: Type.String({
           minLength: 1,
           maxLength: 800,
           description:
-            "Opaque 1..800-character output or transcript reference from output_list or a pruning stub.",
+            "Opaque 1..800-character outputRef from bash or process_inspect/wait/stop, reference from output_list, or transcript reference from a pruning stub; not a file path.",
         }),
         selector: Type.Optional(OutputSelector),
       },

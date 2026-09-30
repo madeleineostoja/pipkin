@@ -15,9 +15,13 @@ import {
   type PapercutRecordResult,
 } from "./tool-contract.js";
 
-const TOOL_DESCRIPTION = `Record factual incidental friction only when all of these are true: while completing an assigned subject that was something else, you concretely encountered avoidable friction, actually exercised at least one workaround or detour, and then completed or safely continued the task. No outage, exception, failed command or run, or user-visible failure is required. Examples: recover from a flaky documented test with a narrower command; discover an undocumented validation convention and use it; or perform an avoidable manual worktree setup sequence and safely continue. Qualifying friction includes context reconstruction or ambiguous output. Each workaround is an action actually taken, not a suggestion.
+const TOOL_DESCRIPTION = `Record factual avoidable friction encountered incidentally while completing a different assigned subject, only after exercising at least one workaround or detour and completing or safely continuing the task. Each workaround must be an action actually taken, not a suggestion. No outage, exception, failed command or run, or user-visible failure is required.
 
-Do not record the current task subject, a review finding or unmet requirement, unresolved correctness or safety issues, inferred architecture, unused suggestions, expected proportionate guided steps, adequately documented proportionate procedures, one-off agent mistakes, typos, malformed commands, or transient service/provider failures. This trusted-agent instruction is not runtime classification. Before recording, use papercut_list and, as needed, papercut_get to check existing open and closed findings for equivalent friction. Skip if this same incident was already recorded; reuse the existing key for an independently encountered recurrence, and create a new key only for materially different friction. Deduplication inspection does not authorize discussing or addressing existing findings. Records are candidates for repository guidance or small fixes; this tool only writes personal registry metadata. Discovery and codemode confer no additional authority and do not authorize automatic recording of arbitrary failures.`;
+Before recording, use papercut_list and, as needed, papercut_get to check equivalent existing open and closed findings. Skip an already-recorded incident; reuse the existing key for an independently encountered recurrence, and create a new key only for materially different friction. Deduplication does not authorize discussing or addressing existing findings.
+
+Do not record the task subject, review findings or unmet requirements, unresolved correctness or safety issues, inferred architecture, unused suggestions, expected proportionate guided steps, adequately documented proportionate procedures, one-off agent mistakes, typos, malformed commands, or transient service/provider failures. Qualifying examples include a flaky documented test handled with a narrower command, an undocumented validation convention discovered and used, avoidable manual worktree setup, context reconstruction, or ambiguous output followed by a concrete workaround.
+
+This tool writes personal registry metadata only, not source or Git changes. Findings are candidates for future guidance or fixes, not authorization to implement them. Qualification is trusted-agent policy, not runtime classification; discovery and codemode confer no additional authority or permission to automatically record arbitrary failures.`;
 
 type PapercutStatusController = ReturnType<
   typeof createPapercutStatusController
@@ -29,7 +33,7 @@ export function registerRecordTool(
 ): void {
   pi.registerTool({
     name: "papercut_record",
-    exposure: "deferred",
+    exposure: "direct",
     namespace: {
       name: "papercuts",
       description:

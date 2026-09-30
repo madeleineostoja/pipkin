@@ -36,7 +36,19 @@ Merge this fragment into Pi's `settings.json`; do not overwrite unrelated settin
 }
 ```
 
-Keep the native built-in extensions enabled and the native declaration budget. Sandbox `bash` stays directly declared, and user-enabled native tools such as `read`, `edit`, and `write` remain intact. Other public Pipkin tools are deferred: native `tool_search` can discover and activate them for direct calls, and native `codemode` can call them without activation. Private managed completion is directly declared but model-only. Discovery and annotation hints never grant permission.
+Keep the native built-in extensions enabled and the native declaration budget. Pipkin directly declares a small core whose descriptions help the model choose its approach before discovery:
+
+| Direct tool                        | Initial decision it supports                            |
+| ---------------------------------- | ------------------------------------------------------- |
+| `bash`                             | Run a command and wait for its result                   |
+| `agent_start`                      | Delegate discovery or independent artifact review       |
+| `process_start`                    | Overlap managed execution with independent work         |
+| `read_output`                      | Recover evidence without rerunning execution            |
+| `papercut_record`                  | Recognize qualifying incidental friction and its policy |
+| `lsp_definition`, `lsp_references` | Prefer semantic navigation and impact analysis          |
+| `web_fetch`                        | Retrieve readable public content without a browser      |
+
+All other public Pipkin tools are deferred: native `tool_search` can discover and activate them for direct calls, and native `codemode` can call them without activation. Tools activated by `tool_search` remain declared on that conversation branch. User-enabled native tools such as `read`, `edit`, and `write` remain intact. Authorized workers additionally receive directly declared private `explore`; managed completion remains directly declared but model-only. [Agents](features/agents.md#worker-capabilities-and-restrictions) owns worker eligibility and callable restrictions. Exposure changes do not grant permission or bypass allowlists.
 
 At least one discovery path must be active. Pipkin currently checks once at the first turn, after the initial native startup wait; a slow MCP connection can outlast that wait, so the check can warn prematurely. This remains unresolved: Pi 0.99.1 exposes neither native connection state nor a startup-settlement notification to extensions, so turn timing cannot establish actual settlement. Setup warnings use UI notifications when available and stderr in print/JSON sessions, leaving protocol stdout untouched. Pipkin does not rewrite settings, crash, or enable every tool as a fallback. SDK hosts must supply the supported native factories and complete `bindExtensions()`; the CLI supplies them normally.
 

@@ -1025,7 +1025,7 @@ export class SubagentRuntime {
   createExploreTool(parent: RuntimeSnapshot): ToolDefinition {
     return {
       name: "explore",
-      exposure: "deferred",
+      exposure: "direct",
       namespace: {
         name: "agents",
         description:
@@ -1047,7 +1047,7 @@ export class SubagentRuntime {
           breadth: Type.Optional(
             StringEnum(["quick", "medium", "very thorough"] as const, {
               description:
-                "Requested exploration depth; use quick for a narrow trace and very thorough for broad multi-step mapping.",
+                "Requested exploration depth; defaults to medium. Use quick for a narrow trace and very thorough for broad multi-step mapping.",
             }),
           ),
         },
@@ -1857,7 +1857,7 @@ export class SubagentRuntime {
     return {
       name: MANAGED_COMPLETION_TOOL_NAME,
       label: completion.definition.label ?? "Complete managed task",
-      description: completion.definition.description,
+      description: `${completion.definition.description} Final-action submission: acceptance terminates this worker; no further work can follow.`,
       parameters: completion.definition.schema,
       executionMode: "sequential",
       exposure: "model-only",

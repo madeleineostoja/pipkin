@@ -35,6 +35,8 @@ This composition does not authorize replay after an uncertain action. Inspecting
 | `name`  | Optional accessible name for `role` only, at most 500 characters.                         |
 | `exact` | Optional for `role`, `text`, `label`, `placeholder` only; default false.                  |
 
+Targets are a nested union selected by `kind`; the public schema rejects fields belonging to another kind. For `{kind:"role",value:"button",name:"Save"}`, `value` is the accessible role and `name` is the accessible label.
+
 Snapshot refs are opaque, bound to their current snapshot/document and live owner generation. Browser resolves them only through Playwright's `aria-ref` selector. Semantic targets use corresponding `getBy…` locators; CSS is an explicit choice, never an automatic fallback. Resolution must match exactly one element. Stale refs and ambiguous targets fail explicitly. A semantic target wait may start before the element exists, but ambiguity is still rejected; refs must already resolve.
 
 ## Observation operations
@@ -70,6 +72,8 @@ Listeners retain the newest 100 normalized console warnings/errors, uncaught pag
 | `browser_viewport`                        | Required integer `width`/`height` within viewport bounds.                               |
 | `browser_open_tab`                        | Optional validated HTTP(S) `url`; creates/activates a tab, returns its `tabId`.         |
 | `browser_switch_tab`, `browser_close_tab` | Required existing opaque `tabId`. Return active page identity.                          |
+
+`browser_fill` replaces existing field contents; `browser_type` types sequentially without clearing first, for interactions that need individual key events.
 
 Wait conditions are `{kind:"url",value,match?:"contains"|"exact"}` (contains default), `{kind:"text",value,exact?}`, `{kind:"target",target,state:"attached"|"visible"|"hidden"|"detached"}`, or `{kind:"load_state",state:"domcontentloaded"|"load"}`. Timeout defaults to 10,000 ms, range 100–120,000. No regex/glob language, `networkidle`, or fixed sleep.
 

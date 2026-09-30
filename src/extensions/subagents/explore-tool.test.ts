@@ -234,7 +234,7 @@ describe("runtime-injected explore tool", () => {
     expect(reviewerOptions.customTools).toEqual([
       expect.objectContaining({
         name: "explore",
-        exposure: "deferred",
+        exposure: "direct",
         namespace: { name: "agents", description: expect.any(String) },
       }),
     ]);

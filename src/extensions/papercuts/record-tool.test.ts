@@ -101,7 +101,7 @@ describe("papercut_record", () => {
       createPapercutStatusController(),
     );
     expect(tool.name).toBe("papercut_record");
-    expect(tool.exposure).toBe("deferred");
+    expect(tool.exposure).toBe("direct");
     expect(tool.namespace.name).toBe("papercuts");
     expect(
       JSON.parse(JSON.stringify(PapercutObservationSchema))

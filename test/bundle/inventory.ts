@@ -65,6 +65,16 @@ export const expectedTools = {
   papercut_get: "papercuts",
   papercut_record: "papercuts",
 };
+export const expectedDirectTools = [
+  "bash",
+  "agent_start",
+  "process_start",
+  "read_output",
+  "papercut_record",
+  "lsp_definition",
+  "lsp_references",
+  "web_fetch",
+];
 export const expectedCommands = {
   sandbox: "sandbox",
   readonly: "readonly",
@@ -75,6 +85,6 @@ export const expectedCommands = {
   btw: "btw",
 };
 export const privateExposures = {
-  explore: "deferred",
+  explore: "direct",
   pi_managed_complete: "model-only",
 } as const;

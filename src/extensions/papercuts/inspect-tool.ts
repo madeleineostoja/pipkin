@@ -84,7 +84,7 @@ export function registerInspectTools(pi: ExtensionAPI): void {
     namespace,
     annotations: { readOnlyHint: true, openWorldHint: false },
     label: "papercut_list",
-    description: `List bounded compact summaries, newest first with a stable key tie-breaker. ${INSPECT_DESCRIPTION}`,
+    description: `Check recorded findings for duplicate incidental friction or answer a user-requested inspection; never use this as a work queue. Returns bounded compact summaries, newest first with a stable key tie-breaker. ${INSPECT_DESCRIPTION}`,
     parameters: PapercutListSchema,
     outputSchema: PapercutListResultSchema,
     renderCall: toolCallRenderer({

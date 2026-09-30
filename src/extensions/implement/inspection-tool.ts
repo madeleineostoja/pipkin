@@ -124,7 +124,7 @@ export function registerImplementInspectionTool(pi: ExtensionAPI): void {
     namespace,
     annotations,
     description:
-      "List authorized retained Implement runs in the current checkout, newest first. Enumeration is bounded to 1000 owner entries; truncated discloses an incomplete enumeration.",
+      "Discover retained Implement runs owned by the current checkout for read-only inspection, newest first; this does not start, resume, or publish a run. Enumeration is bounded to 1000 owner entries; truncated discloses an incomplete enumeration.",
     parameters: ListRunsParams,
     outputSchema: ListRunsResultSchema,
     async execute(_id, input, _signal, _update, ctx) {

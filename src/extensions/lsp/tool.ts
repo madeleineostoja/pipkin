@@ -83,16 +83,22 @@ type Route = {
 };
 
 const descriptions: Record<Action, string> = {
-  definition: "Find a symbol's definitions.",
-  type_definition: "Find a symbol's type definitions.",
-  implementation: "Find implementations of a symbol or contract.",
-  references: "Find references to a symbol, including its declaration.",
+  definition:
+    "Resolve a symbol use to its definitions using language semantics, not textual matching.",
+  type_definition:
+    "Find definitions of a symbol's type, rather than the symbol itself.",
+  implementation:
+    "Find concrete implementations of a symbol or contract, rather than its declaration or type definition.",
+  references:
+    "Find semantic usages of a symbol for impact analysis, including its declaration. Bounded results may not be exhaustive.",
   hover:
     "Read type and documentation text at a source position; empty text is valid.",
-  document_symbols: "Read named symbols in a source file.",
-  workspace_symbols: "Search named symbols in the selected workspace.",
+  document_symbols:
+    "Read a source file's named-symbol outline for structural orientation.",
+  workspace_symbols:
+    "Search symbol names through one selected workspace language server, not full-text content or every language at once.",
   diagnostics:
-    "Request file diagnostics on demand, with explicit freshness and timeout evidence. Cached results are not authoritative validation.",
+    "Request advisory file diagnostics on demand, with explicit freshness and timeout evidence. Neither current nor cached results replace project tests, lint, or typechecking.",
   status:
     "Inspect configured server availability and running state without starting servers.",
 };
@@ -102,7 +108,10 @@ export function registerLsp(pi: ExtensionAPI): void {
     pi.registerTool({
       name,
       label: name,
-      exposure: "deferred",
+      exposure:
+        action === "definition" || action === "references"
+          ? "direct"
+          : "deferred",
       namespace: {
         name: "lsp",
         description:

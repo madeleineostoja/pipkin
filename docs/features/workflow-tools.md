@@ -4,7 +4,7 @@ Pipkin includes several focused utilities for semantic navigation, overlapping c
 
 ## LSP
 
-Nine read-only tools in the deferred `lsp` namespace complement text search with language-server relationships and type information. There is no `lsp` dispatcher alias.
+Nine read-only tools in the `lsp` namespace complement text search with language-server relationships and type information. There is no `lsp` dispatcher alias. [Native discovery](../configuration.md#native-discovery) owns direct/deferred exposure and setup.
 
 | Tool                    | Successful data                          |
 | ----------------------- | ---------------------------------------- |
@@ -18,7 +18,7 @@ Nine read-only tools in the deferred `lsp` namespace complement text search with
 | `lsp_diagnostics`       | `diagnostics` and freshness evidence     |
 | `lsp_status`            | Configured and live `servers`            |
 
-Position tools take `{file, position, timeout?}`. `position` is either `{line,column}` or `{line,symbol,occurrence?}`; all numeric selectors are positive integers. Symbol selection finds literal text on that line, with occurrence defaulting to the first match. Columns count UTF-16 code units; coordinates are 1-based, and range ends are exclusive. A column may be one past the line end, not beyond it. File tools take `{file,timeout?}`; workspace symbols takes `{query,file?,timeout?}` with a file routing hint; status takes `{}`. Files must be inside the caller's workspace, including after symlink resolution.
+Position tools take `{file, position, timeout?}`. `position` is either `{line,column}` or `{line,symbol,occurrence?}`; all numeric selectors are positive integers. Symbol selection finds literal text on that line, with occurrence defaulting to the first match. Columns count UTF-16 code units; coordinates are 1-based, and range ends are exclusive. A column may be one past the line end, not beyond it. File tools take `{file,timeout?}`; workspace symbols takes `{query,file?,timeout?}` to search symbol names through one selected language server, with `file` routing to a language/workspace rather than restricting matches to that file; status takes `{}`. Files must be inside the caller's workspace, including after symlink resolution.
 
 Use LSP for focused semantic relationships, text search for literal discovery, and Explore for multi-step mapping. Diagnostics are advisory; project lint, typecheck, tests, and builds remain authoritative.
 
@@ -40,7 +40,7 @@ Failures have `ok:false`, `error:{code,message}` and native `isError:true`; code
 
 ## Managed processes
 
-Use foreground Bash when completion is immediately required. Use managed processes only when useful independent work can continue.
+Use foreground Bash when completion is immediately required. Use managed processes only when useful independent work can continue: `process_start` returns an ID immediately while the command runs in the foreground under the manager, not backgrounded or daemonized.
 
 | Tool              | Purpose                                                                                                            |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------ |
@@ -79,7 +79,7 @@ Do not record the task or review subject itself, unmet criteria, unresolved corr
 
 Before recording, use `papercut_list` and, as needed, `papercut_get` to check open **and closed** findings. Skip an incident already recorded; reuse the existing key when equivalent friction recurs during a separate task; make a new key only for materially different friction. Records merge by stable key and retain occurrence count, replacing the latest observation while preserving the original title and first-seen time. A collapsed confirmation names the recorded key and outcome; expanding it preserves the complete model-facing confirmation.
 
-The three tools are deferred in the `papercuts` namespace and callable through native codemode. Discovery and codemode grant no additional authority: agents may inspect at the user's request or to deduplicate a qualifying new observation, but must not proactively inspect findings for work. A deduplication check does not authorize discussing or addressing an existing finding, and arbitrary failures must not be automatically recorded.
+The three tools use the `papercuts` namespace and are callable through native codemode; [Native discovery](../configuration.md#native-discovery) owns their exposure. Discovery and codemode grant no additional authority: agents may inspect at the user's request or to deduplicate a qualifying new observation, but must not proactively inspect findings for work. A deduplication check does not authorize discussing or addressing an existing finding, and arbitrary failures must not be automatically recorded.
 
 | Tool              | Input                                                                                                                               | Successful result                                                                                              |
 | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |

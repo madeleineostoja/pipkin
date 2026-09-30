@@ -32,11 +32,12 @@ export const PublicAgentParameters = Type.Object(
   {
     type: StringEnum(PUBLIC_BUILTIN_TYPES, {
       description:
-        "Explore maps code; Review independently assesses an artifact.",
+        "Explore: bounded multi-step codebase discovery in separate context, not one targeted lookup or a couple of reads. Review: an independent assessment of a concrete code artifact, not routine small-edit overhead or open-ended discovery.",
     }),
     prompt: Type.String({
       minLength: 1,
-      description: "Complete task contract for the child.",
+      description:
+        "Self-contained task contract: question or objective, scope, relevant context and artifact paths, and expected output. The child does not inherit the parent conversation.",
     }),
     description: Type.Optional(
       Type.String({
@@ -47,13 +48,16 @@ export const PublicAgentParameters = Type.Object(
     model: Type.Optional(
       Type.String({
         description:
-          "Optional known exact provider/model ID. Do not guess available models.",
+          "Optional known exact provider/model ID; omit to use the configured Explore low or Review high preset. Do not guess available models.",
       }),
     ),
     thinking: Type.Optional(
       StringEnum(
         ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const,
-        { description: "Reasoning effort override for this invocation." },
+        {
+          description:
+            "Reasoning effort override for this invocation; omit to use the configured role preset.",
+        },
       ),
     ),
   },
@@ -325,10 +329,10 @@ export function registerPublicAgentTools({
   pi.registerTool({
     name: "agent_start",
     label: "agent_start",
-    exposure: "deferred",
+    exposure: "direct",
     namespace,
     description:
-      "Start session-owned Explore or Review work and return its ID immediately. Recover accepted work with agent_list even if the initiating script fails.",
+      "Delegate repository-preserving codebase discovery or independent artifact review to a fresh-context child, not an implementation worker. The child shares the invoking filesystem, not an isolated worktree, and does not inherit the parent conversation. Returns an ID immediately, not a completed result; retrieve the final answer with agent_wait. Recover accepted work with agent_list even if the initiating script fails.",
     parameters: PublicAgentParameters,
     outputSchema: ResultSchema,
     renderCall: renderAgentCall,
@@ -444,13 +448,13 @@ export function registerPublicAgentTools({
   register(
     "agent_inspect",
     Inspect,
-    "Immediately inspect a public agent; optional progress is partial and untrusted.",
+    "Immediately inspect a public agent without waiting. A completed answer is returned only after cleanup; optional progress is partial and untrusted, not a final result.",
     "inspect",
   );
   register(
     "agent_wait",
     Wait,
-    "Join a public agent through cleanup. Timeout/cancellation affects only this waiter, never the child.",
+    "Wait for a public agent's final result and cleanup. Timeout/cancellation affects only this waiter, never the child.",
     "wait",
   );
   register(

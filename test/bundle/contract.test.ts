@@ -56,6 +56,7 @@ import {
   expectedCommands,
   expectedExtensions,
   expectedTools,
+  expectedDirectTools,
   privateExposures,
 } from "./inventory.ts";
 
@@ -583,10 +584,9 @@ describe("Pipkin bundle", () => {
       if (definition.name.startsWith("lsp_")) {
         expect(definition.outputSchema, definition.name).toBeDefined();
       }
-      if (definition.name === "bash") {
-        continue;
-      }
-      expect(definition.exposure).toBe("deferred");
+      expect(definition.exposure).toBe(
+        expectedDirectTools.includes(definition.name) ? "direct" : "deferred",
+      );
       expect(definition.renderCall).toBeTypeOf("function");
       expect(definition.renderResult).toBeTypeOf("function");
       expect(definition.description.trim()).toBeTruthy();
@@ -654,7 +654,14 @@ describe("Pipkin bundle", () => {
           "tool_search",
         ]),
       );
-      expect(host.session.getActiveToolNames()).not.toContain("lsp_status");
+      expect(
+        host.session
+          .getActiveToolNames()
+          .filter(
+            (name) => name === "bash" || Object.hasOwn(expectedTools, name),
+          )
+          .sort(),
+      ).toEqual([...expectedDirectTools].sort());
       const commands = host.session.extensionRunner
         .getRegisteredCommands()
         .filter((command) => command.name === "mcp");

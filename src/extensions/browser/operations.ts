@@ -51,14 +51,14 @@ const actionDescriptions: Record<Action, string> = {
     "Hover one strict snapshot ref or semantic target, without force or replay.",
   set_checked:
     "Set one strict target's checked state using Playwright actionability, without force or replay.",
-  fill: "Fill one strict target with bounded text; supplied text is never echoed in Browser results.",
-  type: "Type bounded text sequentially into one strict target; supplied text is never echoed in Browser results.",
+  fill: "Replace one strict target's field contents with bounded text; supplied text is never echoed in Browser results.",
+  type: "Type bounded text sequentially into one strict target without clearing first, for interactions that need individual key events; supplied text is never echoed in Browser results.",
   press: "Press a bounded key on the active page or one strict target.",
   select:
     "Select existing options on one strict target; values are not echoed in the result.",
   scroll:
     "Scroll the viewport or one strict target by bounded non-zero CSS-pixel deltas.",
-  wait: "Wait for a closed structured rendered-state condition; timeout is an error, not a fixed sleep or action retry.",
+  wait: "Wait for a structured rendered-state condition, not a fixed sleep or action retry. Semantic targets may wait for elements to appear; snapshot refs must already be valid. Timeout is an error.",
   viewport:
     "Apply bounded viewport dimensions and return applied size and compact page identity.",
   open_tab:

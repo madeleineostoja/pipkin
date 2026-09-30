@@ -46,7 +46,7 @@ export function createRetainedBashDefinition(
         "Run commands, manage session processes, and retrieve immutable authorized output.",
     },
     description:
-      "Execute a shell command with an optional seconds timeout. Output is returned by default; status suppresses only successful logs. Bounded immutable output is retained independently of enclosing scripts; output_list/read_output recover it without rerunning commands.",
+      "Execute a shell command and wait for its result, with an optional timeout in seconds. Use process_start for managed execution that returns immediately. Output is returned by default; status suppresses only successful logs. Bounded immutable output is retained independently of enclosing scripts; output_list/read_output recover it without rerunning commands.",
     parameters: Type.Object(
       {
         command: Type.String({

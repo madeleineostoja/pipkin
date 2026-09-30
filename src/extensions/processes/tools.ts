@@ -27,7 +27,8 @@ const namespace = {
 const StartParams = Type.Object(
   {
     command: Type.String({
-      description: "Foreground non-interactive shell command to manage.",
+      description:
+        "Non-interactive shell command to run in the foreground under managed execution; do not background or daemonize it.",
     }),
     description: Type.String({
       description:
@@ -249,10 +250,10 @@ export function registerProcessTools(
   pi.registerTool({
     name: "process_start",
     label: "process_start",
-    exposure: "deferred",
+    exposure: "direct",
     namespace,
     description:
-      "Accept a session-owned foreground non-interactive command. Acceptance is not completion; recover lost handles with process_list. Terminal evidence is captured even without waiting.",
+      "Start a session-owned command asynchronously while independent work continues; use bash when its result is immediately required. Run the command in the foreground, not backgrounded or daemonized. Returns an ID, not completion; recover lost handles with process_list. Terminal evidence is captured even without waiting.",
     parameters: StartParams,
     outputSchema: ResultSchema,
     renderCall: toolCallRenderer({
@@ -358,9 +359,9 @@ export function registerProcessTools(
       namespace,
       description:
         operation === "inspect"
-          ? "Immediately snapshot process state and bounded output; read_output reads the immutable full retained tail."
+          ? "Immediately snapshot process state and bounded output without waiting; use read_output to select from the immutable retained tail."
           : operation === "wait"
-            ? "Wait for terminal settlement, a deadline, or caller cancellation. Timeout/cancellation does not kill the process."
+            ? "Wait for finite work to reach terminal settlement, a deadline, or caller cancellation. Inspect long-lived servers/watchers with process_inspect instead. Timeout/cancellation does not kill the process."
             : "Stop using graceful escalation and report terminal cleanup only once achieved. Intentional stop is not successful verification.",
       parameters: operation === "wait" ? WaitParams : InspectParams,
       outputSchema: ResultSchema,
