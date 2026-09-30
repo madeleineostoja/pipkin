@@ -60,7 +60,7 @@ export function resolveChildToolNames(
     excluded.add("explore");
   }
   if (!input.allowPapercut) {
-    excluded.add("record_papercut");
+    excluded.add("papercut_record");
   }
   if (input.completion) {
     excluded.delete("pi_managed_complete");

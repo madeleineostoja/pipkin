@@ -4,176 +4,213 @@ import {
   toolResultRenderer,
 } from "#lib/ui/tool-result-renderer";
 import { Type, type Static } from "typebox";
-import {
-  findPapercut,
-  formatPapercutDetail,
-  sortedPapercuts,
-} from "./inspection.js";
+import { Check } from "typebox/value";
+import { findPapercut } from "./inspection.js";
 import { createPapercutStoreForCwd } from "./store.js";
+import {
+  PapercutKeySchema,
+  PapercutListResultSchema,
+  PapercutGetResultSchema,
+  papercutError,
+  papercutToolResult,
+  publicFinding,
+  type PapercutListResult,
+  type PapercutGetResult,
+} from "./tool-contract.js";
 
-const requestSchema = Type.Union(
-  [
-    Type.Object(
-      {
-        action: Type.Literal("list", {
-          description:
-            "List compact finding summaries for deduplication or at the user's request.",
-        }),
-        status: Type.Optional(
-          Type.Union(
-            [Type.Literal("open"), Type.Literal("closed"), Type.Literal("all")],
-            {
-              description:
-                "Filter by finding status; omitted means all, including closed findings.",
-            },
-          ),
-        ),
-        offset: Type.Optional(
-          Type.Integer({
-            minimum: 0,
-            maximum: 255,
-            description:
-              "Zero-based offset into the filtered, sorted findings; defaults to 0.",
-          }),
-        ),
-        limit: Type.Optional(
-          Type.Integer({
-            minimum: 1,
-            maximum: 25,
-            description:
-              "Maximum findings to return, from 1 to 25; defaults to 25.",
-          }),
-        ),
-      },
-      { additionalProperties: false },
-    ),
-    Type.Object(
-      {
-        action: Type.Literal("get", {
-          description: "Retrieve all recorded details for one finding.",
-        }),
-        key: Type.String({
-          minLength: 1,
-          maxLength: 64,
-          pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
-          description: "Exact stable lowercase key of the finding to inspect.",
-        }),
-      },
-      { additionalProperties: false },
-    ),
-  ],
+export const PapercutListSchema = Type.Object(
   {
-    description:
-      "Select one read-only operation: list findings or get one finding by key.",
+    status: Type.Optional(
+      Type.Union(
+        [Type.Literal("open"), Type.Literal("closed"), Type.Literal("all")],
+        {
+          description:
+            "Filter by finding status; omitted means all, including closed findings for deduplication.",
+        },
+      ),
+    ),
+    offset: Type.Optional(
+      Type.Integer({
+        minimum: 0,
+        maximum: 255,
+        description:
+          "Zero-based offset into newest-first findings; defaults to 0.",
+      }),
+    ),
+    limit: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        maximum: 25,
+        description:
+          "Maximum findings to return, from 1 to 25; defaults to 25.",
+      }),
+    ),
   },
+  { additionalProperties: false },
+);
+export const PapercutGetSchema = Type.Object(
+  { key: PapercutKeySchema },
+  { additionalProperties: false },
 );
 
-export const InspectPapercutsSchema = Type.Object({
-  request: requestSchema,
+const INSPECT_DESCRIPTION =
+  "Read recorded Papercut findings in the current repository. Inspect only when the user asks about a finding, or to check for an equivalent existing finding before recording newly encountered qualifying friction. Include closed findings when checking for duplicates. Do not proactively inspect to find work, and do not discuss or address existing findings merely because a deduplication check found them. Inspection does not authorize implementation or closing a finding. Discovery and codemode confer no additional authority.";
+
+const renderer = toolResultRenderer({
+  summary(result) {
+    return (
+      (result.details as { summary?: string } | undefined)?.summary ??
+      "Papercut inspection unavailable"
+    );
+  },
+  partial: () => "Inspecting papercuts…",
+  error(result) {
+    return (
+      (result.details as { summary?: string } | undefined)?.summary ??
+      "Papercut inspection failed."
+    );
+  },
 });
+const namespace = {
+  name: "papercuts",
+  description:
+    "Read or record incidental friction under the personal registry policy, never a proactive work queue.",
+};
 
-type InspectRequest = Static<typeof InspectPapercutsSchema>;
-
-export function registerInspectTool(pi: ExtensionAPI): void {
+export function registerInspectTools(pi: ExtensionAPI): void {
   pi.registerTool({
-    name: "inspect_papercuts",
+    name: "papercut_list",
     exposure: "deferred",
-    namespace: {
-      name: "papercuts",
-      description:
-        "Read or record incidental friction under the personal registry policy.",
-    },
+    namespace,
     annotations: { readOnlyHint: true, openWorldHint: false },
-    label: "inspect_papercuts",
-    description:
-      "Read recorded Papercut findings in the current repository. Inspect only when the user asks about a finding, or to check for an equivalent existing finding before recording newly encountered qualifying friction. Include closed findings when checking for duplicates. Do not proactively inspect to find work, and do not discuss or address existing findings merely because a deduplication check found them. Inspection does not authorize implementation or closing a finding.",
-    parameters: InspectPapercutsSchema,
+    label: "papercut_list",
+    description: `List bounded compact summaries, newest first with a stable key tie-breaker. ${INSPECT_DESCRIPTION}`,
+    parameters: PapercutListSchema,
+    outputSchema: PapercutListResultSchema,
     renderCall: toolCallRenderer({
-      name: "inspect_papercuts",
-      detail: (args: InspectRequest) =>
-        args.request.action === "get" ? args.request.key : "list",
-      pending: "Inspecting papercuts…",
+      name: "papercut_list",
+      pending: "Listing papercuts…",
     }),
-    renderResult: toolResultRenderer({
-      summary(result) {
-        const details = result.details as { summary?: string } | undefined;
-        return details?.summary ?? "Papercut inspection unavailable";
-      },
-      partial() {
-        return "Inspecting papercuts…";
-      },
-      error(result) {
-        const content = result.content;
-        if (Array.isArray(content)) {
-          const text = content.find(
-            (block): block is { type: "text"; text: string } =>
-              typeof block === "object" &&
-              block !== null &&
-              block.type === "text" &&
-              typeof block.text === "string",
-          )?.text;
-          if (text) {
-            return text.split("\n", 1)[0];
-          }
-        }
-        return "Papercut inspection failed.";
-      },
-    }),
-    async execute(_id, params: InspectRequest, _signal, _update, ctx) {
+    renderResult: renderer,
+    async execute(
+      _id,
+      params: Static<typeof PapercutListSchema>,
+      _signal,
+      _update,
+      ctx,
+    ) {
+      if (!Check(PapercutListSchema, params)) {
+        return papercutToolResult(
+          papercutError(
+            "invalid_arguments",
+            "Expected status open|closed|all, offset 0..255 and limit 1..25; no extra fields.",
+          ),
+          "Invalid papercut list arguments",
+        );
+      }
       try {
         const file = await (await createPapercutStoreForCwd(ctx.cwd)).load();
-        const request = params.request;
-        if (request.action === "get") {
-          const record = findPapercut(file, request.key);
-          if (!record) {
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: `Papercut not found: ${request.key}`,
-                },
-              ],
-              details: { summary: "Papercut not found" },
-            };
-          }
-          return {
-            content: [
-              { type: "text" as const, text: formatPapercutDetail(record) },
-            ],
-            details: { summary: `Papercut · ${record.key} · ${record.status}` },
-          };
-        }
-        const status = request.status === "all" ? undefined : request.status;
-        const records = sortedPapercuts(file, status);
-        const offset = request.offset ?? 0;
-        const page = records.slice(offset, offset + (request.limit ?? 25));
-        const lines = [
-          `Papercuts: ${records.length} ${request.status ?? "all"} finding${records.length === 1 ? "" : "s"}; showing ${page.length} from offset ${offset}.`,
-          ...page.map(
+        const records = file.records
+          .filter(
             (record) =>
-              `${record.key} · ${record.title} · ${record.status} · ${record.occurrences} occurrence${record.occurrences === 1 ? "" : "s"} · last seen ${record.lastSeenAt}`,
-          ),
-        ];
-        return {
-          content: [{ type: "text" as const, text: lines.join("\n") }],
-          details: {
-            summary: `Papercuts · ${page.length} of ${records.length} (${request.status ?? "all"})`,
-          },
+              !params.status ||
+              params.status === "all" ||
+              record.status === params.status,
+          )
+          .sort(
+            (a, b) =>
+              b.lastSeenAt.localeCompare(a.lastSeenAt) ||
+              a.key.localeCompare(b.key),
+          );
+        const offset = params.offset ?? 0;
+        const page = records.slice(offset, offset + (params.limit ?? 25));
+        const nextOffset = offset + page.length;
+        const result: PapercutListResult = {
+          ok: true,
+          findings: page.map((record) => {
+            const { key, title, status, occurrences, lastSeenAt } =
+              publicFinding(record);
+            return { key, title, status, occurrences, lastSeenAt };
+          }),
+          offset,
+          ...(nextOffset < records.length ? { nextOffset } : {}),
+          truncated: false,
         };
+        return papercutToolResult(
+          result,
+          `Papercuts · ${page.length} findings (${params.status ?? "all"})`,
+        );
       } catch (error) {
-        const message =
-          error instanceof Error
-            ? error.message
-            : "Papercut inspection failed.";
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Papercut inspection failed: ${message}`,
-            },
-          ],
-          details: { summary: "Papercut inspection failed" },
+        return papercutToolResult(
+          papercutError(
+            "unavailable",
+            error instanceof Error
+              ? error.message
+              : "Papercut inspection failed.",
+          ),
+          "Papercut inspection unavailable",
+        );
+      }
+    },
+  });
+  pi.registerTool({
+    name: "papercut_get",
+    exposure: "deferred",
+    namespace,
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    label: "papercut_get",
+    description: `Retrieve all recorded details by exact key. ${INSPECT_DESCRIPTION}`,
+    parameters: PapercutGetSchema,
+    outputSchema: PapercutGetResultSchema,
+    renderCall: toolCallRenderer({
+      name: "papercut_get",
+      detail: (args: Static<typeof PapercutGetSchema>) => args.key,
+      pending: "Inspecting papercut…",
+    }),
+    renderResult: renderer,
+    async execute(
+      _id,
+      params: Static<typeof PapercutGetSchema>,
+      _signal,
+      _update,
+      ctx,
+    ) {
+      if (!Check(PapercutGetSchema, params)) {
+        return papercutToolResult(
+          papercutError(
+            "invalid_arguments",
+            "Expected an exact lowercase finding key of 1..64 characters; no extra fields.",
+          ),
+          "Invalid papercut get arguments",
+        );
+      }
+      try {
+        const file = await (await createPapercutStoreForCwd(ctx.cwd)).load();
+        const record = findPapercut(file, params.key);
+        if (!record) {
+          return papercutToolResult(
+            papercutError("not_found", `Papercut not found: ${params.key}`),
+            "Papercut not found",
+          );
+        }
+        const result: PapercutGetResult = {
+          ok: true,
+          finding: publicFinding(record),
         };
+        return papercutToolResult(
+          result,
+          `Papercut · ${record.key} · ${record.status}`,
+        );
+      } catch (error) {
+        return papercutToolResult(
+          papercutError(
+            "unavailable",
+            error instanceof Error
+              ? error.message
+              : "Papercut inspection failed.",
+          ),
+          "Papercut inspection unavailable",
+        );
       }
     },
   });

@@ -1,10 +1,20 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Check } from "typebox/value";
 import { afterEach, describe, expect, it } from "vitest";
-import { InspectPapercutsSchema, registerInspectTool } from "./inspect-tool.js";
+import {
+  PapercutListSchema,
+  PapercutGetSchema,
+  registerInspectTools,
+} from "./inspect-tool.js";
 import { createPapercutStoreForCwd } from "./store.js";
 
 const roots: string[] = [];
@@ -20,14 +30,27 @@ afterEach(() =>
     .forEach((root) => rmSync(root, { recursive: true, force: true })),
 );
 
-function tool() {
-  let definition: any;
-  registerInspectTool({
-    registerTool: (value: unknown) => (definition = value),
+function tools() {
+  const definitions: any[] = [];
+  registerInspectTools({
+    registerTool: (value: unknown) => definitions.push(value),
   } as never);
-  return definition;
+  return definitions;
 }
-
+async function inspect(
+  cwd: string,
+  name: "papercut_list" | "papercut_get",
+  params: unknown,
+) {
+  const definition = tools().find((tool) => tool.name === name);
+  const result = await definition.execute("id", params, undefined, undefined, {
+    cwd,
+  });
+  expect(Check(definition.outputSchema, result.structuredContent)).toBe(true);
+  expect(JSON.parse(result.content[0].text)).toEqual(result.structuredContent);
+  expect(result.isError).toBe(!result.structuredContent.ok);
+  return result;
+}
 const observation = {
   key: "finding",
   title: "An incidental detour",
@@ -40,25 +63,25 @@ const observation = {
   suggestedDestination: "docs" as const,
 };
 
-async function inspect(cwd: string, request: unknown) {
-  return tool().execute("id", { request }, undefined, undefined, { cwd });
-}
-
-describe("inspect_papercuts", () => {
-  it("lists an absent registry without initializing or writing anything", async () => {
+describe("papercut inspection", () => {
+  it("lists an absent registry and reports a missing key without initializing data, a lease or Git exclusion", async () => {
     const root = repo();
     const store = await createPapercutStoreForCwd(root);
-    const result = await inspect(root, { action: "list" });
-    expect(result.content[0].text).toContain(
-      "Papercuts: 0 all findings; showing 0",
-    );
+    const exclude = join(root, ".git", "info", "exclude");
+    const before = readFileSync(exclude, "utf8");
+    expect(
+      (await inspect(root, "papercut_list", {})).structuredContent,
+    ).toEqual({ ok: true, findings: [], offset: 0, truncated: false });
+    expect(
+      (await inspect(root, "papercut_get", { key: "missing" }))
+        .structuredContent,
+    ).toMatchObject({ ok: false, error: { code: "not_found" } });
     expect(existsSync(store.registryPath)).toBe(false);
-    expect(existsSync(join(root, ".pi", "pipkin", "papercuts.lock"))).toBe(
-      false,
-    );
+    expect(existsSync(join(root, ".pi", "pipkin"))).toBe(false);
+    expect(readFileSync(exclude, "utf8")).toBe(before);
   });
 
-  it("lists open and closed findings in bounded pages and retrieves full detail from a linked worktree", async () => {
+  it("paginates newest-first open and closed summaries and retrieves full details from the primary worktree without mutation", async () => {
     const root = repo();
     const store = await createPapercutStoreForCwd(root);
     await store.record(observation);
@@ -68,9 +91,15 @@ describe("inspect_papercuts", () => {
       title: "Another detour",
     });
     await store.close("finding");
-    const worktree = mkdtempSync(join(tmpdir(), "pipkin-inspect-worktree-"));
-    roots.push(worktree);
-    rmSync(worktree, { recursive: true });
+    const file = await store.load();
+    file.records[0].lastSeenAt = "2025-01-01T00:00:00.000Z";
+    file.records[1].lastSeenAt = "2026-01-01T00:00:00.000Z";
+    // Closed records participate in the default deduplication enumeration.
+    file.records.find((record) => record.key === "another")!.status = "closed";
+    file.records.find((record) => record.key === "finding")!.status = "open";
+    writeFileSync(store.registryPath, JSON.stringify(file));
+    const before = readFileSync(store.registryPath, "utf8");
+    const worktree = join(root, "linked");
     execFileSync(
       "git",
       [
@@ -89,106 +118,144 @@ describe("inspect_papercuts", () => {
       cwd: root,
     });
 
-    const page = await inspect(worktree, {
-      action: "list",
-      status: "all",
-      offset: 1,
-      limit: 1,
+    const page = (await inspect(worktree, "papercut_list", { limit: 1 }))
+      .structuredContent;
+    expect(page).toMatchObject({
+      findings: [{ key: "finding", status: "open" }],
+      nextOffset: 1,
+      truncated: false,
     });
-    expect(page.content[0].text).toContain(
-      "2 all findings; showing 1 from offset 1",
+    expect(page.findings[0]).not.toHaveProperty("incident");
+    const next = (
+      await inspect(worktree, "papercut_list", {
+        offset: page.nextOffset,
+        limit: 1,
+      })
+    ).structuredContent;
+    expect(next.findings).toMatchObject([{ key: "another", status: "closed" }]);
+    expect(next).not.toHaveProperty("nextOffset");
+    expect(
+      (await inspect(worktree, "papercut_list", { status: "closed" }))
+        .structuredContent.findings,
+    ).toMatchObject([{ key: "another" }]);
+    expect(
+      (await inspect(worktree, "papercut_list", { status: "open" }))
+        .structuredContent.findings,
+    ).toMatchObject([{ key: "finding" }]);
+    const detail = await inspect(worktree, "papercut_get", { key: "finding" });
+    expect(detail.structuredContent.finding).toEqual(
+      file.records.find((record) => record.key === "finding"),
     );
-    expect(page.content[0].text).toContain(
-      "finding · An incidental detour · closed · 1 occurrence · last seen",
-    );
-    expect(page.content[0].text).not.toContain("another ·");
-    const closed = await inspect(worktree, {
-      action: "list",
-      status: "closed",
-    });
-    expect(closed.content[0].text).toContain("finding ·");
-    expect(closed.content[0].text).not.toContain("another ·");
-    const detail = await inspect(worktree, { action: "get", key: "finding" });
-    for (const text of [
-      "Status: closed",
-      "Assigned task: An unrelated task",
-      "Incident: A detour was necessary",
-      "Evidence: Observed failing output",
-      "1. Inspected local scripts",
-      "Task outcome: Continued safely",
-      "Guardrail candidate: Document the command",
-      "Suggested destination: docs",
-      "Occurrences: 1",
-      "First seen:",
-      "Last seen:",
-    ]) {
-      expect(detail.content[0].text).toContain(text);
-    }
-    expect(detail.details.summary).toBe("Papercut · finding · closed");
+    expect(detail.details.summary).toBe("Papercut · finding · open");
+    expect(readFileSync(store.registryPath, "utf8")).toBe(before);
+    expect(existsSync(join(worktree, ".pi", "pipkin"))).toBe(false);
+    expect(
+      (await inspect(worktree, "papercut_list", { offset: 255, limit: 25 }))
+        .structuredContent.findings,
+    ).toEqual([]);
   });
 
-  it("reports unknown keys and invalid registry content instead of hiding errors", async () => {
+  it("returns meaningful structured errors for malformed arguments and corrupt data", async () => {
     const root = repo();
+    for (const params of [
+      { limit: 26 },
+      { offset: -1 },
+      { offset: 256 },
+      { status: "pending" },
+      { key: "finding" },
+      { request: { action: "list" } },
+    ]) {
+      expect(Check(PapercutListSchema, params)).toBe(false);
+      expect(
+        (await inspect(root, "papercut_list", params)).structuredContent.error
+          .code,
+      ).toBe("invalid_arguments");
+    }
+    expect(
+      Check(PapercutListSchema, { status: "all", offset: 255, limit: 25 }),
+    ).toBe(true);
+    for (const params of [{ key: "Upper" }, { key: "finding", limit: 1 }, {}]) {
+      expect(Check(PapercutGetSchema, params)).toBe(false);
+      expect(
+        (await inspect(root, "papercut_get", params)).structuredContent.error
+          .code,
+      ).toBe("invalid_arguments");
+    }
     const store = await createPapercutStoreForCwd(root);
-    const missing = await inspect(root, { action: "get", key: "missing" });
-    expect(missing.content[0].text).toBe("Papercut not found: missing");
     await store.initialize();
     writeFileSync(store.registryPath, "not json");
-    const invalid = await inspect(root, { action: "list" });
-    expect(invalid.content[0].text).toContain(
-      "Papercut registry contains invalid JSON.",
-    );
+    for (const name of ["papercut_list", "papercut_get"] as const) {
+      expect(
+        (
+          await inspect(
+            root,
+            name,
+            name === "papercut_list" ? {} : { key: "finding" },
+          )
+        ).structuredContent,
+      ).toMatchObject({
+        ok: false,
+        error: {
+          code: "unavailable",
+          message: "Papercut registry contains invalid JSON.",
+        },
+      });
+    }
   });
 
-  it("bounds the request schema and renders a short summary with expanded content", async () => {
+  it("preserves tied-key ordering, control-safe projections and concise renderers", async () => {
+    const root = repo();
+    const store = await createPapercutStoreForCwd(root);
+    await store.record(observation);
+    await store.record({
+      ...observation,
+      key: "another",
+      title: "first\u001b[31m second\u0000",
+    });
+    const file = await store.load();
+    file.records.forEach((record) => {
+      record.lastSeenAt = "2026-01-01T00:00:00.000Z";
+    });
+    writeFileSync(store.registryPath, JSON.stringify(file));
+    const result = await inspect(root, "papercut_list", {});
     expect(
-      Check(InspectPapercutsSchema, {
-        request: { action: "list", status: "all", offset: 255, limit: 25 },
-      }),
-    ).toBe(true);
-    expect(
-      Check(InspectPapercutsSchema, { request: { action: "list", limit: 26 } }),
-    ).toBe(false);
-    expect(
-      Check(InspectPapercutsSchema, {
-        request: { action: "list", key: "finding" },
-      }),
-    ).toBe(false);
-    expect(
-      Check(InspectPapercutsSchema, {
-        request: { action: "get", key: "finding" },
-      }),
-    ).toBe(true);
-    expect(
-      Check(InspectPapercutsSchema, {
-        request: { action: "get", key: "Upper" },
-      }),
-    ).toBe(false);
-    const definition = tool();
-    const result = await definition.execute(
-      "id",
-      { request: { action: "list" } },
-      undefined,
-      undefined,
-      { cwd: repo() },
-    );
+      result.structuredContent.findings.map((record: any) => record.key),
+    ).toEqual(["another", "finding"]);
+    expect(result.content[0].text).not.toContain("\\u001b");
+    const definition = tools()[0];
     const theme = {
       fg: (_color: string, text: string) => text,
       bold: (text: string) => text,
     };
     const collapsed = definition
-      .renderResult(result, { expanded: false, isPartial: false }, theme, {
-        isError: false,
-      })
+      .renderResult(result, { expanded: false, isPartial: false }, theme)
       .render(100)
       .join("\n");
     const expanded = definition
-      .renderResult(result, { expanded: true, isPartial: false }, theme, {
-        isError: false,
-      })
+      .renderResult(result, { expanded: true, isPartial: false }, theme)
       .render(100)
       .join("\n");
-    expect(collapsed).toContain("Papercuts · 0 of 0 (all)");
-    expect(expanded).toContain("Papercuts: 0 all findings");
+    expect(collapsed).toContain("Papercuts · 2 findings (all)");
+    expect(collapsed).not.toContain("lastSeenAt");
+    expect(expanded).toContain("lastSeenAt");
+    expect(
+      definition
+        .renderResult(
+          {
+            content: [{ type: "text", text: "Host validation failed" }],
+            details: undefined,
+            isError: true,
+          },
+          { expanded: false, isPartial: false },
+          theme,
+        )
+        .render(100)
+        .join("\n"),
+    ).toContain("Papercut inspection failed.");
+    for (const tool of tools()) {
+      expect(tool.exposure).toBe("deferred");
+      expect(tool.namespace.name).toBe("papercuts");
+      expect(tool.description).toContain("Do not proactively inspect");
+    }
   });
 });

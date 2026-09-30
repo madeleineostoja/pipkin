@@ -757,6 +757,64 @@ describe("Pipkin bundle", () => {
     }
   });
 
+  it("delivers typed papercut data and errors through discovery, direct calls and native codemode", async () => {
+    const fixture = await loadBundle({ nativeFactories: true });
+    execFileSync("git", ["init", "-q"], { cwd: fixture.cwd });
+    const host = await nativeSession(fixture);
+    try {
+      const results = await host.prompt([
+        {
+          name: "tool_search",
+          args: { query: "+papercut_list +papercut_get" },
+          id: "papercut-search",
+        },
+        { name: "papercut_list", args: {}, id: "papercut-list" },
+        {
+          name: "papercut_get",
+          args: { key: "missing" },
+          id: "papercut-missing",
+        },
+        {
+          name: "codemode",
+          args: {
+            code: 'const result = await tools.papercut_get({key:"missing"}); text(result);',
+          },
+          id: "papercut-nested",
+        },
+      ]);
+      for (const [id, name] of [
+        ["papercut-list", "papercut_list"],
+        ["papercut-missing", "papercut_get"],
+      ]) {
+        const result = results.find((value) => value.toolCallId === id)!;
+        const definition = fixture.result.extensions
+          .flatMap((extension) => [...extension.tools.values()])
+          .find((tool) => tool.definition.name === name)!.definition;
+        const content = result.content[0];
+        expect(content.type).toBe("text");
+        expect(
+          Check(
+            definition.outputSchema!,
+            JSON.parse((content as { text: string }).text),
+          ),
+        ).toBe(true);
+        expect(result.isError).toBe(id === "papercut-missing");
+      }
+      const nested = results.find(
+        (result) => result.toolCallId === "papercut-nested",
+      )!;
+      expect(nested).toMatchObject({ isError: false });
+      expect(nested.content).toEqual(
+        expect.arrayContaining([
+          { type: "text", text: expect.stringContaining('"not_found"') },
+        ]),
+      );
+      expect(host.errors).toEqual([]);
+    } finally {
+      await host.dispose();
+    }
+  });
+
   it("recovers Bash evidence and a process accepted by a codemode script that later throws", async () => {
     const fixture = await loadBundle({ nativeFactories: true });
     const parent = createEventBus();
@@ -937,7 +995,7 @@ describe("Pipkin bundle", () => {
         },
         {
           name: "codemode",
-          args: { code: "await tools.record_papercut({});" },
+          args: { code: "await tools.papercut_record({});" },
           id: "excluded",
         },
       ]);

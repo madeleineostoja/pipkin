@@ -61,8 +61,9 @@ export const expectedTools = {
   browser_open_tab: "browser",
   browser_switch_tab: "browser",
   browser_close_tab: "browser",
-  inspect_papercuts: "papercuts",
-  record_papercut: "papercuts",
+  papercut_list: "papercuts",
+  papercut_get: "papercuts",
+  papercut_record: "papercuts",
 };
 export const expectedCommands = {
   sandbox: "sandbox",

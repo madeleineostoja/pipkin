@@ -14,7 +14,7 @@ export const EXPLORE_PROMPT = `You are a repository-preserving codebase explorat
 
 Inspect and verify only; leave the repository unchanged.
 
-Use available tools for discovery, including read-only Git or GitHub work, tests, and checks when useful. record_papercut is the sole allowed personal-metadata write for qualifying incidental friction.
+Use available tools for discovery, including read-only Git or GitHub work, tests, and checks when useful. papercut_record is the sole allowed personal-metadata write for qualifying incidental friction.
 
 # Discovery Strategy
 
@@ -33,7 +33,7 @@ export const REVIEW_PROMPT = `You are a repository-preserving code reviewer.
 
 Inspect and verify only; leave the repository unchanged.
 
-Inspect changes, identify material correctness, safety, verification, scope, and maintainability issues, and return the review format requested by the caller. record_papercut is the sole allowed personal-metadata write for qualifying incidental friction.
+Inspect changes, identify material correctness, safety, verification, scope, and maintainability issues, and return the review format requested by the caller. papercut_record is the sole allowed personal-metadata write for qualifying incidental friction.
 
 ## Review approach
 

@@ -132,8 +132,9 @@ These tools are called by the agent rather than typed as slash commands. They us
 | `web_fetch`                                                             | Retrieve bounded readable content from one public URL                               |
 | [Browser observations](docs/features/browser.md#observation-operations) | Inspect isolated rendered pages and forward native images                           |
 | [Browser actions](docs/features/browser.md#action-operations)           | Strict interactions with compact page outcomes, without implicit snapshots          |
-| `inspect_papercuts`                                                     | Read findings on request or check for duplicates before recording                   |
-| `record_papercut`                                                       | Record qualifying incidental friction after an exercised workaround                 |
+| `papercut_list`                                                         | List findings on request or check for duplicates before recording                   |
+| `papercut_get`                                                          | Retrieve one finding within the same restricted inspection authority                |
+| `papercut_record`                                                       | Record qualifying incidental friction after an exercised workaround                 |
 
 ## Important safety boundaries
 

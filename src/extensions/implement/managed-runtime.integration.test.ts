@@ -321,7 +321,7 @@ describe("Implement managed runtime integration", () => {
       [
         fauxAssistantMessage(
           fauxToolCall(
-            "record_papercut",
+            "papercut_record",
             {
               key: "owned-worktree-detour",
               title: "Owned worktree detour",
@@ -368,7 +368,7 @@ describe("Implement managed runtime integration", () => {
         "agent_start",
         "agent_wait",
         "agent_steer",
-        "record_papercut",
+        "papercut_record",
       ],
     };
     const runtime = new SubagentRuntime(extension as never, {

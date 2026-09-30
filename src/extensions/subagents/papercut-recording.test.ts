@@ -57,7 +57,7 @@ describe("public papercut recording", () => {
       [
         fauxAssistantMessage(
           fauxToolCall(
-            "record_papercut",
+            "papercut_record",
             {
               key: "linked-discovery",
               title: "Linked discovery detour",
@@ -87,7 +87,7 @@ describe("public papercut recording", () => {
         "agent_start",
         "agent_wait",
         "agent_steer",
-        "record_papercut",
+        "papercut_record",
       ],
       sendMessage() {},
     };

@@ -2123,7 +2123,7 @@ describe("SubagentRuntime", () => {
       "browser_snapshot",
       "implement_list_runs",
       "implement_inspect",
-      "record_papercut",
+      "papercut_record",
       "agent_start",
       "agent_wait",
       "agent_steer",

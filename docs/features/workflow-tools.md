@@ -66,7 +66,7 @@ Commands must remain foreground and non-interactive. Stop work that is no longer
 
 ## Papercuts
 
-`record_papercut` is an experimental factual inbox, not a backlog or remediation system. A finding qualifies only when all of these are true:
+`papercut_record` is an experimental factual inbox, not a backlog or remediation system. A finding qualifies only when all of these are true:
 
 1. The assigned subject was something else.
 2. The agent encountered concrete avoidable friction.
@@ -77,11 +77,23 @@ Qualifying friction may include a flaky documented test handled with a narrower 
 
 Do not record the task or review subject itself, unmet criteria, unresolved correctness or safety problems, inferred architecture, unused suggestions, expected guided steps, adequately documented procedures, one-off agent mistakes, or transient provider failures.
 
-Before recording, use `inspect_papercuts` to check open **and closed** findings. Skip an incident already recorded; reuse the existing key when equivalent friction recurs during a separate task; make a new key only for materially different friction. Records merge by stable key and retain occurrence count, replacing the latest observation while preserving the original title and first-seen time. A collapsed confirmation names the recorded key and outcome; expanding it preserves the complete model-facing confirmation.
+Before recording, use `papercut_list` and, as needed, `papercut_get` to check open **and closed** findings. Skip an incident already recorded; reuse the existing key when equivalent friction recurs during a separate task; make a new key only for materially different friction. Records merge by stable key and retain occurrence count, replacing the latest observation while preserving the original title and first-seen time. A collapsed confirmation names the recorded key and outcome; expanding it preserves the complete model-facing confirmation.
 
-`inspect_papercuts` lists compact summaries (key, title, status, occurrences, last seen), filtered by status and paginated up to 25 per request, or retrieves all recorded details by key. It reads the current repository's shared registry without creating or changing it; a missing registry yields an empty list, and an invalid registry or unknown key reports an error. Agents may inspect at the user's request or to deduplicate a qualifying new observation, but must not proactively inspect findings for work. A deduplication check does not authorize discussing or addressing an existing finding.
+The three tools are deferred in the `papercuts` namespace and callable through native codemode. Discovery and codemode grant no additional authority: agents may inspect at the user's request or to deduplicate a qualifying new observation, but must not proactively inspect findings for work. A deduplication check does not authorize discussing or addressing an existing finding, and arbitrary failures must not be automatically recorded.
 
-`/papercuts` shows open and closed findings. Select one and choose **Discuss with agent** to send a user message asking the agent to inspect that key and discuss fixes—not implement them yet. The agent retrieves current details with `inspect_papercuts`; you can also ask about a specific finding directly. Discussion does not authorize implementation. Closing remains a user action and is reversible when a later recurrence reopens the key. The closed-findings view can permanently delete all closed records and their occurrence history after confirmation; open findings are preserved. Findings are candidates for repository guidance or small fixes, never automatic work.
+| Tool              | Input                                                                                                                               | Successful result                                                                                              |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `papercut_list`   | Optional `status: open\|closed\|all` (default `all` for deduplication), `offset` 0..255 (default 0), `limit` 1..25 (default 25)     | `findings` summaries: key, title, status, occurrences, last seen; `offset`, optional `nextOffset`, `truncated` |
+| `papercut_get`    | Exact stable lowercase `key`, 1..64 characters                                                                                      | Full `finding`, including latest observation, status, occurrences, first/last seen                             |
+| `papercut_record` | `key`, `title`, `task`, `incident`, `evidence`, `workarounds`, `taskOutcome`; optional `guardrailCandidate`, `suggestedDestination` | Recorded identity: `outcome: created\|merged\|reopened`, key, original title, occurrences                      |
+
+Lists sort newest last-seen first, with a stable key tie-breaker. `nextOffset` appears only when more matching findings exist; `truncated: false` means enumeration is complete, not that the current page contains every finding. List/get read the current repository's shared registry without creating or changing data, leases, or Git exclusions. A missing registry yields an empty list; get reports `not_found` for an unknown key.
+
+Inputs are closed and retain the factual-field bounds: title 120 characters; task, task outcome, optional guardrail and each of 1..5 workarounds 1,000; incident and evidence 2,000. Keys contain lowercase letters, digits and internal hyphens. Suggested destinations are `agents`, `skill`, `test`, `lint`, `tooling`, `docs`, or `code`. Surrounding prose whitespace is trimmed on persistence; qualification remains a trusted-agent policy, not a runtime classifier.
+
+Direct content and structured results carry the same bounded data with `ok: true` on success. Errors carry `ok: false`, `error: {code,message}`, and native `isError: true`: `invalid_arguments` for malformed input, `not_found` for missing keys, `unavailable` for unreadable/invalid registry inspection, and `persistence_failed` for recording failure. Codemode callers must inspect `ok`; failures need not throw. Public text is control-safe without changing stored personal data.
+
+`/papercuts` shows open and closed findings. Select one and choose **Discuss with agent** to send a user message asking the agent to inspect that key and discuss fixes—not implement them yet. The agent retrieves current details with `papercut_get`; you can also ask about a specific finding directly. Discussion does not authorize implementation. Closing remains a user action and is reversible when a later recurrence reopens the key. The closed-findings view can permanently delete all closed records and their occurrence history after confirmation; open findings are preserved. Findings are candidates for repository guidance or small fixes, never automatic work.
 
 A repository and linked worktrees share one leased registry in the canonical primary worktree:
 

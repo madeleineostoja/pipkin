@@ -63,7 +63,7 @@ Eligible Review and Implement workers receive private synchronous `explore({ques
 
 Each worker receives a unique ephemeral Context output scope and host-assigned attempt provenance before initialization, keyed to its actual event bus. Workers can list/read their own captures, not sibling captures or private parent evidence. A host-held promotion lease survives producer shutdown; the managed finalization callback runs after shutdown flushes and before child disposal/scope release, on success, failure, stop, and cancellation. Handoff failures reject required completion but still dispose/release resources. [Context](context.md#retained-output) owns record bounds, retention and authorization; [Implement](implementation.md#verification-and-execution-artifacts) consumes this one private handoff to validate selected completion references and own durable run artifacts, not this scope mechanism. No incidental worker-output archive or parent public access is added.
 
-Where Bash is available, use output/status presentation according to the needed result, managed processes only while independent work continues, and `output_list`/`read_output` for immutable evidence. Explore and Review may record qualifying incidental friction through `record_papercut`; this grants no source or Git mutation.
+Where Bash is available, use output/status presentation according to the needed result, managed processes only while independent work continues, and `output_list`/`read_output` for immutable evidence. Explore and Review may record qualifying incidental friction through `papercut_record`; this grants no source, dependency, or Git mutation.
 
 ### Native documentation
 
