@@ -24,12 +24,14 @@ import { createManagedSessionHarness } from "../support/managed-session.ts";
 import { createServer } from "node:http";
 import { execFileSync } from "node:child_process";
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -99,6 +101,7 @@ async function loadBundle(
   options: {
     nativeFactories?: boolean;
     additionalPaths?: string[];
+    packageRoot?: string;
     mcp?: Record<string, unknown>;
   } = {},
 ): Promise<BundleFixture> {
@@ -169,7 +172,10 @@ async function loadBundle(
       agentDir,
       eventBus,
       settingsManager: SettingsManager.inMemory(),
-      additionalExtensionPaths: [ROOT, ...(options.additionalPaths ?? [])],
+      additionalExtensionPaths: [
+        options.packageRoot ?? ROOT,
+        ...(options.additionalPaths ?? []),
+      ],
       extensionFactories: options.nativeFactories
         ? [
             {
@@ -1492,18 +1498,30 @@ describe("Pipkin bundle", () => {
     }
   });
 
-  it("captures the public Codex API through Pi's real Jiti loader without fetching", async () => {
+  it("loads and captures Codex without package-local Pi dependencies or fetching", async () => {
     const directory = mkdtempSync(join(tmpdir(), "pipkin-capture-loader-"));
+    const packageRoot = join(directory, "pipkin");
     const extensionPath = join(directory, "capture.ts");
     const fetch = vi
       .spyOn(globalThis, "fetch")
       .mockRejectedValue(new Error("Unexpected network request"));
     try {
+      cpSync(join(ROOT, "src"), join(packageRoot, "src"), { recursive: true });
+      cpSync(join(ROOT, "package.json"), join(packageRoot, "package.json"));
+      for (const dependency of Object.keys(manifest.dependencies)) {
+        const target = join(packageRoot, "node_modules", dependency);
+        mkdirSync(dirname(target), { recursive: true });
+        symlinkSync(join(ROOT, "node_modules", dependency), target, "dir");
+      }
+      // Managed installs omit host peers; the development tree masks this boundary.
+      expect(
+        existsSync(join(packageRoot, "node_modules/@earendil-works/pi-ai")),
+      ).toBe(false);
       writeFileSync(
         extensionPath,
         `
         import { Type } from "typebox";
-        import { createCodexOAuthAdapter } from ${JSON.stringify(join(ROOT, "src/extensions/context/codex-oauth-adapter.ts"))};
+        import { createCodexOAuthAdapter } from ${JSON.stringify(join(packageRoot, "src/extensions/context/codex-oauth-adapter.ts"))};
         export default async function (pi) {
           const payload = await createCodexOAuthAdapter().capture({
             model: {
@@ -1522,7 +1540,10 @@ describe("Pipkin bundle", () => {
         }
       `,
       );
-      const fixture = await loadBundle({ additionalPaths: [extensionPath] });
+      const fixture = await loadBundle({
+        packageRoot,
+        additionalPaths: [extensionPath],
+      });
       expect(fixture.result.errors).toEqual([]);
       const capture = fixture.result.extensions
         .flatMap((extension) => [...extension.tools.values()])
