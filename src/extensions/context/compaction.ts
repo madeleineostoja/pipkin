@@ -10,6 +10,7 @@ import {
   type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import {
+  getCurrentSystemPrompt,
   getCurrentTools,
   type Api,
   type Context,
@@ -37,6 +38,7 @@ type CompactionHookResult =
   | { compaction: Awaited<ReturnType<typeof compact>> }
   | { cancel: true }
   | undefined;
+type ReplayOutcome = { payload: JsonObject } | { reason: string };
 type NativeCompactionOutcome =
   | { kind: "complete"; compaction: Awaited<ReturnType<typeof compact>> }
   | { kind: "unavailable" }
@@ -149,21 +151,22 @@ export class CompactionCoordinator {
       ctx.abort();
       return undefined;
     }
-    let result: unknown | undefined;
+    let result: ReplayOutcome;
     try {
       result = await this.replay(active.entry, payload, ctx);
-    } catch {
-      result = undefined;
+    } catch (error) {
+      result = { reason: nativeFailureReason(error) };
     }
-    if (!result) {
-      this.warn(
-        ctx,
-        "native-replay",
-        "Context: native checkpoint could not be safely replayed; the request was aborted to preserve its context.",
-      );
-      ctx.abort();
+    if ("payload" in result) {
+      return result.payload;
     }
-    return result;
+    this.warn(
+      ctx,
+      `native-replay:${result.reason}`,
+      `Context: native checkpoint could not be safely replayed (${result.reason}); the request was aborted to preserve its context. Select the original compatible Codex model/account or branch before this checkpoint without summarizing it. Retrying unchanged will abort again.`,
+    );
+    ctx.abort();
+    return undefined;
   }
 
   async modelSelect(
@@ -297,6 +300,14 @@ export class CompactionCoordinator {
       if (!identity) {
         return { kind: "unavailable" };
       }
+      if (hasUnsupportedSystemProjection(ctx)) {
+        return existing
+          ? {
+              kind: "failed",
+              reason: "runtime system projection is unsupported",
+            }
+          : { kind: "unavailable" };
+      }
       if (existing && !matchesLineage(existing, event.branchEntries)) {
         throw new CodexAdapterError("validation", "checkpoint lineage changed");
       }
@@ -364,14 +375,14 @@ export class CompactionCoordinator {
     entry: NativeEntry,
     payload: unknown,
     ctx: ExtensionContext,
-  ): Promise<unknown | undefined> {
+  ): Promise<ReplayOutcome> {
     if (!ctx.model || !isJsonObject(payload)) {
-      return undefined;
+      return { reason: "unsupported provider payload or missing model" };
     }
     const model = ctx.model as Model<"openai-codex-responses">;
     const resolvedAuth = await resolveCodexAuth(ctx, model);
     if (!resolvedAuth) {
-      return undefined;
+      return { reason: "authentication unavailable" };
     }
     const identity = this.adapter.supports(
       model,
@@ -379,11 +390,17 @@ export class CompactionCoordinator {
       ctx.modelRegistry.isUsingOAuth(model),
     );
     if (!identity) {
-      return undefined;
+      return { reason: "compatible Codex OAuth route unavailable" };
+    }
+    if (!this.adapter.isCompatible(entry.details, identity)) {
+      return { reason: "model/account incompatible with checkpoint" };
     }
     const entries = ctx.sessionManager.getBranch();
     if (!matchesLineage(entry, entries)) {
-      return undefined;
+      return { reason: "checkpoint lineage changed" };
+    }
+    if (hasUnsupportedSystemProjection(ctx)) {
+      return { reason: "runtime system projection is unsupported" };
     }
     const expected = await this.captureItems(
       entry,
@@ -393,7 +410,15 @@ export class CompactionCoordinator {
       ctx,
       ctx.signal,
     );
-    return this.adapter.replay(payload, expected, entry.details, identity);
+    const replayed = this.adapter.replay(
+      payload,
+      expected,
+      entry.details,
+      identity,
+    );
+    return replayed
+      ? { payload: replayed }
+      : { reason: "checkpoint input segment changed or is ambiguous" };
   }
 
   private async captureItems(
@@ -536,13 +561,27 @@ function contextWithCurrentSystem(
   ctx: ExtensionContext,
   tools: Context["tools"],
 ): Context {
-  // Pi's current prompt can be a forced projection not persisted in the branch.
-  // Codex collapses system transitions; use the same current prompt/tool state.
+  const model = ctx.model as Model<"openai-codex-responses"> | undefined;
+  if (model?.compat?.supportsMidConvoSystemMessages) {
+    // Keep historical declarations: current tools can serialize the kept tail differently.
+    return { messages };
+  }
+  // Collapsing routes may use a forced prompt not persisted in the branch.
   return {
     systemPrompt: ctx.getSystemPrompt(),
     messages: messages.filter((message) => message.role !== "system"),
     tools: tools ?? getCurrentTools(messages),
   };
+}
+
+function hasUnsupportedSystemProjection(ctx: ExtensionContext): boolean {
+  const model = ctx.model as Model<"openai-codex-responses"> | undefined;
+  return !!(
+    model?.compat?.supportsMidConvoSystemMessages &&
+    getCurrentSystemPrompt(
+      convertToLlm(ctx.sessionManager.buildSessionProjection().messages),
+    ) !== ctx.getSystemPrompt()
+  );
 }
 
 function matchesLineage(entry: NativeEntry, entries: SessionEntry[]): boolean {

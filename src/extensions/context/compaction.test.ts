@@ -718,6 +718,22 @@ describe("CompactionCoordinator textual route", () => {
       ),
     ).resolves.toBeUndefined();
     expect(invalidatedContext.abort).toHaveBeenCalledOnce();
+    expect(invalidatedContext.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "checkpoint input segment changed or is ambiguous",
+      ),
+      "warning",
+    );
+    await coordinator.beforeProviderRequest(
+      await payloadFor(invalidated),
+      invalidatedContext,
+    );
+    expect(invalidatedContext.abort).toHaveBeenCalledTimes(2);
+    expect(invalidatedContext.ui.notify).toHaveBeenCalledOnce();
+    expect(invalidatedContext.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("Retrying unchanged will abort again"),
+      "warning",
+    );
 
     const compacted = await coordinator.beforeCompact(
       event({
@@ -751,6 +767,93 @@ describe("CompactionCoordinator textual route", () => {
       { role: "user", content: [{ type: "input_text", text: "later" }] },
       { type: "compaction", id: "cmp-next", encrypted_content: "next opaque" },
     ]);
+  });
+
+  it("falls back for an unsupported runtime prompt only before native authority exists", async () => {
+    const textual = context();
+    const manager = SessionManager.inMemory("/work");
+    manager.appendMessage({
+      role: "system",
+      content: "canonical prompt",
+      timestamp: 1,
+    });
+    const kept = manager.appendMessage({
+      role: "user",
+      content: "kept",
+      timestamp: 2,
+    });
+    const identity = {
+      provider: "openai-codex",
+      api: "openai-codex-responses",
+      model: model.id,
+      endpoint: "https://chatgpt.com/backend-api/codex/responses",
+      authMode: "oauth",
+      accountFingerprint: "a".repeat(64),
+      protocol: "pipkin-codex-compaction-trigger-v1",
+    } as const;
+    const adapter = {
+      ...createCodexOAuthAdapter(),
+      supports: () => identity,
+      capture: vi.fn(),
+      compact: vi.fn(),
+    };
+    const abort = vi.fn();
+    const ctx = {
+      ...textual.ctx,
+      model: {
+        ...model,
+        provider: "openai-codex",
+        api: "openai-codex-responses",
+        compat: { supportsMidConvoSystemMessages: true },
+      },
+      sessionManager: manager,
+      abort,
+      getSystemPrompt: () => "forced prompt",
+      modelRegistry: {
+        ...textual.ctx.modelRegistry,
+        getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "token" }),
+        isUsingOAuth: () => true,
+      },
+    } as unknown as ExtensionContext;
+    const coordinator = createCompactionCoordinator({
+      low: { model: "test/low-model", thinking: "low" },
+      configPath: "config.json",
+      adapter,
+    });
+    await expect(
+      coordinator.beforeCompact(
+        event({
+          branchEntries: manager.getBranch(),
+          preparation: { ...event().preparation, firstKeptEntryId: kept },
+        }),
+        ctx,
+      ),
+    ).resolves.toHaveProperty("compaction");
+    expect(textual.streamSimple).toHaveBeenCalledOnce();
+    expect(adapter.capture).not.toHaveBeenCalled();
+    expect(adapter.compact).not.toHaveBeenCalled();
+    const checkpoint = createNativeCheckpoint({
+      identity,
+      artifact: [{ type: "compaction", encrypted_content: "opaque" }],
+      lineage: { firstKeptEntryId: kept, leafId: manager.getLeafId() },
+      usage,
+    });
+    manager.appendCompaction(checkpoint.summary, kept, 100, checkpoint.details);
+    await expect(
+      coordinator.beforeCompact(
+        event({ branchEntries: manager.getBranch() }),
+        ctx,
+      ),
+    ).resolves.toEqual({ cancel: true });
+    await expect(
+      coordinator.beforeProviderRequest({ input: [] }, ctx),
+    ).resolves.toBeUndefined();
+    expect(abort).toHaveBeenCalledOnce();
+    expect(textual.streamSimple).toHaveBeenCalledOnce();
+    expect(textual.notify).toHaveBeenCalledWith(
+      expect.stringContaining("runtime system projection is unsupported"),
+      "warning",
+    );
   });
 
   it("refuses instructed, incompatible and corrupt opaque authority without any textual fallback", async () => {
@@ -891,9 +994,10 @@ describe("CompactionCoordinator textual route", () => {
       low: { model: "test/low-model", thinking: "low" },
       configPath: "config.json",
       adapter: {
+        ...createCodexOAuthAdapter(),
         supports: () => checkpoint.details.identity,
         replay,
-      } as never,
+      },
     });
     const abort = vi.fn();
     const ctx = {
@@ -913,7 +1017,7 @@ describe("CompactionCoordinator textual route", () => {
     expect(replay).not.toHaveBeenCalled();
     expect(abort).toHaveBeenCalledOnce();
     expect(notify).toHaveBeenCalledWith(
-      expect.stringContaining("could not be safely replayed"),
+      expect.stringContaining("checkpoint lineage changed"),
       "warning",
     );
   });
