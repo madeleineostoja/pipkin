@@ -1,5 +1,6 @@
 import type {
   CodemodeToolDetails,
+  Theme,
   ThemeColor,
   ToolRendererResolver,
   ToolRenderers,
@@ -15,6 +16,12 @@ import { formatDuration, formatUsdCost } from "#lib/ui/metrics";
 type NativeResult = Parameters<ReturnType<typeof toolResultRenderer>>[0];
 type NestedCall = CodemodeToolDetails["calls"][number];
 type TextBlock = { type: "text"; text: string };
+type CodemodeCallContext = Omit<
+  Parameters<NonNullable<ToolRenderers["renderCall"]>>[2],
+  "state"
+> & {
+  state: { sawPending?: boolean; hasToolOutput?: boolean };
+};
 
 const SCRIPT_HEADER =
   /^Script (completed|failed)\nWall time ([\d.]+) seconds\nOutput:\n$/;
@@ -194,12 +201,8 @@ const renderCodemodeSummary = toolResultRenderer({
   tone(result, context) {
     return context.isError
       ? "error"
-      : context.isPartial ||
-          calls(result).some(
-            (call) =>
-              call.status === "error" ||
-              call.status === "cancelled" ||
-              call.status === "running",
+      : calls(result).some(
+            (call) => call.status === "error" || call.status === "cancelled",
           )
         ? "warning"
         : "toolOutput";
@@ -225,14 +228,46 @@ const callStyles: Record<
   NestedCall["status"],
   { icon: string; color: ThemeColor }
 > = {
-  running: { icon: "…", color: "warning" },
+  running: { icon: "…", color: "toolOutput" },
   ok: { icon: "✓", color: "success" },
   error: { icon: "✗", color: "error" },
   cancelled: { icon: "⊘", color: "muted" },
 };
 
+const renderCodemodeIdentity = toolCallRenderer({
+  name: "codemode",
+  pending: false,
+});
+
 const codemodeRenderers = {
-  renderCall: toolCallRenderer({ name: "codemode", pending: false }),
+  renderCall(args: unknown, theme: Theme, context: CodemodeCallContext) {
+    // Live rows observe a pre-execution phase; HTML exports start after execution
+    // and serialize their call header once, so must never acquire a pending label.
+    if (!context.executionStarted) {
+      context.state.sawPending = true;
+    }
+    const identity = renderCodemodeIdentity(args, theme, context);
+    if (
+      !context.isPartial ||
+      !context.state.sawPending ||
+      context.state.hasToolOutput
+    ) {
+      return identity;
+    }
+    const view = new Container();
+    view.addChild(identity);
+    view.addChild(
+      new Text(
+        theme.fg(
+          "muted",
+          context.executionStarted ? "Running script…" : "Preparing script…",
+        ),
+        0,
+        0,
+      ),
+    );
+    return view;
+  },
   renderResult(result, options, theme, context) {
     const summary = renderCodemodeSummary(result, options, theme, context);
     const nested = calls(result);
@@ -274,7 +309,7 @@ const codemodeRenderers = {
 /**
  * Presentation only: execution, discovery, authentication, and result data stay native.
  * HTML exports never expand call headers and mark them partial even after settlement,
- * so arguments/scripts live in expanded results and pending labels stay out of calls.
+ * so arguments/scripts live in expanded results and exported headers stay free of pending labels.
  */
 export const resolveNativeToolRenderers: ToolRendererResolver = (
   name,

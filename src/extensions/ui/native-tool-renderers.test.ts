@@ -135,6 +135,60 @@ describe("native tool presentation", () => {
     ).toContain(result.content[0].text);
   });
 
+  it("keeps a live pending label until progress arrives without putting it in completed or exported headers", () => {
+    const renderer = renderers("codemode");
+    const args = { code: "text('hidden script');" };
+    const ctx = context({
+      args,
+      isPartial: true,
+      executionStarted: false,
+      argsComplete: false,
+    });
+    expect(text(renderer.renderCall!(args, theme, ctx))).toBe(
+      "codemode\nPreparing script…",
+    );
+    ctx.executionStarted = true;
+    ctx.argsComplete = true;
+    expect(text(renderer.renderCall!(args, theme, ctx))).toBe(
+      "codemode\nRunning script…",
+    );
+    const progress = renderer.renderResult!(
+      { content: [], details: { calls: [] } },
+      ctx,
+      theme,
+      ctx,
+    );
+    expect(text(progress)).toContain("Running script…");
+    expect(text(renderer.renderCall!(args, theme, ctx))).toBe("codemode");
+    ctx.isPartial = false;
+    expect(text(renderer.renderCall!(args, theme, ctx))).toBe("codemode");
+    const exported = context({ args, isPartial: true });
+    expect(text(renderer.renderCall!(args, theme, exported))).toBe("codemode");
+  });
+
+  it("uses neutral colors for routine progress and reserves warning/error colors for failed work", () => {
+    const details: CodemodeToolDetails = {
+      calls: [{ id: "call-1/1", name: "edit", args: "{}", status: "running" }],
+    };
+    const result = { content: [], details };
+    const ctx = context({ isPartial: true });
+    const styledTheme = {
+      ...theme,
+      fg: (color: string, value: string) => `[${color}]${value}`,
+    } as Theme;
+    const renderer = renderers("codemode");
+    const running = text(renderer.renderResult!(result, ctx, styledTheme, ctx));
+    expect(running).toContain("[toolOutput]Running script…");
+    expect(running).toContain("[toolOutput]… edit");
+    expect(running).not.toContain("[warning]");
+    details.calls[0].status = "error";
+    const failedCall = text(
+      renderer.renderResult!(result, ctx, styledTheme, ctx),
+    );
+    expect(failedCall).toContain("[warning]Running script…");
+    expect(failedCall).toContain("[error]✗ edit");
+  });
+
   it("shows codemode progress and caught nested failures without claiming the script failed", () => {
     const details: CodemodeToolDetails = {
       calls: [

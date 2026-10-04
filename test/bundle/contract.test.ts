@@ -725,6 +725,7 @@ describe("Pipkin bundle", () => {
       const codeRow = exported.renderedTools["export-code"];
       const mcpRow = exported.renderedTools["export-mcp"];
       expect(codeRow.callHtml).not.toContain("Running script");
+      expect(codeRow.callHtml).not.toContain("Preparing script");
       expect(mcpRow.callHtml).not.toContain("Calling MCP tool");
       expect(mcpRow.callHtml).not.toContain("MCP_EXPANDED_ONLY");
       expect(codeRow.resultHtmlExpanded).toContain(code);
