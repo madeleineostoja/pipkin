@@ -15,22 +15,9 @@ Pipkin is developed and released as one root npm package. Run commands from the 
 
 ## Runtime baseline
 
-Pipkin declares `^0.99.0` for `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, and `@earendil-works/pi-tui`. Node.js remains `>=24`; Windows is unsupported. The manifest is one complete ordered bundle, not a supported menu of entrypoints.
+Pipkin declares `^1.0.2` for `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, and `@earendil-works/pi-tui`. Node.js remains `>=24`; Windows is unsupported. The manifest is one complete ordered bundle, not a supported menu of entrypoints. UI uses Pi's native `registerToolRenderer()` API for presentation-only MCP/codemode/discovery adapters; older Pi versions are unsupported.
 
-| Verification environment                         | Pi integration packages        | Other Pi runtime packages                            | Node.js   |
-| ------------------------------------------------ | ------------------------------ | ---------------------------------------------------- | --------- |
-| Intended root installation (`package-lock.json`) | AI, coding-agent, TUI `0.99.1` | agent-core, codemode, MCP, Chord, telemetry `0.99.1` | `24.20.0` |
-| Controlled minimum installation                  | AI, coding-agent, TUI `0.99.0` | agent-core, codemode, MCP, Chord, telemetry `0.99.0` | `24.20.0` |
-
-Native MCP/discovery is tested against the intended root installation, not a new minimum-version claim. Both installations were typechecked and tested, including complete bundle loading/binding, native factory coexistence, virtual-model dispatch, managed final-action completion, queued/handled steering, cancellation, cleanup-before-wait delivery, and fixture-based native Codex compaction/replay. These are verified versions; the rest of the caret range is a dependency assumption, not a claim of testing every release. No live credential/provider operation or remote Codex compaction smoke was performed.
-
-To repeat minimum-version verification in a disposable checkout:
-
-1. Save `package.json` and `package-lock.json` outside the checkout. Install the intended root lockfile first with `npm ci`.
-2. Temporarily pin the three Pi dev dependencies to `0.99.0`. Override those same packages throughout the tree using npm's `$<dependency-name>` references, and override `@earendil-works/pi-agent-core`, `@earendil-works/pi-codemode`, `@earendil-works/pi-mcp`, `@earendil-works/chord`, and `@earendil-works/pi-telemetry` to `0.99.0`.
-3. Run `npm install` using the saved root lockfile as the starting point; do not ignore the lockfile and accidentally upgrade unrelated dependencies. Check `npm ls` for every package listed above, including nested copies.
-4. Run `npm run check` and `npm run test`. The bundle and managed lifecycle tests use local fixtures, not provider credentials.
-5. Restore both manifests in a `finally`/shell exit trap and run `npm ci`. Check that the intended versions are installed again. Never commit the temporary pins or fixture lockfile.
+The root lockfile installs Pi `1.0.2`. Validate with `npm ci`, `npm run check`, and `npm run test`; use `npm ls` to confirm the installed Pi integration and runtime versions, including nested copies. The bundle and managed lifecycle suites use local fixtures, not provider credentials, and do not verify live Figma authentication or remote Codex compaction. The rest of the caret range is a dependency assumption, not a claim of testing every release.
 
 Pi's public SDK lifecycle includes `bindExtensions()` before prompting and `session_shutdown` before child disposal. Managed completion remains a directly declared, model-only final action; callers join cleanup before receiving terminal delivery. See [native capabilities and discovery](architecture.md#native-capabilities-and-discovery) for native factory ownership and test-owned inventory. Local fake MCP tests exercise native transport/discovery and hidden-tool denial; they do not verify live Figma authentication. Context obtains the lazy Codex API through Pi's host-mapped `@earendil-works/pi-ai/compat` export, without a package-local Pi dependency or native ESM bridge. The bundle suite loads an isolated managed-install layout with only runtime dependencies and proves capture alone does not fetch.
 

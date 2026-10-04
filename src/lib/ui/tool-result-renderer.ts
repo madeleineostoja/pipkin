@@ -14,6 +14,7 @@ type RenderContext = {
   isError?: boolean;
   args?: unknown;
   isPartial?: boolean;
+  expanded?: boolean;
   invalidate?: () => void;
   state?: { hasToolOutput?: boolean };
 };
@@ -23,7 +24,7 @@ type ResultTone = "error" | "warning" | "toolOutput";
 type CallRendererOptions<Arguments> = {
   name: string;
   detail?: (args: Arguments) => unknown;
-  pending?: string | ((args: Arguments) => string);
+  pending?: false | string | ((args: Arguments) => string);
 };
 
 type RendererOptions = {
@@ -57,13 +58,15 @@ export function toolCallRenderer<Arguments>(
     const title = `${theme.fg("toolTitle", theme.bold(options.name))}${
       detail ? ` ${theme.fg("accent", detail)}` : ""
     }`;
-    return new Text(
-      context.isPartial !== false && !context.state?.hasToolOutput
-        ? `${title}\n${theme.fg("muted", pending ?? "Working…")}`
-        : title,
-      0,
-      0,
-    );
+    const lines = [title];
+    if (
+      pending !== false &&
+      context.isPartial !== false &&
+      !context.state?.hasToolOutput
+    ) {
+      lines.push(theme.fg("muted", pending ?? "Working…"));
+    }
+    return new Text(lines.join("\n"), 0, 0);
   };
 }
 
@@ -80,6 +83,8 @@ export function toolResultRenderer(options: RendererOptions) {
   ): Component {
     const renderContext = {
       ...context,
+      expanded: renderOptions.expanded,
+      isPartial: renderOptions.isPartial,
       isError: context.isError ?? result.isError,
     };
     if (
@@ -144,8 +149,8 @@ export function toolResultRenderer(options: RendererOptions) {
     )) {
       view.addChild(
         options.content === "markdown"
-          ? new Markdown(block.text, 0, 0, getMarkdownTheme())
-          : new Text(theme.fg("toolOutput", block.text), 0, 0),
+          ? new Markdown(displayText(block.text), 0, 0, getMarkdownTheme())
+          : new Text(theme.fg("toolOutput", displayText(block.text)), 0, 0),
       );
     }
     return view;
@@ -202,9 +207,21 @@ function completeDetailLines(details: Summary): string[] {
   if (details === undefined) {
     return [];
   }
-  return (typeof details === "string" ? [details] : [...details]).filter(
-    Boolean,
-  );
+  return (typeof details === "string" ? [details] : [...details])
+    .map(displayText)
+    .filter(Boolean);
+}
+
+function displayText(text: string): string {
+  return Array.from(stripVTControlCharacters(text), (character) => {
+    const code = character.codePointAt(0)!;
+    return (code < 0x20 && character !== "\n" && character !== "\t") ||
+      (code >= 0x7f && code <= 0x9f)
+      ? ""
+      : character;
+  })
+    .join("")
+    .replaceAll("\t", "   ");
 }
 
 function textBlocks(content: unknown): TextBlock[] {
@@ -213,8 +230,10 @@ function textBlocks(content: unknown): TextBlock[] {
         (block): block is TextBlock =>
           typeof block === "object" &&
           block !== null &&
-          (block as { type?: unknown }).type === "text" &&
-          typeof (block as { text?: unknown }).text === "string",
+          "type" in block &&
+          block.type === "text" &&
+          "text" in block &&
+          typeof block.text === "string",
       )
     : [];
 }

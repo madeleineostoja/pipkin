@@ -23,7 +23,21 @@ A long Git branch yields to the complete model/cost/cache/context segment before
 
 UI also owns the generic bounded Activity view. Processes, Subagents, and Implement publish source-qualified queued, running, or waiting work but keep ownership of their records, lifecycle, inspectors, cleanup, and terminal delivery; they remove settled work immediately. The full-width pending-work box has no history or count. Activity excludes prompts, commands, cwd, raw output, hidden runtime objects, provider payloads, cost, and aggregate token telemetry. A Subagent row may show current context usage and one already-bounded latest-assistant preview.
 
-UI does not replace Pi's editor, working indicator, selectors, built-in tool renderers, or custom-message presentation.
+UI does not replace Pi's editor, working indicator, selectors, or custom-message presentation.
+
+### Tool presentation
+
+MCP tools, native `codemode`, and native `tool_search` use the same compact call identities and short result summaries as Pipkin-owned tools, in the interactive transcript and HTML exports. Expand a tool row with Pi's normal tool-expansion control to inspect details:
+
+| Tool          | Compact view                                                                                                  | Expanded view                                                                                |
+| ------------- | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| MCP tools     | Server/tool identity, bounded argument and text previews, errors, and full-output references when present     | Arguments, returned text/resource references, and full-output paths                          |
+| `codemode`    | Script state, elapsed time when reported, nested-call outcome counts, and full-output references when present | Script, nested-call arguments/statuses/errors/timing/model costs, and returned script output |
+| `tool_search` | Query and number of tools loaded, or an error                                                                 | Arguments, loaded tool names, and returned descriptions                                      |
+
+MCP previews are presentation, not inferred domain summaries. A completed codemode script can contain failed or cancelled nested calls; those outcomes remain visible rather than being presented as successful work. Nested calls do not become separate transcript tool rows, and their complete results are not reconstructed from call metadata. Images remain Pi-owned. Expanded results contain full call arguments/scripts as well as returned text, so HTML exports retain them even though Pi never expands exported call headers. Terminal-control sequences are removed from displayed text without changing the original results. When native truncation occurred, use the reported full-output path for the complete text.
+
+UI only selects renderers through Pi's `registerToolRenderer()` hook. It does not replace execution, discovery, MCP transport/authentication, model-facing content, or structured results. Other native tools and feature-owned semantic renderers retain their presentation; common rendering machinery stays in `src/lib/ui/tool-result-renderer.ts`.
 
 ## BTW side questions
 

@@ -79,6 +79,34 @@ describe("toolResultRenderer", () => {
     );
   });
 
+  it("removes terminal control sequences from expanded presentation without changing result data", () => {
+    const control = "\x1b[2J\x1b]52;c;Y2xpcGJvYXJk\x07";
+    const result = {
+      content: [{ type: "text" as const, text: `${control}complete output` }],
+      details: { diagnostic: `${control}complete diagnostic` },
+    };
+    const original = structuredClone(result);
+    for (const content of ["text", "markdown"] as const) {
+      const render = toolResultRenderer({
+        summary: () => "Completed.",
+        content,
+        expandedCompleteDetails: () => result.details.diagnostic,
+      });
+      const displayed = render(
+        result,
+        { expanded: true, isPartial: false },
+        theme,
+      )
+        .render(200)
+        .join("\n");
+      expect(displayed).not.toContain("\x1b[2J");
+      expect(displayed).not.toContain("\x1b]52;");
+      expect(displayed).toContain("complete output");
+      expect(displayed).toContain("complete diagnostic");
+    }
+    expect(result).toEqual(original);
+  });
+
   it("supports an explicit semantic tone without changing settlement state", () => {
     const render = toolResultRenderer({
       summary: () => "Falling back.",

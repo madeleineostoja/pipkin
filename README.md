@@ -13,7 +13,7 @@ Pipkin is an extension bundle for the [Pi](https://pi.dev) coding-agent harness.
 
 ## Getting started
 
-Pipkin requires Node.js 24 or later and Pi `^0.99.0`. Windows is unsupported. See [Development](docs/development.md#runtime-baseline) for verified versions.
+Pipkin requires Node.js 24 or later and Pi `^1.0.2`. Windows is unsupported. See [Development](docs/development.md#runtime-baseline) for verified versions.
 
 ```sh
 pi install git:github.com/madeleineostoja/pipkin
@@ -78,7 +78,7 @@ Native Pi owns MCP configuration, authentication, discovery, and `/mcp`, includi
 
 ### Session utilities
 
-- **UI** presents compact session status, recorded branch usage and routed-model identity, and bounded live activity.
+- **UI** presents compact session status, recorded branch usage and routed-model identity, bounded live activity, and consistent MCP/codemode/discovery tool rendering.
 - **Personality** gives fresh sessions a contextual welcome and unnamed sessions useful titles.
 - **Papercuts** records recurring incidental friction only after an agent exercises a workaround and completes or safely continues its actual task.
 - **BTW** answers one ephemeral no-tools side question from readable canonical context using the selected model's ordinary defaults; press `s` after completion to promote a useful exchange into the transcript and context.

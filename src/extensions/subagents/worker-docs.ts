@@ -11,9 +11,10 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 const operations = ["resolve-library-id", "query-docs"] as const;
-export const WORKER_DOC_TOOLS = operations.map(
-  (operation) => `mcp__context7__${operation}`,
-);
+function workerDocToolName(operation: (typeof operations)[number]): string {
+  return `mcp__context7__${operation.replaceAll("-", "_")}`;
+}
+export const WORKER_DOC_TOOLS = operations.map(workerDocToolName);
 const unavailable =
   "Worker documentation unavailable: invalid Context7 configuration. Fix native mcp.json and authenticate in the parent with /mcp if needed.";
 
@@ -160,7 +161,7 @@ export function createWorkerDocsExtension(agentDir: string): ExtensionFactory {
           (operation) =>
             tool.label === `context7/${operation}` &&
             tool.namespace?.name === "mcp__context7" &&
-            tool.name === `mcp__context7__${operation}`,
+            tool.name === workerDocToolName(operation),
         );
         pi.registerTool({
           ...tool,

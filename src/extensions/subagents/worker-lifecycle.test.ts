@@ -216,7 +216,7 @@ describe("native worker lifecycle", () => {
                       "bash",
                       "output_list",
                       "read_output",
-                      "mcp__context7__query-docs",
+                      "mcp__context7__query_docs",
                     ]),
                   );
                   for (const denied of [
@@ -295,7 +295,7 @@ describe("native worker lifecycle", () => {
         fauxToolCall("tool_search", { query: "resolve-library-id query-docs" }),
       ]),
       fauxAssistantMessage([
-        fauxToolCall("mcp__context7__resolve-library-id", {}),
+        fauxToolCall("mcp__context7__resolve_library_id", {}),
       ]),
       fauxAssistantMessage([
         fauxToolCall("codemode", {
@@ -422,6 +422,11 @@ describe("native worker lifecycle", () => {
       },
     );
     harness.faux.setResponses([
+      fauxAssistantMessage([
+        fauxToolCall("codemode", {
+          code: 'text(await searchTools("Context7 documentation"));',
+        }),
+      ]),
       fauxAssistantMessage("Research continues without documentation."),
     ]);
     try {
@@ -435,7 +440,7 @@ describe("native worker lifecycle", () => {
           modelRegistry: harness.modelRegistry,
         } as never,
       });
-      expect(snapshot.status).toBe("completed");
+      expect(snapshot.status, snapshot.error).toBe("completed");
       expect(child.messages).toContainEqual(
         expect.objectContaining({
           role: "custom",

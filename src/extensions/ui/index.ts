@@ -6,8 +6,10 @@ import { ACTIVITY_CHANNEL } from "./activity.js";
 import { ActivityStore } from "./activity-store.js";
 import { installActivityWidget } from "./activity-widget.js";
 import { installFooter } from "./footer.js";
+import { resolveNativeToolRenderers } from "./native-tool-renderers.js";
 
 export default function (pi: ExtensionAPI): void {
+  pi.registerToolRenderer(resolveNativeToolRenderers);
   installFooter(pi);
   let disposeActivity: (() => void) | undefined;
   const clearActivity = () => {

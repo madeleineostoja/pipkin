@@ -12,8 +12,11 @@ import {
   SessionManager,
   SettingsManager,
   createEventBus,
+  initTheme,
   type Extension,
   type LoadExtensionsResult,
+  type Theme,
+  type ToolRenderers,
 } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import {
@@ -311,9 +314,9 @@ async function nativeSession(
   defaultTools = ["+codemode", "+tool_search"],
   tools?: string[],
   bind = true,
+  sessionManager = SessionManager.inMemory(fixture.cwd),
 ) {
   const { faux, model, modelRuntime } = await createManagedSessionHarness([]);
-  const sessionManager = SessionManager.inMemory(fixture.cwd);
   const settingsManager = SettingsManager.inMemory({
     defaultTools,
     codemode: { mode: "on" },
@@ -595,6 +598,141 @@ describe("Pipkin bundle", () => {
     }
     expect(errors).toEqual([]);
     await runner.emit({ type: "session_shutdown", reason: "quit" });
+  });
+
+  it("registers UI-owned native presentation without replacing tool definitions, including disconnected MCP history", async () => {
+    const fixture = await loadBundle({ nativeFactories: true });
+    const { runner, errors } = await createBundleRunner(fixture);
+    try {
+      const owners = fixture.result.extensions.filter(
+        (extension) =>
+          relativeExtensionPath(extension) === "src/extensions/ui/index.ts",
+      );
+      expect(owners[0]?.toolRenderers).toHaveLength(1);
+      const definitions = runner
+        .getAllRegisteredTools()
+        .map(({ definition }) => definition);
+      const resolve = (name: string) =>
+        runner.resolveToolRenderers(name, () =>
+          definitions.find((tool) => tool.name === name),
+        );
+      const theme = {
+        fg: (_color: string, text: string) => text,
+        bold: (text: string) => text,
+      } as Theme;
+      const context = {
+        isPartial: false,
+        expanded: false,
+        isError: false,
+        args: {},
+        state: {},
+      } as Parameters<NonNullable<ToolRenderers["renderCall"]>>[2];
+      const codemode = definitions.find((tool) => tool.name === "codemode")!;
+      expect(resolve("codemode")?.renderCall).not.toBe(codemode.renderCall);
+      const call = resolve("codemode")!.renderCall!(
+        { code: "throw new Error('hidden until expanded')" },
+        theme,
+        context,
+      );
+      expect(call.render(200).join("\n").trimEnd()).toBe("codemode");
+      const search = resolve("tool_search")!.renderResult!(
+        { content: [], details: { loaded: ["one", "two"] } },
+        context,
+        theme,
+        context,
+      );
+      expect(search.render(200).join("\n").trimEnd()).toBe("Loaded 2 tools.");
+      const mcp = resolve("mcp__disconnected__query")!.renderResult!(
+        {
+          content: [{ type: "text", text: "Historical result." }],
+          details: undefined,
+        },
+        context,
+        theme,
+        context,
+      );
+      expect(mcp.render(200).join("\n").trimEnd()).toBe("Historical result.");
+      const agent = definitions.find((tool) => tool.name === "agent_start")!;
+      expect(resolve("agent_start")?.renderResult).toBe(agent.renderResult);
+      expect(resolve("not_registered")).toBeUndefined();
+      expect(errors).toEqual([]);
+    } finally {
+      await runner.emit({ type: "session_shutdown", reason: "quit" });
+    }
+  });
+
+  it("exports native scripts and MCP arguments without permanently recording transient call labels", async () => {
+    const fixture = await loadBundle({ nativeFactories: true });
+    const host = await nativeSession(
+      fixture,
+      undefined,
+      undefined,
+      true,
+      SessionManager.create(fixture.cwd, join(fixture.agentDir, "sessions")),
+    );
+    initTheme("dark");
+    const code = "const exportProof = 1; text(exportProof);";
+    const query = `${"prefix ".repeat(50)}MCP_EXPANDED_ONLY`;
+    try {
+      host.sessionManager.appendMessage(
+        fauxAssistantMessage([
+          fauxToolCall("codemode", { code }, { id: "export-code" }),
+          fauxToolCall(
+            "mcp__disconnected__query",
+            { query },
+            { id: "export-mcp" },
+          ),
+        ]),
+      );
+      for (const [toolCallId, toolName, text, details] of [
+        [
+          "export-code",
+          "codemode",
+          "Script completed\nWall time 1.0 seconds\nOutput:\n",
+          { calls: [] },
+        ],
+        [
+          "export-mcp",
+          "mcp__disconnected__query",
+          "Historical result.",
+          undefined,
+        ],
+      ] as const) {
+        host.sessionManager.appendMessage({
+          role: "toolResult",
+          toolCallId,
+          toolName,
+          content: [{ type: "text", text }],
+          details,
+          isError: false,
+          timestamp: Date.now(),
+        });
+      }
+      const html = readFileSync(
+        await host.session.exportToHtml(join(fixture.cwd, "export.html")),
+        "utf8",
+      );
+      const encoded =
+        /<script id="session-data" type="application\/json">([^<]*)<\/script>/.exec(
+          html,
+        )?.[1];
+      if (!encoded) {
+        throw new Error("Missing exported session data");
+      }
+      const exported = JSON.parse(
+        Buffer.from(encoded, "base64").toString("utf8"),
+      );
+      const codeRow = exported.renderedTools["export-code"];
+      const mcpRow = exported.renderedTools["export-mcp"];
+      expect(codeRow.callHtml).not.toContain("Running script");
+      expect(mcpRow.callHtml).not.toContain("Calling MCP tool");
+      expect(mcpRow.callHtml).not.toContain("MCP_EXPANDED_ONLY");
+      expect(codeRow.resultHtmlExpanded).toContain(code);
+      expect(mcpRow.resultHtmlExpanded).toContain("MCP_EXPANDED_ONLY");
+      expect(mcpRow.resultHtmlExpanded).toContain("Historical result.");
+    } finally {
+      await host.dispose();
+    }
   });
 
   it("adds single strategic structured sections to parent and role prompts without replacing the prompt", async () => {
