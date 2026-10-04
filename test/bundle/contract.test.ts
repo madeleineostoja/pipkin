@@ -40,6 +40,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Ajv from "ajv";
 import { executeWebFetch } from "../../src/extensions/web/web-fetch.js";
@@ -635,6 +636,84 @@ describe("Pipkin bundle", () => {
         context,
       );
       expect(call.render(200).join("\n").trimEnd()).toBe("codemode");
+      initTheme("dark");
+      const code = "text('partial output'); throw new Error('script failure');";
+      const expandedContext = {
+        ...context,
+        expanded: true,
+        isError: true,
+        args: { code },
+        state: {},
+      };
+      const nativeRenderers = resolve("codemode")!;
+      const expandedCall = nativeRenderers.renderCall!(
+        { code },
+        theme,
+        expandedContext,
+      );
+      expect(
+        stripVTControlCharacters(expandedCall.render(2000).join("\n")),
+      ).toContain(code);
+      const result = {
+        content: [
+          {
+            type: "text" as const,
+            text: "Script failed\nWall time 0.5 seconds\nOutput:\n",
+          },
+          {
+            type: "text" as const,
+            text: "partial output\nScript error:\nscript failure",
+          },
+        ],
+        details: {
+          calls: [
+            {
+              id: "call/1",
+              name: "models.classify",
+              args: '{"question":"classify"}',
+              status: "ok",
+              durationMs: 50,
+              cost: 0.001,
+            },
+            {
+              id: "call/2",
+              name: "write",
+              args: '{"path":"a"}',
+              status: "error",
+              error: "Write denied.\nRead-only repository.",
+              durationMs: 1000,
+            },
+          ],
+        },
+      };
+      const original = structuredClone(result);
+      const expandedResult = nativeRenderers.renderResult!(
+        result,
+        expandedContext,
+        theme,
+        expandedContext,
+      );
+      const nativeResult = codemode.renderResult!(
+        result,
+        expandedContext,
+        theme,
+        { ...expandedContext, lastComponent: undefined },
+      );
+      expect(expandedResult.render(2000)).toEqual(nativeResult.render(2000));
+      const rendered = expandedResult
+        .render(2000)
+        .map((line) => stripVTControlCharacters(line).trimEnd())
+        .join("\n");
+      expect(rendered).toContain("✓ models.classify");
+      expect(rendered).toContain("$0.0010");
+      expect(rendered).toContain('✗ write {"path":"a"}');
+      expect(rendered).toContain("Write denied.");
+      expect(rendered).toContain("Read-only repository.");
+      expect(rendered).toContain(
+        "partial output\nScript error:\nscript failure",
+      );
+      expect(rendered).not.toContain("Wall time");
+      expect(result).toEqual(original);
       const search = resolve("tool_search")!.renderResult!(
         { content: [], details: { loaded: ["one", "two"] } },
         context,
@@ -689,7 +768,24 @@ describe("Pipkin bundle", () => {
           "export-code",
           "codemode",
           "Script completed\nWall time 1.0 seconds\nOutput:\n",
-          { calls: [] },
+          {
+            calls: [
+              {
+                id: "export-code/1",
+                name: "models.classify",
+                args: '{"question":"classify"}',
+                status: "ok",
+                cost: 0.001,
+              },
+              {
+                id: "export-code/2",
+                name: "write",
+                args: '{"path":"a"}',
+                status: "error",
+                error: "Detailed nested failure.",
+              },
+            ],
+          },
         ],
         [
           "export-mcp",
@@ -728,7 +824,12 @@ describe("Pipkin bundle", () => {
       expect(codeRow.callHtml).not.toContain("Preparing script");
       expect(mcpRow.callHtml).not.toContain("Calling MCP tool");
       expect(mcpRow.callHtml).not.toContain("MCP_EXPANDED_ONLY");
-      expect(codeRow.resultHtmlExpanded).toContain(code);
+      expect(codeRow.resultHtmlCollapsed).not.toContain("exportProof");
+      expect(codeRow.resultHtmlExpanded.replace(/<[^>]*>/g, "")).toContain(
+        code,
+      );
+      expect(codeRow.resultHtmlExpanded).toContain("Detailed nested failure.");
+      expect(codeRow.resultHtmlExpanded).toContain("$0.0010");
       expect(mcpRow.resultHtmlExpanded).toContain("MCP_EXPANDED_ONLY");
       expect(mcpRow.resultHtmlExpanded).toContain("Historical result.");
     } finally {

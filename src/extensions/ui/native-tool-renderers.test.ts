@@ -3,7 +3,7 @@ import type {
   Theme,
   ToolRenderers,
 } from "@earendil-works/pi-coding-agent";
-import type { Component } from "@earendil-works/pi-tui";
+import { Text, type Component } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import { resolveNativeToolRenderers } from "./native-tool-renderers.js";
 
@@ -80,6 +80,75 @@ describe("native tool presentation", () => {
     ]) {
       expect(resolveNativeToolRenderers(name, next)).toBe(existing);
     }
+  });
+
+  it("delegates expanded native views without changing results or reusing incompatible compact components", () => {
+    for (const name of ["codemode", "tool_search", "mcp__docs__query"]) {
+      const native = {
+        renderCall: vi.fn(() => new Text("Native call details", 0, 0)),
+        renderResult: vi.fn(() => new Text("Native result details", 0, 0)),
+      };
+      const renderer = resolveNativeToolRenderers(name, () => native)!;
+      const args = { code: "text('script');", query: "query" };
+      const result = {
+        content: [{ type: "text" as const, text: "Original output" }],
+        details: { calls: [], loaded: [] },
+      };
+      const ctx = context({ args, lastComponent: new Text("Compact", 0, 0) });
+      const compactCall = text(renderer.renderCall!(args, theme, ctx));
+      renderer.renderResult!(result, ctx, theme, ctx);
+      expect(compactCall).not.toContain("Native call details");
+      expect(native.renderCall).not.toHaveBeenCalled();
+      expect(native.renderResult).not.toHaveBeenCalled();
+
+      ctx.expanded = true;
+      expect(text(renderer.renderCall!(args, theme, ctx))).toBe(
+        "Native call details",
+      );
+      expect(text(renderer.renderResult!(result, ctx, theme, ctx))).toBe(
+        "Native result details",
+      );
+      expect(native.renderCall).toHaveBeenCalledExactlyOnceWith(
+        args,
+        theme,
+        expect.objectContaining({ expanded: true, lastComponent: undefined }),
+      );
+      expect(native.renderResult).toHaveBeenCalledExactlyOnceWith(
+        result,
+        ctx,
+        theme,
+        expect.objectContaining({ lastComponent: undefined }),
+      );
+
+      ctx.expanded = false;
+      expect(text(renderer.renderCall!(args, theme, ctx))).toBe(compactCall);
+      expect(
+        text(renderer.renderResult!(result, ctx, theme, ctx)),
+      ).not.toContain("Native result details");
+      expect(native.renderCall).toHaveBeenCalledTimes(1);
+      expect(native.renderResult).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("includes native call details in expanded exports when their headers were never expanded", () => {
+    const native = {
+      renderCall: vi.fn(() => new Text("Native script/arguments", 0, 0)),
+      renderResult: vi.fn(() => new Text("Native output", 0, 0)),
+    };
+    const renderer = resolveNativeToolRenderers("codemode", () => native)!;
+    const args = { code: "text('exported');" };
+    const ctx = context({ args, isPartial: true });
+    expect(text(renderer.renderCall!(args, theme, ctx))).toBe("codemode");
+    const result = { content: [], details: { calls: [] } };
+    const options = { expanded: true, isPartial: false };
+    expect(text(renderer.renderResult!(result, options, theme, ctx))).toBe(
+      "Native script/arguments\nNative output",
+    );
+    expect(native.renderCall).toHaveBeenCalledWith(
+      args,
+      theme,
+      expect.objectContaining({ expanded: true }),
+    );
   });
 
   it("renders an unregistered MCP call compactly without losing expanded arguments or output", () => {
@@ -240,7 +309,7 @@ describe("native tool presentation", () => {
     expect(completed).not.toContain("Script failed.");
   });
 
-  it("bounds the compact call roster without hiding aggregate failures or losing expanded details", () => {
+  it("bounds the compact call roster without hiding aggregate failures", () => {
     const details: CodemodeToolDetails = {
       calls: Array.from({ length: 9 }, (_, index) => ({
         id: `call-1/${index}`,
@@ -264,16 +333,9 @@ describe("native tool presentation", () => {
     expect(compact).not.toContain("private-arguments");
     expect(compact).not.toContain("private-script");
     expect(compact).not.toContain("Printed output.");
-    const expanded = resultText("codemode", result, { expanded: true, args });
-    expect(expanded).toContain("tool-0 · error");
-    expect(expanded).toContain("Detailed failure.");
-    expect(expanded).toContain("private-arguments");
-    expect(expanded).toContain("private-script");
-    expect(expanded).toContain("Printed output.");
-    expect(expanded).not.toContain("hidden — expand to inspect.");
   });
 
-  it("preserves failed codemode output, nested diagnostics, costs, recovery paths, and the expanded script", () => {
+  it("preserves compact failure summaries and raw output when no native renderer is available", () => {
     const code =
       "await tools.write({ path: 'a', content: 'b' });\nthrow new Error('later failure');";
     expect(
@@ -334,9 +396,6 @@ describe("native tool presentation", () => {
       args: { code },
     });
     expect(expanded).toContain(code);
-    expect(expanded).toContain("models.classify · ok · 50ms · $0.0010");
-    expect(expanded).toContain('Arguments: {"path":"a"}');
-    expect(expanded).toContain("Write denied.\nRead-only repository.");
     expect(expanded).toContain("partial script output");
     expect(expanded).toContain("Script error:\nlater failure");
     expect(expanded).not.toContain("Wall time 0.5 seconds");

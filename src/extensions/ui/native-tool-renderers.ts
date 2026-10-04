@@ -11,16 +11,23 @@ import {
   toolCallRenderer,
   toolResultRenderer,
 } from "#lib/ui/tool-result-renderer";
-import { formatDuration, formatUsdCost } from "#lib/ui/metrics";
+import { formatDuration } from "#lib/ui/metrics";
 
 type NativeResult = Parameters<ReturnType<typeof toolResultRenderer>>[0];
 type NestedCall = CodemodeToolDetails["calls"][number];
 type TextBlock = { type: "text"; text: string };
-type CodemodeCallContext = Omit<
+type CompactRenderers = Required<
+  Pick<ToolRenderers, "renderCall" | "renderResult">
+>;
+type NativeRenderContext = Omit<
   Parameters<NonNullable<ToolRenderers["renderCall"]>>[2],
   "state"
 > & {
-  state: { sawPending?: boolean; hasToolOutput?: boolean };
+  state: {
+    sawPending?: boolean;
+    hasToolOutput?: boolean;
+    expandedCallRendered?: boolean;
+  };
 };
 
 const SCRIPT_HEADER =
@@ -180,20 +187,6 @@ function scriptSummary(
   ];
 }
 
-function expandedCalls(result: NativeResult): string[] {
-  return calls(result).map((call) => {
-    const duration =
-      call.durationMs === undefined
-        ? ""
-        : ` · ${call.durationMs < 1000 ? `${Math.round(call.durationMs)}ms` : formatDuration(call.durationMs)}`;
-    const cost =
-      call.cost === undefined
-        ? ""
-        : ` · ${call.cost > 0 && call.cost < 0.01 ? `$${call.cost.toPrecision(2)}` : formatUsdCost(call.cost)}`;
-    return `${call.name} · ${call.status}${duration}${cost}${call.args ? `\nArguments: ${call.args}` : ""}${call.error ? `\nError: ${call.error}` : ""}`;
-  });
-}
-
 const renderCodemodeSummary = toolResultRenderer({
   summary: (result, context) => scriptSummary(result, false, context.expanded),
   partial: (result) => ["Running script…", callSummary(result) ?? ""],
@@ -209,7 +202,6 @@ const renderCodemodeSummary = toolResultRenderer({
   },
   expandedCompleteDetails: (result, context) => [
     stringProperty(context.args, "code") ?? "",
-    ...expandedCalls(result),
     outputPath(result) ?? "",
   ],
   expandedContent(result) {
@@ -240,7 +232,7 @@ const renderCodemodeIdentity = toolCallRenderer({
 });
 
 const codemodeRenderers = {
-  renderCall(args: unknown, theme: Theme, context: CodemodeCallContext) {
+  renderCall(args: unknown, theme: Theme, context: NativeRenderContext) {
     // Live rows observe a pre-execution phase; HTML exports start after execution
     // and serialize their call header once, so must never acquire a pending label.
     if (!context.executionStarted) {
@@ -306,31 +298,67 @@ const codemodeRenderers = {
   },
 } satisfies ToolRenderers;
 
-/**
- * Presentation only: execution, discovery, authentication, and result data stay native.
- * HTML exports never expand call headers and mark them partial even after settlement,
- * so arguments/scripts live in expanded results and exported headers stay free of pending labels.
- */
+function compactWithNativeExpansion(
+  compact: CompactRenderers,
+  next: () => ToolRenderers | undefined,
+): ToolRenderers {
+  return {
+    renderCall(args: unknown, theme: Theme, context: NativeRenderContext) {
+      const nativeCall = context.expanded ? next()?.renderCall : undefined;
+      context.state.expandedCallRendered = Boolean(nativeCall);
+      // Native renderers may reuse incompatible compact components when toggling expansion.
+      return nativeCall
+        ? nativeCall(args, theme, { ...context, lastComponent: undefined })
+        : compact.renderCall(args, theme, context);
+    },
+    renderResult(result, options, theme, context: NativeRenderContext) {
+      const native = options.expanded ? next() : undefined;
+      if (!native?.renderResult) {
+        return compact.renderResult(result, options, theme, context);
+      }
+      const nativeContext = { ...context, lastComponent: undefined };
+      const output = native.renderResult(result, options, theme, nativeContext);
+      if (context.state.expandedCallRendered || !native.renderCall) {
+        return output;
+      }
+      // HTML exports expand only results: include the native call view to retain script/arguments.
+      const view = new Container();
+      view.addChild(
+        native.renderCall(context.args, theme, {
+          ...nativeContext,
+          expanded: true,
+        }),
+      );
+      view.addChild(output);
+      return view;
+    },
+  };
+}
+
+/** Presentation only: execution, discovery, authentication, and result data stay native. */
 export const resolveNativeToolRenderers: ToolRendererResolver = (
   name,
   next,
 ) => {
   if (name === "codemode") {
-    return codemodeRenderers;
+    return compactWithNativeExpansion(codemodeRenderers, next);
   }
   if (name === "tool_search") {
-    return searchRenderers;
+    return compactWithNativeExpansion(searchRenderers, next);
   }
   const mcp = /^mcp__(.+?)__(.+)$/.exec(name);
   if (mcp) {
-    return {
-      renderCall: toolCallRenderer({
-        name: `${mcp[1]}/${mcp[2]}`,
-        detail: argumentPreview,
-        pending: false,
-      }),
-      renderResult: renderMcpResult,
-    };
+    return compactWithNativeExpansion(
+      {
+        renderCall: toolCallRenderer({
+          name: `${mcp[1]}/${mcp[2]}`,
+          detail: argumentPreview,
+          pending: false,
+        }),
+        renderResult: renderMcpResult,
+      },
+      next,
+    );
   }
   return next();
 };
