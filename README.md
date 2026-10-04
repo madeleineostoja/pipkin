@@ -78,7 +78,7 @@ Native Pi owns MCP configuration, authentication, discovery, and `/mcp`, includi
 
 ### Session utilities
 
-- **UI** presents compact session status, recorded branch usage and routed-model identity, bounded live activity, and consistent MCP/codemode/discovery tool rendering.
+- **UI** presents compact session status, recorded branch usage and routed-model identity, bounded live activity, and consistent MCP/codemode/discovery tool rendering with visible nested-call outcomes.
 - **Personality** gives fresh sessions a contextual welcome and unnamed sessions useful titles.
 - **Papercuts** records recurring incidental friction only after an agent exercises a workaround and completes or safely continues its actual task.
 - **BTW** answers one ephemeral no-tools side question from readable canonical context using the selected model's ordinary defaults; press `s` after completion to promote a useful exchange into the transcript and context.

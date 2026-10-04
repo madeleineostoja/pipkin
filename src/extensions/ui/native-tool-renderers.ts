@@ -1,7 +1,10 @@
 import type {
   CodemodeToolDetails,
+  ThemeColor,
   ToolRendererResolver,
+  ToolRenderers,
 } from "@earendil-works/pi-coding-agent";
+import { Container, Text } from "@earendil-works/pi-tui";
 import {
   compactDisplayText,
   toolCallRenderer,
@@ -184,45 +187,89 @@ function expandedCalls(result: NativeResult): string[] {
   });
 }
 
-const codemodeRenderers = {
-  renderCall: toolCallRenderer({
-    name: "codemode",
-    pending: false,
-  }),
-  renderResult: toolResultRenderer({
-    summary: (result, context) =>
-      scriptSummary(result, false, context.expanded),
-    partial: (result) => ["Running script…", callSummary(result) ?? ""],
-    error: (result, context) => scriptSummary(result, true, context.expanded),
-    tone(result, context) {
-      return context.isError
-        ? "error"
-        : context.isPartial ||
-            calls(result).some(
-              (call) =>
-                call.status === "error" ||
-                call.status === "cancelled" ||
-                call.status === "running",
-            )
-          ? "warning"
-          : "toolOutput";
-    },
-    expandedCompleteDetails: (result, context) => [
-      stringProperty(context.args, "code") ?? "",
-      ...expandedCalls(result),
-      outputPath(result) ?? "",
-    ],
-    expandedContent(result) {
-      const content = result.content;
-      // Strip only Pi's standalone status header, never arbitrary script output or rejection text.
-      return Array.isArray(content) &&
-        isTextBlock(content[0]) &&
-        SCRIPT_HEADER.test(content[0].text)
-        ? content.slice(1)
-        : content;
-    },
-  }),
+const renderCodemodeSummary = toolResultRenderer({
+  summary: (result, context) => scriptSummary(result, false, context.expanded),
+  partial: (result) => ["Running script…", callSummary(result) ?? ""],
+  error: (result, context) => scriptSummary(result, true, context.expanded),
+  tone(result, context) {
+    return context.isError
+      ? "error"
+      : context.isPartial ||
+          calls(result).some(
+            (call) =>
+              call.status === "error" ||
+              call.status === "cancelled" ||
+              call.status === "running",
+          )
+        ? "warning"
+        : "toolOutput";
+  },
+  expandedCompleteDetails: (result, context) => [
+    stringProperty(context.args, "code") ?? "",
+    ...expandedCalls(result),
+    outputPath(result) ?? "",
+  ],
+  expandedContent(result) {
+    const content = result.content;
+    // Strip only Pi's standalone status header, never arbitrary script output or rejection text.
+    return Array.isArray(content) &&
+      isTextBlock(content[0]) &&
+      SCRIPT_HEADER.test(content[0].text)
+      ? content.slice(1)
+      : content;
+  },
+});
+
+const COMPACT_CALL_LIMIT = 8;
+const callStyles: Record<
+  NestedCall["status"],
+  { icon: string; color: ThemeColor }
+> = {
+  running: { icon: "…", color: "warning" },
+  ok: { icon: "✓", color: "success" },
+  error: { icon: "✗", color: "error" },
+  cancelled: { icon: "⊘", color: "muted" },
 };
+
+const codemodeRenderers = {
+  renderCall: toolCallRenderer({ name: "codemode", pending: false }),
+  renderResult(result, options, theme, context) {
+    const summary = renderCodemodeSummary(result, options, theme, context);
+    const nested = calls(result);
+    if (options.expanded || nested.length === 0) {
+      return summary;
+    }
+    const view = new Container();
+    view.addChild(summary);
+    if (nested.length > COMPACT_CALL_LIMIT) {
+      const hidden = nested.length - COMPACT_CALL_LIMIT;
+      view.addChild(
+        new Text(
+          theme.fg(
+            "muted",
+            `${hidden} earlier ${hidden === 1 ? "call" : "calls"} hidden — expand to inspect.`,
+          ),
+          0,
+          0,
+        ),
+      );
+    }
+    for (const call of nested.slice(-COMPACT_CALL_LIMIT)) {
+      const style = callStyles[call.status];
+      view.addChild(
+        new Text(
+          theme.fg(
+            style.color,
+            `${style.icon} ${compactDisplayText(call.name)}`,
+          ),
+          0,
+          0,
+        ),
+      );
+    }
+    return view;
+  },
+} satisfies ToolRenderers;
 
 /**
  * Presentation only: execution, discovery, authentication, and result data stay native.

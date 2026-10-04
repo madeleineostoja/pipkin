@@ -147,12 +147,26 @@ describe("native tool presentation", () => {
           error: "Write denied.",
         },
         { id: "call-1/3", name: "bash", args: "{}", status: "running" },
+        {
+          id: "call-1/4",
+          name: "tool_search",
+          args: "{}",
+          status: "cancelled",
+        },
       ],
     };
     const result = { content: [], details };
     const running = resultText("codemode", result, { isPartial: true });
     expect(running).toContain("Running script…");
-    expect(running).toContain("3 calls · 1 succeeded · 1 running · 1 failed");
+    expect(running).toContain(
+      "4 calls · 1 succeeded · 1 running · 1 failed · 1 cancelled",
+    );
+    expect(running).toContain("✓ read");
+    expect(running).toContain("✗ write");
+    expect(running).toContain("… bash");
+    expect(running).toContain("⊘ tool_search");
+    expect(running).not.toContain('"path":"a"');
+    expect(running).not.toContain("Write denied.");
     result.details.calls[2].status = "cancelled";
     const completed = resultText("codemode", {
       ...result,
@@ -164,8 +178,45 @@ describe("native tool presentation", () => {
       ],
     });
     expect(completed).toContain("Script completed. · 2s");
-    expect(completed).toContain("1 failed · 1 cancelled");
+    expect(completed).toContain("1 failed · 2 cancelled");
+    expect(completed).toContain("✓ read");
+    expect(completed).toContain("✗ write");
+    expect(completed).toContain("⊘ bash");
+    expect(completed).not.toContain("… bash");
     expect(completed).not.toContain("Script failed.");
+  });
+
+  it("bounds the compact call roster without hiding aggregate failures or losing expanded details", () => {
+    const details: CodemodeToolDetails = {
+      calls: Array.from({ length: 9 }, (_, index) => ({
+        id: `call-1/${index}`,
+        name: `tool-${index}`,
+        args: '{"path":"private-arguments"}',
+        status: index === 0 ? "error" : "ok",
+        ...(index === 0 ? { error: "Detailed failure." } : {}),
+      })),
+    };
+    const result = {
+      content: [{ type: "text" as const, text: "Printed output." }],
+      details,
+    };
+    const args = { code: "text('private-script');" };
+    const compact = resultText("codemode", result, { args });
+    expect(compact).toContain("9 calls · 8 succeeded · 1 failed");
+    expect(compact).toContain("1 earlier call hidden — expand to inspect.");
+    expect(compact).not.toContain("tool-0");
+    expect(compact).toContain("✓ tool-1");
+    expect(compact).toContain("✓ tool-8");
+    expect(compact).not.toContain("private-arguments");
+    expect(compact).not.toContain("private-script");
+    expect(compact).not.toContain("Printed output.");
+    const expanded = resultText("codemode", result, { expanded: true, args });
+    expect(expanded).toContain("tool-0 · error");
+    expect(expanded).toContain("Detailed failure.");
+    expect(expanded).toContain("private-arguments");
+    expect(expanded).toContain("private-script");
+    expect(expanded).toContain("Printed output.");
+    expect(expanded).not.toContain("hidden — expand to inspect.");
   });
 
   it("preserves failed codemode output, nested diagnostics, costs, recovery paths, and the expanded script", () => {
@@ -218,6 +269,9 @@ describe("native tool presentation", () => {
     const collapsed = resultText("codemode", result, { isError: true });
     expect(collapsed).toContain("Script failed.");
     expect(collapsed).toContain("1 failed");
+    expect(collapsed).toContain("✓ models.classify");
+    expect(collapsed).toContain("✗ write");
+    expect(collapsed).not.toContain('"question":"classify"');
     expect(collapsed).toContain("Full output: /tmp/full-script.txt");
     expect(collapsed).not.toContain("partial script output");
     const expanded = resultText("codemode", result, {
