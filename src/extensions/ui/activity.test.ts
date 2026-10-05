@@ -402,14 +402,14 @@ describe("Activity", () => {
       const view = activityView(mode);
       const collapsed = view.widget.render(80);
       expect(collapsed).toHaveLength(8);
-      expect(collapsed.join("\n")).toContain("… 8 more · ▸ expand");
+      expect(collapsed.join("\n")).toContain("… 8 more");
       expect(collapsed.join("\n")).not.toContain("preview");
 
       view.nativeExpanded = true;
       const expanded = view.widget.render(80);
       expect(expanded).toHaveLength(20);
       expect(expanded.join("\n")).toContain("preview");
-      expect(expanded.join("\n")).toContain("… 4 more · ▾ collapse");
+      expect(expanded.join("\n")).toContain("… 4 more");
       view.tui.terminal.rows = 24;
       expect(view.widget.render(80)).toHaveLength(12);
       for (const width of [1, 2, 24]) {

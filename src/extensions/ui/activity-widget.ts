@@ -238,18 +238,14 @@ export function renderActivity(
     }
   }
   const overflow = records.length - renderedRecords;
-  const toggle = expanded ? "▾ collapse" : "▸ expand";
-  lines.push(
-    theme.fg(
-      "muted",
-      truncateToWidth(
-        overflow > 0 ? `… ${overflow} more · ${toggle}` : toggle,
-        contentWidth,
-        "…",
-        false,
+  if (overflow > 0) {
+    lines.push(
+      theme.fg(
+        "muted",
+        truncateToWidth(`… ${overflow} more`, contentWidth, "…", false),
       ),
-    ),
-  );
+    );
+  }
   return lines;
 }
 
