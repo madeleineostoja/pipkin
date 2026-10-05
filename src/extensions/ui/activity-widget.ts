@@ -3,6 +3,7 @@ import {
   Box,
   type Component,
   type TUI,
+  type TuiMouseEvent,
   truncateToWidth,
   visibleWidth,
 } from "@earendil-works/pi-tui";
@@ -11,7 +12,12 @@ import type { ActivityState } from "./activity.js";
 import { ActivityStore, type StoredActivityRecord } from "./activity-store.js";
 
 const WIDGET_KEY = "pipkin.ui.activity";
-const ACTIVITY_BODY_LINE_LIMIT = 8;
+const ACTIVITY_BODY_LINE_LIMIT = 4;
+
+type ActivityExpansion = {
+  isExpanded(): boolean;
+  toggle(): void;
+};
 
 class ActivityWidget implements Component {
   #disposed = false;
@@ -21,6 +27,7 @@ class ActivityWidget implements Component {
     private readonly store: ActivityStore,
     private readonly tui: TUI,
     private readonly theme: Theme,
+    private readonly expansion: ActivityExpansion,
     onDispose: () => void,
   ) {
     this.#unsubscribe = store.subscribe(() => tui.requestRender());
@@ -43,7 +50,25 @@ class ActivityWidget implements Component {
     }
   }
 
+  handleMouse(event: TuiMouseEvent) {
+    if (
+      this.#disposed ||
+      event.type !== "click" ||
+      event.button !== "left" ||
+      event.y >= event.height - 1
+    ) {
+      return undefined;
+    }
+    this.expansion.toggle();
+    this.tui.requestRender();
+    return { handled: true };
+  }
+
   render(width: number): string[] {
+    const expanded = this.expansion.isExpanded();
+    const lineLimit = expanded
+      ? Math.max(1, Math.floor(this.tui.terminal.rows / 2) - 4)
+      : ACTIVITY_BODY_LINE_LIMIT;
     const records = this.store.records;
     if (records.length === 0) {
       return [];
@@ -51,13 +76,10 @@ class ActivityWidget implements Component {
     // Pi embeds its working status in the editor border, so leave a row between it and the panel.
     if (width < 3) {
       return [
-        ...renderActivity(
-          records,
-          Math.max(1, width),
-          this.theme,
-          Date.now(),
-          ACTIVITY_BODY_LINE_LIMIT,
-        ).map((line) =>
+        ...renderActivity(records, Math.max(1, width), this.theme, Date.now(), {
+          lineLimit,
+          expanded,
+        }).map((line) =>
           activityBackground(
             truncateToWidth(line, Math.max(1, width), "", true),
             this.theme,
@@ -74,7 +96,7 @@ class ActivityWidget implements Component {
           Math.max(1, contentWidth),
           this.theme,
           Date.now(),
-          ACTIVITY_BODY_LINE_LIMIT,
+          { lineLimit, expanded },
         ),
       invalidate() {},
     });
@@ -90,6 +112,23 @@ export function installActivityWidget(
     return () => {};
   }
   const components = new Set<ActivityWidget>();
+  // Pi propagates expand-all to transcript components, but not editor widgets.
+  // Observe its state at render time without intercepting the native keybinding.
+  let nativeExpanded = ctx.ui.getToolsExpanded();
+  let expanded = nativeExpanded;
+  const expansion: ActivityExpansion = {
+    isExpanded() {
+      const current = ctx.ui.getToolsExpanded();
+      if (current !== nativeExpanded) {
+        nativeExpanded = current;
+        expanded = current;
+      }
+      return expanded;
+    },
+    toggle() {
+      expanded = !this.isExpanded();
+    },
+  };
   let registered = false;
   let disposed = false;
   const disposeComponents = () => {
@@ -115,7 +154,7 @@ export function installActivityWidget(
     ctx.ui.setWidget(
       WIDGET_KEY,
       (tui, theme) => {
-        const widget = new ActivityWidget(store, tui, theme, () =>
+        const widget = new ActivityWidget(store, tui, theme, expansion, () =>
           components.delete(widget),
         );
         components.add(widget);
@@ -158,7 +197,10 @@ export function renderActivity(
   width: number,
   theme: Theme,
   now = Date.now(),
-  lineLimit = ACTIVITY_BODY_LINE_LIMIT,
+  {
+    lineLimit = ACTIVITY_BODY_LINE_LIMIT,
+    expanded = false,
+  }: { lineLimit?: number; expanded?: boolean } = {},
 ): string[] {
   const contentWidth = Math.max(1, width);
   const lines: string[] = [];
@@ -190,20 +232,24 @@ export function renderActivity(
     );
     remaining -= 1;
     renderedRecords += 1;
-    if (record.detail && remaining > 0) {
+    if (expanded && record.detail && remaining > 0) {
       lines.push(detailLine(record.detail, depth, contentWidth, theme));
       remaining -= 1;
     }
   }
   const overflow = records.length - renderedRecords;
-  if (overflow > 0) {
-    lines.push(
-      theme.fg(
-        "muted",
-        truncateToWidth(`… ${overflow} more`, contentWidth, "…", false),
+  const toggle = expanded ? "▾ collapse" : "▸ expand";
+  lines.push(
+    theme.fg(
+      "muted",
+      truncateToWidth(
+        overflow > 0 ? `… ${overflow} more · ${toggle}` : toggle,
+        contentWidth,
+        "…",
+        false,
       ),
-    );
-  }
+    ),
+  );
   return lines;
 }
 

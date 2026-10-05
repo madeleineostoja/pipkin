@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import {
+  type Component,
+  type TuiMouseEvent,
+  visibleWidth,
+} from "@earendil-works/pi-tui";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
 import {
   ACTIVITY_CHANNEL,
@@ -25,6 +29,54 @@ const theme = {
   fg: (_tone: string, text: string) => text,
   bold: (text: string) => text,
 } as never;
+
+function activityView(mode: string) {
+  const events = createEventBus();
+  const store = new ActivityStore();
+  const unsubscribe = events.on(ACTIVITY_CHANNEL, (event) =>
+    store.accept(event),
+  );
+  const publisher = createActivityPublisher(events, "test");
+  let factory: ((tui: unknown, theme: unknown) => Component) | undefined;
+  let widget: Component;
+  const tui = { mode, terminal: { rows: 40 }, requestRender: vi.fn() };
+  const view = {
+    nativeExpanded: false,
+    tui,
+    publisher,
+    get widget() {
+      return widget;
+    },
+    dispose() {
+      dispose();
+      unsubscribe();
+      store.dispose();
+    },
+  };
+  const dispose = installActivityWidget(
+    {
+      mode: "tui",
+      hasUI: true,
+      ui: {
+        getToolsExpanded: () => view.nativeExpanded,
+        setWidget: (_key: string, value: typeof factory) => {
+          factory = value;
+          if (factory) {
+            widget = factory(tui, {
+              fg: (_tone: string, text: string) => text,
+              bg: (_tone: string, text: string) => text,
+            });
+          }
+        },
+      },
+    } as never,
+    store,
+  );
+  for (let index = 0; index < 12; index++) {
+    publisher.upsert(record(`work-${index}`, { detail: `preview ${index}` }));
+  }
+  return view;
+}
 
 describe("Activity", () => {
   it("isolates replaced and disposed publisher generations", () => {
@@ -238,7 +290,11 @@ describe("Activity", () => {
     const store = new ActivityStore();
     const setWidget = vi.fn();
     const dispose = installActivityWidget(
-      { mode: "tui", hasUI: true, ui: { setWidget } } as never,
+      {
+        mode: "tui",
+        hasUI: true,
+        ui: { setWidget, getToolsExpanded: () => false },
+      } as never,
       store,
     );
 
@@ -300,6 +356,7 @@ describe("Activity", () => {
         mode: "tui",
         hasUI: true,
         ui: {
+          getToolsExpanded: () => false,
           setWidget: (
             _key: string,
             value:
@@ -339,50 +396,81 @@ describe("Activity", () => {
     dispose();
   });
 
-  it("uses the same activity body limit in both TUI modes", () => {
-    const store = new ActivityStore();
-    store.accept({
-      version: 1,
-      source: "x",
-      generation: "g",
-      operation: "replace",
-    });
-    for (let index = 0; index < 8; index += 1) {
-      store.accept({
-        version: 1,
-        source: "x",
-        generation: "g",
-        operation: "upsert",
-        record: record(`work-${index}`),
-      });
-    }
-    let factory:
-      | ((tui: unknown, theme: unknown) => { render(width: number): string[] })
-      | undefined;
-    const dispose = installActivityWidget(
-      {
-        mode: "tui",
-        hasUI: true,
-        ui: {
-          setWidget: (_key: string, value: typeof factory) => (factory = value),
-        },
-      } as never,
-      store,
-    );
-    const tui = {
-      mode: "regular" as "regular" | "fullscreen",
-      requestRender() {},
-    };
-    const widget = factory!(tui, {
-      fg: (_tone: string, text: string) => text,
-      bold: (text: string) => text,
-      bg: (_tone: string, text: string) => text,
-    });
+  it.each(["regular", "fullscreen"])(
+    "follows native expansion and bounds details after resize in %s mode",
+    (mode) => {
+      const view = activityView(mode);
+      const collapsed = view.widget.render(80);
+      expect(collapsed).toHaveLength(8);
+      expect(collapsed.join("\n")).toContain("… 8 more · ▸ expand");
+      expect(collapsed.join("\n")).not.toContain("preview");
 
-    expect(widget.render(80)).toHaveLength(11);
-    tui.mode = "fullscreen";
-    expect(widget.render(80)).toHaveLength(11);
-    dispose();
+      view.nativeExpanded = true;
+      const expanded = view.widget.render(80);
+      expect(expanded).toHaveLength(20);
+      expect(expanded.join("\n")).toContain("preview");
+      expect(expanded.join("\n")).toContain("… 4 more · ▾ collapse");
+      view.tui.terminal.rows = 24;
+      expect(view.widget.render(80)).toHaveLength(12);
+      for (const width of [1, 2, 24]) {
+        expect(
+          view.widget
+            .render(width)
+            .every((line) => visibleWidth(line) <= width),
+        ).toBe(true);
+      }
+      view.nativeExpanded = false;
+      expect(view.widget.render(80)).toEqual(collapsed);
+      view.dispose();
+    },
+  );
+
+  it("keeps clicks local, ignores non-clicks, and retains the choice when work returns", () => {
+    const view = activityView("fullscreen");
+    const click = {
+      type: "click",
+      button: "left",
+      x: 1,
+      y: 1,
+      screenX: 1,
+      screenY: 1,
+      width: 80,
+      height: 8,
+      shift: false,
+      alt: false,
+      ctrl: false,
+    } satisfies TuiMouseEvent;
+    view.widget.render(80);
+    for (const event of [
+      { ...click, type: "wheel" as const },
+      { ...click, type: "drag" as const },
+      { ...click, button: "right" as const },
+      { ...click, y: 7 },
+    ]) {
+      expect(view.widget.handleMouse?.(event)).toBeUndefined();
+    }
+    expect(view.widget.render(80)).toHaveLength(8);
+    expect(view.widget.handleMouse?.(click)).toEqual({ handled: true });
+    expect(view.nativeExpanded).toBe(false);
+    expect(view.tui.requestRender).toHaveBeenCalled();
+    expect(view.widget.render(80)).toHaveLength(20);
+
+    view.publisher.clear();
+    view.publisher.upsert(record("returned", { detail: "preview returned" }));
+    expect(view.widget.render(80).join("\n")).toContain("preview returned");
+    view.nativeExpanded = true;
+    view.widget.render(80);
+    view.widget.handleMouse?.(click);
+    expect(view.widget.render(80).join("\n")).not.toContain("preview returned");
+    expect(view.nativeExpanded).toBe(true);
+    view.nativeExpanded = false;
+    view.widget.render(80);
+    view.nativeExpanded = true;
+    expect(view.widget.render(80).join("\n")).toContain("preview returned");
+
+    const retired = view.widget;
+    view.dispose();
+    expect(retired.handleMouse?.(click)).toBeUndefined();
   });
 
   it("keeps hierarchy, details, overflow, and ANSI-safe width bounded", () => {
@@ -414,7 +502,10 @@ describe("Activity", () => {
         updatedAt: 1,
       }),
     });
-    const lines = renderActivity(store.records, 24, theme, Date.now());
+    const lines = renderActivity(store.records, 24, theme, Date.now(), {
+      lineLimit: 8,
+      expanded: true,
+    });
     expect(lines.join("\n")).toContain("reading");
     expect(lines.join("\n")).toContain("… 2 more");
     expect(lines.every((line) => visibleWidth(line) <= 24)).toBe(true);
