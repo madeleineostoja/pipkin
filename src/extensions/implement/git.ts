@@ -134,7 +134,6 @@ export class ExecGitClient implements GitClient {
       ["CHERRY_PICK_HEAD", "cherry-pick"],
       ["MERGE_HEAD", "merge"],
       ["REVERT_HEAD", "revert"],
-      ["REBASE_HEAD", "rebase"],
     ] as const) {
       const result = await this.run(["rev-parse", "-q", "--verify", ref], true);
       if (result.exitCode === 0) {

@@ -56,6 +56,10 @@ Use `npm` from the repository root.
 
 Vitest projects run adjacent feature/library tests and the root bundle contract. Feature project names match their `src/extensions/<feature>/` directory; additional projects are `lib`, `bundle`, `implement-unit`, and `implement-integration`. `vitest.config.ts` is the authoritative project registry. Prefer path filtering for ordinary focused work and project filtering when the configured project boundary matters. Keep Implement's serialized project intact; do not flatten all tests into one unisolated realm.
 
+## Testing
+
+- Do not add regression coverage for removed code. Test supported behavior in the remaining code rather than preserving cases tied to deleted logic.
+
 ## Development workflow
 
 - To add a feature, create `src/extensions/<feature>/index.ts`, add it in its intentional position to `package.json#pi.extensions`, add adjacent behavior tests, extend `test/bundle/` if public registrations or ordering change, and update the relevant concept guide plus the root README.
