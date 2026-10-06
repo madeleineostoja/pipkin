@@ -17,7 +17,110 @@ type ToolCallHandler = (
   ctx: ExtensionContext,
 ) => Promise<unknown>;
 
+function deferredChoice() {
+  let resolve!: (value: string | undefined) => void;
+  const promise = new Promise<string | undefined>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function readonlyHarness(
+  select: ExtensionContext["ui"]["select"],
+  input: ExtensionContext["ui"]["input"] = async () => undefined,
+) {
+  let toolCall!: ToolCallHandler;
+  registerReadonlyMode({
+    registerShortcut: () => {},
+    registerCommand: () => {},
+    on: (event: string, handler: unknown) => {
+      if (event === "tool_call") {
+        toolCall = handler as ToolCallHandler;
+      }
+    },
+  } as unknown as ExtensionAPI);
+  const controller = new AbortController();
+  const ctx = {
+    hasUI: true,
+    signal: controller.signal,
+    ui: { select, input },
+  } as unknown as ExtensionContext;
+  return {
+    controller,
+    call: (path: string) =>
+      toolCall({ toolName: "edit", input: { path } }, ctx),
+  };
+}
+
 describe("Readonly", () => {
+  it("serializes concurrent approvals including the denial reason prompt", async () => {
+    const choice = deferredChoice();
+    const reason = deferredChoice();
+    const select = vi
+      .fn()
+      .mockReturnValueOnce(choice.promise)
+      .mockResolvedValue("Allow");
+    const input = vi.fn().mockReturnValue(reason.promise);
+    const { call } = readonlyHarness(select, input);
+    const first = call("a.ts");
+    const second = call("b.ts");
+    await vi.waitFor(() => expect(select).toHaveBeenCalledOnce());
+    choice.resolve("Deny");
+    await vi.waitFor(() => expect(input).toHaveBeenCalledOnce());
+    expect(select).toHaveBeenCalledOnce();
+    reason.resolve("Keep the original");
+    expect(await first).toEqual({
+      block: true,
+      reason: expect.stringContaining("Keep the original"),
+    });
+    expect(await second).toBeUndefined();
+    expect(select.mock.calls.map(([title]) => title)).toEqual([
+      "Readonly: apply edit to a.ts?",
+      "Readonly: apply edit to b.ts?",
+    ]);
+  });
+
+  it("rechecks Readonly after a queued Allow for session", async () => {
+    const choice = deferredChoice();
+    const select = vi.fn().mockReturnValue(choice.promise);
+    const { call } = readonlyHarness(select);
+    const first = call("a.ts");
+    const second = call("b.ts");
+    await vi.waitFor(() => expect(select).toHaveBeenCalledOnce());
+    choice.resolve("Allow for session");
+    expect(await Promise.all([first, second])).toEqual([undefined, undefined]);
+    expect(select).toHaveBeenCalledOnce();
+  });
+
+  it("continues the approval queue after a dialog failure", async () => {
+    const select = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Dialog failed"))
+      .mockResolvedValue("Allow");
+    const { call } = readonlyHarness(select);
+    const first = call("a.ts");
+    const second = call("b.ts");
+    await expect(first).rejects.toThrow("Dialog failed");
+    expect(await second).toBeUndefined();
+    expect(select).toHaveBeenCalledTimes(2);
+  });
+
+  it("blocks aborted queued edits without another prompt", async () => {
+    const choice = deferredChoice();
+    const select = vi.fn().mockReturnValue(choice.promise);
+    const { call, controller } = readonlyHarness(select);
+    const first = call("a.ts");
+    const second = call("b.ts");
+    await vi.waitFor(() => expect(select).toHaveBeenCalledOnce());
+    controller.abort();
+    choice.resolve(undefined);
+    expect(await Promise.all([first, second])).toEqual([
+      expect.objectContaining({ block: true }),
+      expect.objectContaining({ block: true }),
+    ]);
+    expect(select).toHaveBeenCalledOnce();
+  });
+
   it("leaves proposed changes to the registered tool renderer", async () => {
     let toolCall: ToolCallHandler | undefined;
     const api = {

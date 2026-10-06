@@ -54,7 +54,7 @@ Implement coordinates trusted workers in disposable Git worktrees, publishes thr
 ### Safety and context
 
 - **Sandbox** contains model Bash and direct `write`/`edit` calls on macOS. Inspection children can protect source and Git while retaining disposable dependency runtime writes; Linux remains instruction-only.
-- **Readonly** independently asks for confirmation before resolved `edit` and `write` calls.
+- **Readonly** independently queues confirmations before resolved `edit` and `write` calls.
 - **Context** conservatively prunes consumed stale or superseded tool output through native boundary edits, routes textual compaction through `models.low`, uses server checkpoints for eligible Codex OAuth sessions with visible fallback diagnostics and bounded replay failure reasons/recovery guidance, and preserves original results and immutable execution evidence for `read_output`.
 - **Processes** runs foreground non-interactive commands while the main agent continues independent work.
 
@@ -78,7 +78,7 @@ Native Pi owns MCP configuration, authentication, discovery, and `/mcp`, includi
 
 ### Session utilities
 
-- **UI** presents compact session status, recorded branch usage and routed-model identity, collapsible live activity, and compact MCP/codemode/discovery tool rendering with visible nested-call outcomes and native expanded views.
+- **UI** presents compact session status, recorded branch usage and routed-model identity, collapsible live activity, and compact MCP/codemode/discovery tool rendering with an overall codemode timer, edit targets, visible nested-call outcomes, and native expanded views.
 - **Personality** gives fresh sessions a contextual welcome and unnamed sessions useful titles.
 - **Papercuts** records recurring incidental friction only after an agent exercises a workaround and completes or safely continues its actual task.
 - **BTW** answers one ephemeral no-tools side question from readable canonical context using the selected model's ordinary defaults; press `s` after completion to promote a useful exchange into the transcript and context.

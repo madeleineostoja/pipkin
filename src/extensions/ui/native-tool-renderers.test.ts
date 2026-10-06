@@ -4,8 +4,9 @@ import type {
   ToolRenderers,
 } from "@earendil-works/pi-coding-agent";
 import { Text, type Component } from "@earendil-works/pi-tui";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveNativeToolRenderers } from "./native-tool-renderers.js";
+import { CodemodeProgress } from "./codemode-progress.js";
 
 type ToolRenderContext = Parameters<
   NonNullable<ToolRenderers["renderCall"]>
@@ -64,6 +65,107 @@ function resultText(
 }
 
 describe("native tool presentation", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("ticks one overall codemode timer without requiring nested-call progress", () => {
+    vi.useFakeTimers();
+    const progress = new CodemodeProgress();
+    const native = { renderCall: () => new Text("Native script", 0, 0) };
+    const renderer = resolveNativeToolRenderers(
+      "codemode",
+      () => native,
+      progress,
+    )!;
+    const args = { code: "await tools.edit({});" };
+    const ctx = context({ args, isPartial: true, executionStarted: false });
+    expect(text(renderer.renderCall!(args, theme, ctx))).not.toContain("0s");
+    progress.start(ctx.toolCallId);
+    ctx.executionStarted = true;
+    expect(text(renderer.renderCall!(args, theme, ctx))).toContain(
+      "codemode · 0s",
+    );
+    vi.advanceTimersByTime(3000);
+    expect(ctx.invalidate).toHaveBeenCalledTimes(3);
+    expect(text(renderer.renderCall!(args, theme, ctx))).toContain(
+      "codemode · 3s",
+    );
+    ctx.expanded = true;
+    expect(text(renderer.renderCall!(args, theme, ctx))).toBe(
+      "Elapsed 3s\nNative script",
+    );
+    progress.finish(ctx.toolCallId);
+    ctx.isPartial = false;
+    expect(text(renderer.renderCall!(args, theme, ctx))).toBe("Native script");
+    expect(vi.getTimerCount()).toBe(0);
+    // Completed exports do not acquire a live timer even with a partial render context.
+    expect(
+      text(
+        renderer.renderCall!(
+          args,
+          theme,
+          context({ expanded: true, isPartial: true }),
+        ),
+      ),
+    ).toBe("Native script");
+  });
+
+  it("clears clocks and redraw callbacks on session replacement or shutdown", () => {
+    vi.useFakeTimers();
+    const progress = new CodemodeProgress();
+    const invalidate = vi.fn();
+    progress.start("a");
+    progress.start("b");
+    progress.elapsed("a", invalidate);
+    progress.finish("b");
+    expect(vi.getTimerCount()).toBe(1);
+    progress.clear();
+    progress.clear();
+    vi.advanceTimersByTime(3000);
+    expect(invalidate).not.toHaveBeenCalled();
+    expect(progress.elapsed("a", invalidate)).toBeUndefined();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("shows only bounded edit paths, tolerating truncated native argument previews", () => {
+    const result = {
+      content: [],
+      details: {
+        calls: [
+          {
+            id: "1",
+            name: "edit",
+            args: JSON.stringify({
+              path: "src/a.ts",
+              edits: [{ oldText: "secret", newText: "secret" }],
+            }),
+            status: "ok",
+          },
+          {
+            id: "2",
+            name: "edit",
+            args: '{"path":"src/b.ts","edits":…',
+            status: "running",
+          },
+          {
+            id: "3",
+            name: "edit",
+            args: JSON.stringify({
+              path: `src/\u001b[2Junsafe\n${"a".repeat(200)}`,
+            }),
+            status: "running",
+          },
+        ],
+      },
+    };
+    const compact = resultText("codemode", result, { isPartial: true });
+    expect(compact).toContain("✓ edit src/a.ts");
+    expect(compact).toContain("… edit src/unsafe ");
+    expect(compact).not.toContain("secret");
+    expect(compact).not.toContain("\u001b");
+    expect(compact).not.toContain("a".repeat(120));
+    expect(compact).toContain("… edit src/b.ts");
+  });
+
   it("overrides selected native renderers while delegating feature-owned and other native tools", () => {
     const existing = { renderCall: vi.fn(), renderResult: vi.fn() };
     const next = vi.fn(() => existing);

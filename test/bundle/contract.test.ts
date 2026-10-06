@@ -601,6 +601,74 @@ describe("Pipkin bundle", () => {
     await runner.emit({ type: "session_shutdown", reason: "quit" });
   });
 
+  it("drives the codemode clock from execution events and clears it at lifecycle boundaries", async () => {
+    const fixture = await loadBundle();
+    const { runner, errors } = await createBundleRunner(fixture);
+    initTheme("dark");
+    runner.setUIContext(undefined, "tui");
+    vi.useFakeTimers();
+    try {
+      const renderer = runner.resolveToolRenderers(
+        "codemode",
+        () => undefined,
+      )!;
+      const theme = {
+        fg: (_color: string, value: string) => value,
+        bold: (value: string) => value,
+      } as Theme;
+      const context = {
+        toolCallId: "clock-call",
+        lastComponent: undefined,
+        cwd: fixture.cwd,
+        argsComplete: true,
+        showImages: true,
+        isError: false,
+        args: {},
+        state: {},
+        invalidate: vi.fn(),
+        isPartial: true,
+        executionStarted: true,
+        expanded: false,
+      } as Parameters<NonNullable<ToolRenderers["renderCall"]>>[2];
+      const render = () =>
+        renderer.renderCall!({}, theme, context)
+          .render(200)
+          .join("\n")
+          .trimEnd();
+      const start = () =>
+        runner.emit({
+          type: "tool_execution_start",
+          toolCallId: context.toolCallId,
+          toolName: "codemode",
+          args: {},
+        });
+      await start();
+      expect(render()).toContain("· 0s");
+      vi.advanceTimersByTime(2000);
+      expect(context.invalidate).toHaveBeenCalledTimes(2);
+      expect(render()).toContain("· 2s");
+      await runner.emit({
+        type: "tool_execution_end",
+        toolCallId: context.toolCallId,
+        toolName: "codemode",
+        result: { content: [], details: {} },
+        isError: false,
+      });
+      expect(render()).toBe("codemode");
+      await start();
+      await runner.emit({ type: "session_start", reason: "reload" });
+      expect(render()).toBe("codemode");
+      await start();
+      await runner.emit({ type: "session_shutdown", reason: "quit" });
+      expect(render()).toBe("codemode");
+      expect(vi.getTimerCount()).toBe(0);
+      expect(errors).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      await runner.emit({ type: "session_shutdown", reason: "quit" });
+    }
+  });
+
   it("registers UI-owned native presentation without replacing tool definitions, including disconnected MCP history", async () => {
     const fixture = await loadBundle({ nativeFactories: true });
     const { runner, errors } = await createBundleRunner(fixture);

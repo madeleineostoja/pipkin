@@ -18,6 +18,7 @@ const EDITING_ICON = "󰏫";
 
 export function registerReadonlyMode(pi: ExtensionAPI): void {
   let enabled = true;
+  let approvalQueue = Promise.resolve<unknown>(undefined);
 
   function syncFooter(ctx: ExtensionContext) {
     if (ctx.mode !== "tui") {
@@ -80,31 +81,45 @@ export function registerReadonlyMode(pi: ExtensionAPI): void {
       return undefined;
     }
 
-    const path = formatReadonlyTarget(extractToolPath(event.input));
-    const permission = await promptForPermission({
-      ui: ctx.ui,
-      signal: ctx.signal,
-      title: `Readonly: apply ${event.toolName} to ${path ?? "an unspecified target"}?`,
-      choices: [
-        { value: "Allow", label: "Allow" },
-        { value: "Allow for session", label: "Allow for session" },
-        {
-          value: "Deny",
-          label: "Deny",
-          input: {
-            title: formatDenyTitle(path),
-            placeholder: "give a reason",
+    // Pi has one visible selector; overlapping approvals strand earlier prompts.
+    const approval = approvalQueue.then(async () => {
+      if (ctx.signal?.aborted) {
+        return {
+          block: true,
+          reason: resolveChoice({ choice: undefined, message: "" }).reason,
+        };
+      }
+      if (!enabled) {
+        return undefined;
+      }
+      const path = formatReadonlyTarget(extractToolPath(event.input));
+      const permission = await promptForPermission({
+        ui: ctx.ui,
+        signal: ctx.signal,
+        title: `Readonly: apply ${event.toolName} to ${path ?? "an unspecified target"}?`,
+        choices: [
+          { value: "Allow", label: "Allow" },
+          { value: "Allow for session", label: "Allow for session" },
+          {
+            value: "Deny",
+            label: "Deny",
+            input: {
+              title: formatDenyTitle(path),
+              placeholder: "give a reason",
+            },
           },
-        },
-      ],
+        ],
+      });
+      const result = resolveChoice({
+        choice: permission.kind === "selected" ? permission.value : undefined,
+        message: permission.kind === "selected" ? permission.message : "",
+      });
+      if (result.disable) {
+        setEnabled(false, ctx);
+      }
+      return result.block ? { block: true, reason: result.reason } : undefined;
     });
-    const result = resolveChoice({
-      choice: permission.kind === "selected" ? permission.value : undefined,
-      message: permission.kind === "selected" ? permission.message : "",
-    });
-    if (result.disable) {
-      setEnabled(false, ctx);
-    }
-    return result.block ? { block: true, reason: result.reason } : undefined;
+    approvalQueue = approval.catch(() => undefined);
+    return approval;
   });
 }

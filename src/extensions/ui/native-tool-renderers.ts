@@ -12,6 +12,7 @@ import {
   toolResultRenderer,
 } from "#lib/ui/tool-result-renderer";
 import { formatDuration } from "#lib/ui/metrics";
+import type { CodemodeProgress } from "./codemode-progress.js";
 
 type NativeResult = Parameters<ReturnType<typeof toolResultRenderer>>[0];
 type NestedCall = CodemodeToolDetails["calls"][number];
@@ -226,90 +227,138 @@ const callStyles: Record<
   cancelled: { icon: "⊘", color: "muted" },
 };
 
-const renderCodemodeIdentity = toolCallRenderer({
-  name: "codemode",
-  pending: false,
-});
-
-const codemodeRenderers = {
-  renderCall(args: unknown, theme: Theme, context: NativeRenderContext) {
-    // Live rows observe a pre-execution phase; HTML exports start after execution
-    // and serialize their call header once, so must never acquire a pending label.
-    if (!context.executionStarted) {
-      context.state.sawPending = true;
-    }
-    const identity = renderCodemodeIdentity(args, theme, context);
-    if (
-      !context.isPartial ||
-      !context.state.sawPending ||
-      context.state.hasToolOutput
-    ) {
-      return identity;
-    }
-    const view = new Container();
-    view.addChild(identity);
-    view.addChild(
-      new Text(
-        theme.fg(
-          "muted",
-          context.executionStarted ? "Running script…" : "Preparing script…",
-        ),
-        0,
-        0,
-      ),
+function nestedCallDetail(call: NestedCall): string {
+  if (call.name !== "edit") {
+    return "";
+  }
+  try {
+    return compactDisplayText(
+      stringProperty(JSON.parse(call.args), "path"),
+      120,
     );
-    return view;
-  },
-  renderResult(result, options, theme, context) {
-    const summary = renderCodemodeSummary(result, options, theme, context);
-    const nested = calls(result);
-    if (options.expanded || nested.length === 0) {
-      return summary;
+  } catch {
+    // Pi truncates previews at 200 characters; retain a complete leading path
+    // even when the larger edits array is cut off, never guess an incomplete path.
+    try {
+      const leadingPath = /^\{\s*"path"\s*:\s*("(?:[^"\\]|\\.)*")/u.exec(
+        call.args,
+      );
+      return leadingPath
+        ? compactDisplayText(JSON.parse(leadingPath[1]!), 120)
+        : "";
+    } catch {
+      return "";
     }
-    const view = new Container();
-    view.addChild(summary);
-    if (nested.length > COMPACT_CALL_LIMIT) {
-      const hidden = nested.length - COMPACT_CALL_LIMIT;
+  }
+}
+
+function codemodeRenderers(progress?: CodemodeProgress): CompactRenderers {
+  return {
+    renderCall(args: unknown, theme: Theme, context: NativeRenderContext) {
+      // Live rows observe a pre-execution phase; HTML exports start after execution
+      // and serialize their call header once, so must never acquire a pending label.
+      if (!context.executionStarted) {
+        context.state.sawPending = true;
+      }
+      const elapsed = context.isPartial
+        ? progress?.elapsed(context.toolCallId, context.invalidate)
+        : undefined;
+      const identity = toolCallRenderer({
+        name: "codemode",
+        detail: () =>
+          elapsed === undefined ? undefined : `· ${formatDuration(elapsed)}`,
+        pending: false,
+      })(args, theme, context);
+      if (
+        !context.isPartial ||
+        !context.state.sawPending ||
+        context.state.hasToolOutput
+      ) {
+        return identity;
+      }
+      const view = new Container();
+      view.addChild(identity);
       view.addChild(
         new Text(
           theme.fg(
             "muted",
-            `${hidden} earlier ${hidden === 1 ? "call" : "calls"} hidden — expand to inspect.`,
+            context.executionStarted ? "Running script…" : "Preparing script…",
           ),
           0,
           0,
         ),
       );
-    }
-    for (const call of nested.slice(-COMPACT_CALL_LIMIT)) {
-      const style = callStyles[call.status];
-      view.addChild(
-        new Text(
-          theme.fg(
-            style.color,
-            `${style.icon} ${compactDisplayText(call.name)}`,
+      return view;
+    },
+    renderResult(result, options, theme, context) {
+      const summary = renderCodemodeSummary(result, options, theme, context);
+      const nested = calls(result);
+      if (options.expanded || nested.length === 0) {
+        return summary;
+      }
+      const view = new Container();
+      view.addChild(summary);
+      if (nested.length > COMPACT_CALL_LIMIT) {
+        const hidden = nested.length - COMPACT_CALL_LIMIT;
+        view.addChild(
+          new Text(
+            theme.fg(
+              "muted",
+              `${hidden} earlier ${hidden === 1 ? "call" : "calls"} hidden — expand to inspect.`,
+            ),
+            0,
+            0,
           ),
-          0,
-          0,
-        ),
-      );
-    }
-    return view;
-  },
-} satisfies ToolRenderers;
+        );
+      }
+      for (const call of nested.slice(-COMPACT_CALL_LIMIT)) {
+        const style = callStyles[call.status];
+        const detail = nestedCallDetail(call);
+        view.addChild(
+          new Text(
+            theme.fg(
+              style.color,
+              `${style.icon} ${compactDisplayText(call.name)}${detail ? ` ${detail}` : ""}`,
+            ),
+            0,
+            0,
+          ),
+        );
+      }
+      return view;
+    },
+  };
+}
 
 function compactWithNativeExpansion(
   compact: CompactRenderers,
   next: () => ToolRenderers | undefined,
+  progress?: CodemodeProgress,
 ): ToolRenderers {
   return {
     renderCall(args: unknown, theme: Theme, context: NativeRenderContext) {
       const nativeCall = context.expanded ? next()?.renderCall : undefined;
       context.state.expandedCallRendered = Boolean(nativeCall);
       // Native renderers may reuse incompatible compact components when toggling expansion.
-      return nativeCall
-        ? nativeCall(args, theme, { ...context, lastComponent: undefined })
-        : compact.renderCall(args, theme, context);
+      if (!nativeCall) {
+        return compact.renderCall(args, theme, context);
+      }
+      const output = nativeCall(args, theme, {
+        ...context,
+        lastComponent: undefined,
+      });
+      const elapsed = context.isPartial
+        ? progress?.elapsed(context.toolCallId, context.invalidate)
+        : undefined;
+      if (elapsed === undefined) {
+        return output;
+      }
+      const view = new Container();
+      view.addChild(
+        new Text(theme.fg("muted", `Elapsed ${formatDuration(elapsed)}`), 0, 0),
+      );
+      view.addChild(output);
+      return view;
     },
     renderResult(result, options, theme, context: NativeRenderContext) {
       const native = options.expanded ? next() : undefined;
@@ -336,12 +385,17 @@ function compactWithNativeExpansion(
 }
 
 /** Presentation only: execution, discovery, authentication, and result data stay native. */
-export const resolveNativeToolRenderers: ToolRendererResolver = (
-  name,
-  next,
-) => {
+export function resolveNativeToolRenderers(
+  name: Parameters<ToolRendererResolver>[0],
+  next: Parameters<ToolRendererResolver>[1],
+  progress?: CodemodeProgress,
+): ReturnType<ToolRendererResolver> {
   if (name === "codemode") {
-    return compactWithNativeExpansion(codemodeRenderers, next);
+    return compactWithNativeExpansion(
+      codemodeRenderers(progress),
+      next,
+      progress,
+    );
   }
   if (name === "tool_search") {
     return compactWithNativeExpansion(searchRenderers, next);
@@ -361,4 +415,4 @@ export const resolveNativeToolRenderers: ToolRendererResolver = (
     );
   }
   return next();
-};
+}
