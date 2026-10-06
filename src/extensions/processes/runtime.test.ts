@@ -15,6 +15,9 @@ import {
   type SandboxExecutionTerminal,
 } from "../sandbox/bash-capability.js";
 import { ProcessRuntime } from "./runtime.js";
+import { ACTIVITY_CHANNEL } from "#ui/activity";
+import { ActivityStore } from "../ui/activity-store.js";
+import { ProcessActivityProjector } from "./activity-projector.js";
 
 type LeaseControl = {
   complete: (terminal: SandboxExecutionTerminal) => void;
@@ -87,6 +90,7 @@ function runtime(
   const owner = new ProcessRuntime(host, () => true);
   return {
     runtime: owner,
+    host,
     controls,
     scope,
     binding: {
@@ -353,9 +357,16 @@ describe("ProcessRuntime", () => {
     expect(result.output).toContain("[stdout] hello");
   });
 
-  it("stops through the lease without a direct process owner", async () => {
+  it("stops through the lease and removes the live Activity entry", async () => {
     const fixture = runtime();
     bindings.push(fixture.binding);
+    const store = new ActivityStore();
+    fixture.host.on(ACTIVITY_CHANNEL, (event) => store.accept(event));
+    const projector = new ProcessActivityProjector(
+      fixture.runtime,
+      fixture.host,
+    );
+    projector.start();
     const snapshot = await fixture.runtime.start({
       command: "sleep 1",
       description: "sleep",
@@ -363,8 +374,12 @@ describe("ProcessRuntime", () => {
       ctx,
       signal: undefined,
     });
+    expect(store.records).toHaveLength(1);
     const result = await fixture.runtime.stop(snapshot.id);
     expect(result.snapshot.status).toBe("stopped");
+    expect(store.records).toEqual([]);
+    projector.dispose();
+    store.dispose();
   });
 
   it("settles a waiting caller while disposing its session", async () => {

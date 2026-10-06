@@ -20,6 +20,7 @@ import {
 } from "./bash.js";
 import type { SandboxDenialObserver } from "./denial-observer.js";
 import type { SandboxPolicy } from "./policy.js";
+import * as processGroup from "./process-group.js";
 
 const directories: string[] = [];
 
@@ -808,6 +809,9 @@ printf last`,
       expect(pid).toBe(-54321);
       return true; // The fake group remains alive after both signals.
     });
+    const cleanup = vi
+      .spyOn(processGroup, "waitForProcessTree")
+      .mockResolvedValue(false);
     const runtime = createSandboxBashRuntime({
       enabled: () => false,
       supportedMac: false,
@@ -845,6 +849,7 @@ printf last`,
       });
     } finally {
       kill.mockRestore();
+      cleanup.mockRestore();
       await runtime.dispose();
     }
   });

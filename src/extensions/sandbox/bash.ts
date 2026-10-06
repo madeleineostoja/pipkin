@@ -13,6 +13,7 @@ import {
   type SandboxDenialObserver,
 } from "./denial-observer.js";
 import type { SandboxPolicy } from "./policy.js";
+import { waitForProcessTree } from "./process-group.js";
 import { SANDBOX_EXECUTABLE, sandboxArguments } from "./seatbelt.js";
 import {
   SandboxCleanupError,
@@ -23,7 +24,6 @@ import {
 
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const TERMINATION_WAIT_MS = 5_000;
-const TERMINATION_POLL_MS = 10;
 const OUTPUT_DRAIN_TIMEOUT_MS = 2_000;
 const LAUNCH_MARKER = "__PIPKIN_SANDBOX_LAUNCHED__\n";
 const LAUNCH_PREFIX = `printf '${LAUNCH_MARKER}'\n`;
@@ -121,26 +121,6 @@ function terminate(child: ChildProcess): void {
     try {
       process.kill(child.pid, "SIGKILL");
     } catch {}
-  }
-}
-
-async function waitForProcessTree(
-  pid: number,
-  deadline = Date.now() + TERMINATION_WAIT_MS,
-): Promise<boolean> {
-  while (true) {
-    try {
-      process.kill(-pid, 0);
-    } catch {
-      return true;
-    }
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) {
-      return false;
-    }
-    await new Promise((resolve) =>
-      setTimeout(resolve, Math.min(TERMINATION_POLL_MS, remaining)),
-    );
   }
 }
 
