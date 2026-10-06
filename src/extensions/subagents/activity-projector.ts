@@ -1,3 +1,4 @@
+import { stripVTControlCharacters } from "node:util";
 import {
   ACTIVITY_DETAIL_BYTE_LIMIT,
   ACTIVITY_TEXT_BYTE_LIMIT,
@@ -5,7 +6,7 @@ import {
   type ActivityPublisher,
   type ActivityState,
 } from "#ui/activity";
-import { formatCompactTokens } from "#lib/ui/metrics";
+import { formatCompactTokens, formatUsdCost } from "#lib/ui/metrics";
 import type { EventBus } from "@earendil-works/pi-coding-agent";
 import { isImplementOwned } from "./ownership.js";
 import type {
@@ -66,15 +67,19 @@ export class SubagentActivityProjector {
     }
     for (const snapshot of visible) {
       const detail = safeDetail(snapshot);
-      const context = snapshot.health?.contextUsage?.tokens;
+      const expandedMetric = usageMetric(snapshot);
+      const metric = summaryMetric(snapshot, visible);
       publisher.upsert({
         id: snapshot.id,
         ...parentIdentity(snapshot.owner, ids),
         label: agentLabel(snapshot),
         title: activityTitle(snapshot),
         ...(detail ? { detail } : {}),
-        ...(typeof context === "number"
-          ? { metric: `${formatCompactTokens(context)} context` }
+        ...(expandedMetric ? { expandedMetric } : {}),
+        ...(metric ? { metric } : {}),
+        ...(typeof snapshot.owner === "object" &&
+        snapshot.owner.kind === "nested"
+          ? { expandedOnly: true }
           : {}),
         state: activityState(snapshot),
         ...(timestamp(snapshot.timestamps.startedAt) === undefined
@@ -146,11 +151,54 @@ function activityTitle(snapshot: RuntimeSnapshot): string {
   return `${bounded(snapshot.type, 80)} agent`;
 }
 
-function safeDetail(snapshot: RuntimeSnapshot): string | undefined {
+function summaryMetric(
+  snapshot: RuntimeSnapshot,
+  active: readonly RuntimeSnapshot[],
+): string | undefined {
+  const nested = active.filter(
+    (child) =>
+      typeof child.owner === "object" &&
+      child.owner.kind === "nested" &&
+      child.owner.parentId === snapshot.id,
+  ).length;
   const pending = snapshot.health?.pendingSteering;
-  if (pending) {
-    return `${pending} guidance pending`;
+  return (
+    [
+      ...(pending ? [`${pending} guidance pending`] : []),
+      ...(nested ? [`${nested} exploring`] : []),
+    ].join(" · ") || undefined
+  );
+}
+
+function usageMetric(snapshot: RuntimeSnapshot): string | undefined {
+  const health = snapshot.health;
+  const context = health?.contextUsage;
+  const values: string[] = [];
+  if (knownAmount(context?.tokens)) {
+    const window =
+      knownAmount(context?.contextWindow) && context.contextWindow > 0
+        ? `/${formatCompactTokens(context.contextWindow)}`
+        : "";
+    values.push(`Context ${formatCompactTokens(context.tokens)}${window}`);
   }
+  const usage: string[] = [];
+  if (knownAmount(health?.tokensTotal)) {
+    usage.push(formatCompactTokens(health.tokensTotal));
+  }
+  if (knownAmount(health?.estimatedCost)) {
+    usage.push(formatUsdCost(health.estimatedCost));
+  }
+  if (usage.length) {
+    values.push(`Usage ${usage.join(" · ")}`);
+  }
+  return values.join(" · ") || undefined;
+}
+
+function knownAmount(value: number | null | undefined): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function safeDetail(snapshot: RuntimeSnapshot): string | undefined {
   return snapshot.health?.lastAssistantText
     ? bounded(
         snapshot.health.lastAssistantText,
@@ -170,7 +218,10 @@ function bounded(
   length: number,
   byteLimit = ACTIVITY_TEXT_BYTE_LIMIT,
 ): string {
-  const compact = value.replace(/\p{C}/gu, " ").replace(/\s+/g, " ").trim();
+  const compact = stripVTControlCharacters(value)
+    .replace(/\p{C}/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
   const characters = Array.from(compact);
   if (characters.length <= length && Buffer.byteLength(compact) <= byteLimit) {
     return compact;

@@ -2,6 +2,7 @@ import { createEventBus } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import { ACTIVITY_CHANNEL } from "#ui/activity";
 import { ActivityStore } from "../ui/activity-store.js";
+import { renderActivity } from "../ui/activity-widget.js";
 import { ProcessActivityProjector } from "./activity-projector.js";
 import type { ProcessSnapshot } from "./runtime.js";
 
@@ -27,7 +28,7 @@ function snapshot(
 }
 
 describe("ProcessActivityProjector", () => {
-  it("projects only bounded operational process state", () => {
+  it("keeps descriptions and duration compact and expands a bounded sanitized command", () => {
     const events = createEventBus();
     const store = new ActivityStore();
     const activityEvents: unknown[] = [];
@@ -35,7 +36,12 @@ describe("ProcessActivityProjector", () => {
       activityEvents.push(event);
       store.accept(event);
     });
-    let snapshots = [snapshot("running", `Build\nthe\u0000project`)];
+    let snapshots = [
+      {
+        ...snapshot("running", `Build\nthe\u0000project`),
+        command: `\u001b[31mnpm test\u001b[0m\n${"😀".repeat(600)}`,
+      },
+    ];
     let listener: ((value: readonly ProcessSnapshot[]) => void) | undefined;
     const runtime = {
       snapshots: () => snapshots,
@@ -56,10 +62,24 @@ describe("ProcessActivityProjector", () => {
         id: "entry-1",
         label: "Process",
         title: "Build the project",
+        detail: expect.stringMatching(/^\$ npm test 😀.*…$/u),
         state: "running",
       }),
     ]);
-    expect(JSON.stringify(store.records)).not.toContain("npm test");
+    expect(Array.from(store.records[0].detail!)).toHaveLength(480);
+    expect(store.records[0].detail).not.toContain("\u001b");
+    expect(store.records[0].detail).not.toContain("\n");
+    const theme = { fg: (_tone: string, text: string) => text } as never;
+    const now = Date.parse("2026-03-09T10:01:00.000Z");
+    const compact = renderActivity(store.records, 80, theme, now).join("\n");
+    expect(compact).toContain("Build the project");
+    expect(compact).toContain("1m 0s");
+    expect(compact).not.toContain("npm test");
+    const expanded = renderActivity(store.records, 80, theme, now, {
+      expanded: true,
+    });
+    expect(expanded).toHaveLength(2);
+    expect(expanded[1]).toContain("$ npm test");
     expect(JSON.stringify(store.records)).not.toContain("/secret/worktree");
     expect(JSON.stringify(store.records)).not.toContain("1234");
     expect(JSON.stringify(activityEvents)).not.toContain("process-1");
@@ -74,6 +94,7 @@ describe("ProcessActivityProjector", () => {
 
     projector.dispose();
     expect(store.records).toEqual([]);
+    store.dispose();
   });
 
   it("notifies once for a failure after a process has started", () => {

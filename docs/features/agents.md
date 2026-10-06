@@ -49,7 +49,7 @@ Activity is a full-width chronological timeline: assistant prose is rendered as 
 
 A completed agent’s Result is a separate scrollable Markdown page containing its complete final result. Activity deliberately excludes that final result. Public failures are notified once and remain inspectable while the parent session lives.
 
-The shared live Activity projection removes settled rows immediately. It may show context usage and a bounded latest-assistant preview, never prompts, commands, cwd, raw output, hidden runtime objects, cost, or aggregate token telemetry.
+The shared live Activity projection removes settled rows immediately. It keeps descriptions and elapsed time visible when collapsed; nested exploration, context/usage/cost, and a bounded latest-assistant-text preview appear on expansion. See the [Activity presentation contract](interface-and-personality.md#ui) for limits and ownership exclusions.
 
 Implement owns its scheduler-managed agents. `/agents` shows only their non-selectable active count, not individually controllable workers. Public lifecycle tools cannot inspect or control them. Child sessions are in-memory and never appear in `/resume`; no child resume durability is promised.
 

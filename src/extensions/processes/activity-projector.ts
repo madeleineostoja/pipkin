@@ -1,4 +1,6 @@
+import { stripVTControlCharacters } from "node:util";
 import {
+  ACTIVITY_DETAIL_BYTE_LIMIT,
   ACTIVITY_TEXT_BYTE_LIMIT,
   createActivityPublisher,
   type ActivityPublisher,
@@ -80,6 +82,11 @@ export class ProcessActivityProjector {
           id: activityId,
           label: "Process",
           title: bounded(snapshot.description),
+          detail: bounded(
+            `$ ${snapshot.command}`,
+            480,
+            ACTIVITY_DETAIL_BYTE_LIMIT,
+          ),
           state: "running",
           ...(timestamp(snapshot.startedAt) === undefined
             ? {}
@@ -128,19 +135,23 @@ function timestamp(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function bounded(value: string): string {
-  const compact = value.replace(/\p{C}/gu, " ").replace(/\s+/g, " ").trim();
+function bounded(
+  value: string,
+  length = 240,
+  byteLimit = ACTIVITY_TEXT_BYTE_LIMIT,
+): string {
+  const compact = stripVTControlCharacters(value)
+    .replace(/\p{C}/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
   const characters = Array.from(compact);
-  if (
-    characters.length <= 240 &&
-    Buffer.byteLength(compact) <= ACTIVITY_TEXT_BYTE_LIMIT
-  ) {
+  if (characters.length <= length && Buffer.byteLength(compact) <= byteLimit) {
     return compact || "Managed process";
   }
-  const retained = characters.slice(0, 239);
+  const retained = characters.slice(0, length - 1);
   while (
     retained.length > 0 &&
-    Buffer.byteLength(`${retained.join("")}…`) > ACTIVITY_TEXT_BYTE_LIMIT
+    Buffer.byteLength(`${retained.join("")}…`) > byteLimit
   ) {
     retained.pop();
   }

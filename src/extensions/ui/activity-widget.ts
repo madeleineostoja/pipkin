@@ -70,7 +70,7 @@ class ActivityWidget implements Component {
       ? Math.max(1, Math.floor(this.tui.terminal.rows / 2) - 4)
       : ACTIVITY_BODY_LINE_LIMIT;
     const records = this.store.records;
-    if (records.length === 0) {
+    if (!records.some((record) => expanded || !record.expandedOnly)) {
       return [];
     }
     // Pi embeds its working status in the editor border, so leave a row between it and the panel.
@@ -203,22 +203,42 @@ export function renderActivity(
   }: { lineLimit?: number; expanded?: boolean } = {},
 ): string[] {
   const contentWidth = Math.max(1, width);
+  const visible = records.filter((record) => expanded || !record.expandedOnly);
+  const shown = visible.slice(0, lineLimit);
+  if (shown.length === 0) {
+    return [];
+  }
+  // Reserve headers before allocating metrics, then previews, across the whole pane.
+  let remaining = lineLimit - shown.length;
+  const metrics = new Set<string>();
+  const details = new Set<string>();
+  if (expanded) {
+    for (const record of shown) {
+      if (record.expandedMetric && remaining > 0) {
+        metrics.add(record.key);
+        remaining -= 1;
+      }
+    }
+    for (const record of shown) {
+      if (record.detail && remaining > 0) {
+        details.add(record.key);
+        remaining -= 1;
+      }
+    }
+  }
   const lines: string[] = [];
   const labelWidth = Math.min(
     24,
-    Math.max(...records.map((record) => visibleWidth(record.label))),
+    Math.max(...shown.map((record) => visibleWidth(record.label))),
   );
   const rightWidth = Math.max(
     0,
-    ...records.map((record) => visibleWidth(rightFields(record, now))),
+    ...shown.map((record) =>
+      visibleWidth(rightFields(record, now, Math.floor(contentWidth / 3))),
+    ),
   );
-  let remaining = lineLimit;
-  let renderedRecords = 0;
-  for (const record of records) {
-    if (remaining === 0) {
-      break;
-    }
-    const depth = depthFor(record, records);
+  for (const record of shown) {
+    const depth = depthFor(record, shown);
     lines.push(
       recordLine(
         record,
@@ -230,14 +250,16 @@ export function renderActivity(
         rightWidth,
       ),
     );
-    remaining -= 1;
-    renderedRecords += 1;
-    if (expanded && record.detail && remaining > 0) {
-      lines.push(detailLine(record.detail, depth, contentWidth, theme));
-      remaining -= 1;
+    if (metrics.has(record.key)) {
+      lines.push(
+        detailLine(record.expandedMetric!, depth, contentWidth, theme),
+      );
+    }
+    if (details.has(record.key)) {
+      lines.push(detailLine(record.detail!, depth, contentWidth, theme));
     }
   }
-  const overflow = records.length - renderedRecords;
+  const overflow = visible.length - shown.length;
   if (overflow > 0) {
     lines.push(
       theme.fg(
@@ -273,7 +295,12 @@ function detailLine(
   width: number,
   theme: Theme,
 ): string {
-  const prefix = `${"  ".repeat(Math.min(depth + 1, 3))}`;
+  const prefix = truncateToWidth(
+    "  ".repeat(Math.min(depth + 1, 3)),
+    width,
+    "",
+    false,
+  );
   const plain = `${prefix}${truncateToWidth(
     detail,
     Math.max(0, width - visibleWidth(prefix)),
@@ -298,7 +325,7 @@ function recordLine(
   if (visibleWidth(prefix) >= width) {
     return theme.fg("accent", truncateToWidth(prefix, width, "", false));
   }
-  const right = rightFields(record, now);
+  const right = rightFields(record, now, Math.floor(width / 3));
   const available = Math.max(
     0,
     width - visibleWidth(prefix) - (right ? rightWidth + 1 : 0),
@@ -316,11 +343,12 @@ function recordLine(
   return styleRecordLine(indentation, glyph, primary, shownRight, theme);
 }
 
-function rightFields(record: StoredActivityRecord, now: number): string {
+function rightFields(
+  record: StoredActivityRecord,
+  now: number,
+  width: number,
+): string {
   const values: string[] = [];
-  if (record.metric) {
-    values.push(record.metric);
-  }
   if (record.progress) {
     values.push(
       formatProgress(record.progress.completed, record.progress.total),
@@ -329,7 +357,19 @@ function rightFields(record: StoredActivityRecord, now: number): string {
   if (record.startedAt !== undefined) {
     values.push(formatDuration(now - record.startedAt));
   }
-  return values.join(" · ");
+  const timing = values.join(" · ");
+  if (visibleWidth(timing) >= width) {
+    return truncateToWidth(timing, width, "…", false);
+  }
+  // Keep progress and duration intact; optional indicators yield to the task title.
+  const metricWidth = Math.max(
+    0,
+    width - visibleWidth(timing) - (timing ? 3 : 0),
+  );
+  const metric = record.metric
+    ? truncateToWidth(record.metric, metricWidth, "…", false)
+    : "";
+  return [metric, timing].filter(Boolean).join(" · ");
 }
 
 function primaryFields(

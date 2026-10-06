@@ -24,6 +24,8 @@ export type ActivityRecord = {
   label: string;
   title: string;
   detail?: string;
+  expandedMetric?: string;
+  expandedOnly?: boolean;
   metric?: string;
   state: ActivityState;
   progress?: { completed: number; total: number };
@@ -116,6 +118,8 @@ export function validateActivityRecord(
       "label",
       "title",
       "detail",
+      "expandedMetric",
+      "expandedOnly",
       "metric",
       "state",
       "progress",
@@ -143,6 +147,15 @@ export function validateActivityRecord(
       ACTIVITY_DETAIL_BYTE_LIMIT,
     )
   ) {
+    return false;
+  }
+  if (
+    value.expandedOnly !== undefined &&
+    typeof value.expandedOnly !== "boolean"
+  ) {
+    return false;
+  }
+  if (value.expandedMetric !== undefined && !validText(value.expandedMetric)) {
     return false;
   }
   if (

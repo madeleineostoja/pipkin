@@ -286,6 +286,106 @@ describe("Activity", () => {
     ).toBe(false);
   });
 
+  it("rejects malformed expansion fields before they reach the pane", () => {
+    expect(validateActivityRecord(record("x", { expandedOnly: "yes" }))).toBe(
+      false,
+    );
+    expect(
+      validateActivityRecord(
+        record("x", { expandedMetric: "unsafe\u001b[31m" }),
+      ),
+    ).toBe(false);
+    expect(
+      validateActivityRecord(record("x", { expandedMetric: "x".repeat(241) })),
+    ).toBe(false);
+  });
+
+  it("hides expanded-only work from compact overflow and reserves headers before metrics and previews", () => {
+    const events = createEventBus();
+    const store = new ActivityStore();
+    events.on(ACTIVITY_CHANNEL, (event) => store.accept(event));
+    const agents = createActivityPublisher(events, "subagents");
+    const processes = createActivityPublisher(events, "processes");
+    agents.upsert(
+      record("parent", {
+        label: "Agent · Review",
+        title: "Review changes",
+        startedAt: 0,
+        metric: "2 guidance pending · 1 exploring",
+        expandedMetric: "Context 82k/200k · Usage 140k · $0.12",
+        detail: "Checking producers…",
+      }),
+    );
+    agents.upsert(
+      record("child", {
+        parent: { source: "subagents", id: "parent" },
+        title: "Inspect lifecycle",
+        expandedOnly: true,
+        expandedMetric: "Context 24k/200k · Usage 31k · $0.02",
+        detail: "Reading shutdown…",
+      }),
+    );
+    processes.upsert(
+      record("build", {
+        label: "Process",
+        title: "Build project",
+        detail: "$ npm run build",
+        startedAt: 0,
+      }),
+    );
+
+    const compact = renderActivity(store.records, 120, theme, 35_000, {
+      lineLimit: 1,
+    }).join("\n");
+    expect(compact).toContain("Review changes");
+    expect(compact).toContain("1 exploring");
+    expect(compact).toContain("… 1 more");
+    expect(compact).not.toContain("Inspect lifecycle");
+    const compactAll = renderActivity(store.records, 120, theme, 35_000).join(
+      "\n",
+    );
+    expect(compactAll).toContain("Build project");
+    expect(compactAll).toContain("35s");
+    expect(compactAll).not.toContain("Usage");
+    expect(compactAll).not.toContain("npm");
+    const narrowCompact = renderActivity(store.records, 60, theme, 35_000);
+    expect(narrowCompact[0]).toContain("Agent · Review");
+    expect(narrowCompact[0]).toContain("Review changes");
+    expect(narrowCompact[0]).toContain("2 guidance");
+    expect(narrowCompact[0]).toContain("35s");
+    expect(narrowCompact[1]).toContain("Build project");
+    expect(narrowCompact[1]).toContain("35s");
+    expect(narrowCompact.every((line) => visibleWidth(line) <= 60)).toBe(true);
+
+    const crowded = renderActivity(store.records, 120, theme, 35_000, {
+      expanded: true,
+      lineLimit: 5,
+    });
+    expect(crowded).toHaveLength(5);
+    expect(crowded.join("\n")).toContain("Build project");
+    expect(crowded.join("\n")).toContain("└");
+    expect(crowded.join("\n")).toContain("Usage 140k");
+    expect(crowded.join("\n")).toContain("Usage 31k");
+    expect(crowded.join("\n")).not.toContain("Checking");
+    expect(crowded.join("\n")).not.toContain("more");
+    const roomy = renderActivity(store.records, 120, theme, 35_000, {
+      expanded: true,
+      lineLimit: 8,
+    });
+    expect(roomy).toHaveLength(8);
+    expect(roomy.join("\n")).toContain("Checking producers…");
+    expect(roomy.join("\n")).toContain("    Reading shutdown…");
+    expect(roomy.join("\n")).toContain("$ npm run build");
+    for (const width of [1, 24]) {
+      const narrow = renderActivity(store.records, width, theme, 35_000, {
+        expanded: true,
+        lineLimit: 8,
+      });
+      expect(narrow.every((line) => visibleWidth(line) <= width)).toBe(true);
+    }
+    store.dispose();
+  });
+
   it("registers the activity widget only while records exist", () => {
     const store = new ActivityStore();
     const setWidget = vi.fn();
@@ -407,9 +507,9 @@ describe("Activity", () => {
 
       view.nativeExpanded = true;
       const expanded = view.widget.render(80);
-      expect(expanded).toHaveLength(20);
+      expect(expanded).toHaveLength(19);
       expect(expanded.join("\n")).toContain("preview");
-      expect(expanded.join("\n")).toContain("… 4 more");
+      expect(expanded.join("\n")).not.toContain("more");
       view.tui.terminal.rows = 24;
       expect(view.widget.render(80)).toHaveLength(12);
       for (const width of [1, 2, 24]) {
@@ -453,7 +553,7 @@ describe("Activity", () => {
     expect(view.widget.handleMouse?.(click)).toEqual({ handled: true });
     expect(view.nativeExpanded).toBe(false);
     expect(view.tui.requestRender).toHaveBeenCalled();
-    expect(view.widget.render(80)).toHaveLength(20);
+    expect(view.widget.render(80)).toHaveLength(19);
 
     view.publisher.clear();
     view.publisher.upsert(record("returned", { detail: "preview returned" }));
@@ -506,8 +606,15 @@ describe("Activity", () => {
       lineLimit: 8,
       expanded: true,
     });
-    expect(lines.join("\n")).toContain("reading");
-    expect(lines.join("\n")).toContain("… 2 more");
+    expect(lines.join("\n")).not.toContain("reading");
+    expect(lines.join("\n")).toContain("… 1 more");
     expect(lines.every((line) => visibleWidth(line) <= 24)).toBe(true);
+    const roomy = renderActivity(store.records, 24, theme, Date.now(), {
+      lineLimit: 12,
+      expanded: true,
+    });
+    expect(roomy.join("\n")).toContain("reading");
+    expect(roomy.join("\n")).not.toContain("more");
+    store.dispose();
   });
 });
