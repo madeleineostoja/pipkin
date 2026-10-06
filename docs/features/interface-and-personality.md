@@ -31,15 +31,31 @@ UI does not replace Pi's editor, working indicator, selectors, or custom-message
 
 MCP tools, native `codemode`, and native `tool_search` use Pipkin's compact call identities and short result summaries in the interactive transcript and HTML exports. Expanded views delegate to Pi's native renderers when available, including its script highlighting and nested-call presentation; Pipkin does not reformat their arguments or output. Tools without native renderers retain a plain-text fallback, including disconnected MCP history. Expand a tool row with Pi's normal tool-expansion control to inspect details:
 
-| Tool          | Compact view                                                                                                      | Expanded view                                                                                |
-| ------------- | ----------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| MCP tools     | Server/tool identity, bounded argument and text previews, errors, and full-output references when present         | Native arguments and returned text/resource references                                       |
-| `codemode`    | Script state, one live elapsed timer, nested-call outcomes, edit paths when available, and full-output references | Script, nested-call arguments/statuses/errors/timing/model costs, and returned script output |
-| `tool_search` | Query and number of tools loaded, or an error                                                                     | Native presentation when available; otherwise arguments, loaded names, and returned text     |
+| Tool          | Compact view                                                                                                  | Expanded view                                                                                |
+| ------------- | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| MCP tools     | Server/tool identity, bounded argument and text previews, errors, and full-output references when present     | Native arguments and returned text/resource references                                       |
+| `codemode`    | Script state, one live elapsed timer, nested-call outcomes and bounded identities, and full-output references | Script, nested-call arguments/statuses/errors/timing/model costs, and returned script output |
+| `tool_search` | Query and number of tools loaded, or an error                                                                 | Native presentation when available; otherwise arguments, loaded names, and returned text     |
 
 Codemode's compact view shows a muted `Preparing script…` label while the call is being prepared, then `Running script…` until live progress takes over. One overall elapsed timer starts when codemode execution begins and updates even without nested-call progress; it disappears at settlement, where Pi's reported wall time remains authoritative. The timer measures waiting too, not proof that a tool is progressing. Completed HTML exports never retain the live timer or transient header labels. Compact progress summaries and running tool rows use neutral text; yellow is reserved for summaries containing failed or cancelled calls, while failed tool rows and script errors remain red. Expanded tool content and colors remain native, with one elapsed label above a live expanded script.
 
-Codemode's compact roster shows the most recent eight calls in order: `✓` succeeded (green), `✗` failed (red), `…` running (neutral), and `⊘` cancelled (muted). Edit rows include a bounded target path when available in Pi's argument preview, without per-edit timers. A complete leading path survives truncation of the replacement text; incomplete paths are omitted rather than guessed. Scripts, other arguments, detailed errors, and returned output stay expanded-only. When earlier calls are omitted, an explicit notice points to expansion; aggregate outcome counts still cover every call.
+Codemode's compact roster shows the most recent eight calls in order: `✓` succeeded (green), `✗` failed (red), `…` running (neutral), and `⊘` cancelled (muted). When earlier calls are omitted, an explicit notice points to expansion; aggregate outcome counts still cover every call.
+
+Selected nested calls add one identity, bounded to 120 characters, without per-call timers:
+
+| Nested tools                                                 | Detail                                                                      |
+| ------------------------------------------------------------ | --------------------------------------------------------------------------- |
+| `read`, `edit`, `write`                                      | Target path                                                                 |
+| LSP operations                                               | Source file, when supplied                                                  |
+| `agent_start`, `process_start`                               | Description; agent type when its description is unavailable                 |
+| Agent/process inspect, wait, stop; `agent_steer`             | Owned task ID                                                               |
+| `web_fetch`, `browser_navigate`, `browser_open_tab`          | HTTP(S) origin and path, omitting credentials, query strings, and fragments |
+| Browser operations with a direct snapshot-ref target         | Snapshot ref, never form values or semantic locator text                    |
+| `browser_switch_tab`, `browser_close_tab`; `browser_history` | Tab ID; history action                                                      |
+| `implement_inspect`                                          | Retained run ID                                                             |
+| `papercut_get`, `papercut_record`                            | Finding key                                                                 |
+
+Details come from Pi's argument preview, which may be truncated before the relevant field. A complete leading string identity survives truncation of later payloads; missing or incomplete identities are omitted rather than guessed. Other calls, including parameterless list/status operations, remain name/status-only. Opaque retained-output handles, commands, prompts, other arguments, detailed errors, and returned output stay expanded-only.
 
 MCP previews are presentation, not inferred domain summaries. A completed codemode script can contain failed or cancelled nested calls; those outcomes remain visible rather than being presented as successful work. Nested calls do not become separate transcript tool rows, and their complete results are not reconstructed from call metadata. Images remain Pi-owned. Interactive expansion uses native call and result views directly. HTML exports never expand call headers, so their expanded results also include the native call view to retain scripts and arguments. Compact previews and fallback text normalize terminal-control sequences; native expanded views retain Pi's own text handling. Original arguments and results are unchanged. When native truncation occurred, use the reported full-output path for the complete text.
 

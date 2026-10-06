@@ -166,6 +166,157 @@ describe("native tool presentation", () => {
     expect(compact).toContain("… edit src/b.ts");
   });
 
+  it("identifies file and managed-work calls without exposing their payloads", () => {
+    const inputs: [string, Record<string, unknown>][] = [
+      ["read", { path: "src/read.ts", offset: 10 }],
+      ["write", { path: "src/write.ts", content: "private content" }],
+      [
+        "lsp_references",
+        {
+          file: "src/use.ts",
+          position: { line: 10, symbol: "private symbol" },
+        },
+      ],
+      [
+        "agent_start",
+        {
+          type: "Explore",
+          prompt: "private prompt",
+          description: "Inspect approvals",
+        },
+      ],
+      [
+        "process_start",
+        { command: "private command", description: "Run checks" },
+      ],
+      ["agent_steer", { id: "explore-1", message: "private guidance" }],
+      ["process_wait", { id: "process-2" }],
+    ];
+    const result = {
+      content: [],
+      details: {
+        calls: inputs.map(([name, args], index) => ({
+          id: `${index}`,
+          name,
+          args: JSON.stringify(args),
+          status: "running",
+        })),
+      },
+    };
+    const original = structuredClone(result);
+    const compact = resultText("codemode", result, { isPartial: true });
+    for (const identity of [
+      "read src/read.ts",
+      "write src/write.ts",
+      "lsp_references src/use.ts",
+      "agent_start Inspect approvals",
+      "process_start Run checks",
+      "agent_steer explore-1",
+      "process_wait process-2",
+    ]) {
+      expect(compact).toContain(`… ${identity}`);
+    }
+    expect(compact).not.toContain("private");
+    expect(result).toEqual(original);
+  });
+
+  it("shows succinct Pipkin destinations and IDs, redacting URL credentials and query data", () => {
+    const inputs: [string, Record<string, unknown>][] = [
+      [
+        "web_fetch",
+        { url: "https://user:private@example.com/docs?token=private#private" },
+      ],
+      ["browser_open_tab", { url: "https://example.org/page?private#private" }],
+      ["browser_switch_tab", { tabId: "tab-2" }],
+      [
+        "browser_fill",
+        {
+          target: { kind: "ref", value: "b1-d1-s1-e2" },
+          value: "private form value",
+        },
+      ],
+      ["browser_history", { action: "back" }],
+      ["implement_inspect", { runId: "feature-work" }],
+      [
+        "papercut_record",
+        { key: "setup-friction", incident: "private incident" },
+      ],
+      ["web_fetch", { url: "javascript:private" }],
+    ];
+    const compact = resultText(
+      "codemode",
+      {
+        content: [],
+        details: {
+          calls: inputs.map(([name, args], index) => ({
+            id: `${index}`,
+            name,
+            args: JSON.stringify(args),
+            status: "running",
+          })),
+        },
+      },
+      { isPartial: true },
+    );
+    for (const identity of [
+      "web_fetch https://example.com/docs",
+      "browser_open_tab https://example.org/page",
+      "browser_switch_tab tab-2",
+      "browser_fill b1-d1-s1-e2",
+      "browser_history back",
+      "implement_inspect feature-work",
+      "papercut_record setup-friction",
+    ]) {
+      expect(compact).toContain(`… ${identity}`);
+    }
+    expect(compact).not.toContain("private");
+    expect(compact).not.toContain("user:");
+  });
+
+  it("retains complete leading identities in truncated previews without guessing missing fields", () => {
+    const inputs = [
+      ["write", '{"path":"src/a.ts","content":"cut off…'],
+      ["lsp_definition", '{"file":"src/use.ts","position":…'],
+      ["agent_start", '{"type":"Review","prompt":"cut off…'],
+      ["process_start", '{"command":"cut off…'],
+      ["read", '{"path":"src/incomplete…'],
+      [
+        "read",
+        `${JSON.stringify({ path: 'src/quoted"file.ts' }).slice(0, -1)},"extra":…`,
+      ],
+      [
+        "bash",
+        '{"command":"private command","description":"not an allowed detail"}',
+      ],
+      ["unknown", '{"path":"not an allowed detail"}'],
+    ];
+    const compact = resultText(
+      "codemode",
+      {
+        content: [],
+        details: {
+          calls: inputs.map(([name, args], index) => ({
+            id: `${index}`,
+            name,
+            args,
+            status: "running",
+          })),
+        },
+      },
+      { isPartial: true },
+    );
+    expect(compact).toContain("… write src/a.ts");
+    expect(compact).toContain("… lsp_definition src/use.ts");
+    expect(compact).toContain("… agent_start Review");
+    expect(compact).toContain(
+      '… process_start\n… read\n… read src/quoted"file.ts\n… bash\n… unknown',
+    );
+    expect(compact).not.toContain("cut off");
+    expect(compact).not.toContain("incomplete");
+    expect(compact).not.toContain("private");
+    expect(compact).not.toContain("not an allowed detail");
+  });
+
   it("overrides selected native renderers while delegating feature-owned and other native tools", () => {
     const existing = { renderCall: vi.fn(), renderResult: vi.fn() };
     const next = vi.fn(() => existing);

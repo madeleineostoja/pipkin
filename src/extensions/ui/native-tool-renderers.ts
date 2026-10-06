@@ -227,29 +227,83 @@ const callStyles: Record<
   cancelled: { icon: "⊘", color: "muted" },
 };
 
-function nestedCallDetail(call: NestedCall): string {
-  if (call.name !== "edit") {
-    return "";
-  }
+function previewString(preview: string, field: string): string | undefined {
   try {
-    return compactDisplayText(
-      stringProperty(JSON.parse(call.args), "path"),
-      120,
-    );
+    return stringProperty(JSON.parse(preview), field);
   } catch {
-    // Pi truncates previews at 200 characters; retain a complete leading path
-    // even when the larger edits array is cut off, never guess an incomplete path.
+    // Pi truncates previews at 200 characters. Recover only a complete leading
+    // string field; later or incomplete values stay omitted rather than guessed.
     try {
-      const leadingPath = /^\{\s*"path"\s*:\s*("(?:[^"\\]|\\.)*")/u.exec(
-        call.args,
-      );
-      return leadingPath
-        ? compactDisplayText(JSON.parse(leadingPath[1]!), 120)
-        : "";
+      const leading = new RegExp(
+        `^\\{\\s*"${field}"\\s*:\\s*("(?:[^"\\\\]|\\\\.)*")`,
+        "u",
+      ).exec(preview);
+      return leading ? JSON.parse(leading[1]!) : undefined;
     } catch {
-      return "";
+      return undefined;
     }
   }
+}
+
+function destination(preview: string): string | undefined {
+  const value = previewString(preview, "url");
+  if (!value) {
+    return undefined;
+  }
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:"
+      ? `${url.origin}${url.pathname}`
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function nestedCallDetail(call: NestedCall): string {
+  const field = (name: string) => previewString(call.args, name);
+  let detail: string | undefined;
+  if (["read", "write", "edit"].includes(call.name)) {
+    detail = field("path");
+  } else if (call.name.startsWith("lsp_")) {
+    detail = field("file");
+  } else if (call.name === "agent_start" || call.name === "process_start") {
+    detail = field("description");
+    if (!detail && call.name === "agent_start") {
+      detail = field("type");
+    }
+  } else if (
+    /^(?:agent_(?:inspect|wait|stop|steer)|process_(?:inspect|wait|stop))$/u.test(
+      call.name,
+    )
+  ) {
+    detail = field("id");
+  } else if (
+    ["web_fetch", "browser_navigate", "browser_open_tab"].includes(call.name)
+  ) {
+    detail = destination(call.args);
+  } else if (
+    call.name === "browser_switch_tab" ||
+    call.name === "browser_close_tab"
+  ) {
+    detail = field("tabId");
+  } else if (call.name === "browser_history") {
+    detail = field("action");
+  } else if (call.name.startsWith("browser_")) {
+    try {
+      const target = property(JSON.parse(call.args), "target");
+      if (stringProperty(target, "kind") === "ref") {
+        detail = stringProperty(target, "value");
+      }
+    } catch {
+      // A truncated target preview is not a complete snapshot ref.
+    }
+  } else if (call.name === "implement_inspect") {
+    detail = field("runId");
+  } else if (call.name === "papercut_get" || call.name === "papercut_record") {
+    detail = field("key");
+  }
+  return compactDisplayText(detail, 120);
 }
 
 function codemodeRenderers(progress?: CodemodeProgress): CompactRenderers {
