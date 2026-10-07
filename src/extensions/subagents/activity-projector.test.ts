@@ -6,7 +6,7 @@ import { renderActivity } from "../ui/activity-widget.js";
 import { SubagentActivityProjector } from "./activity-projector.js";
 
 describe("Subagent Activity projector", () => {
-  it("keeps descriptions and durations compact while expanding nested agents, usage, and latest turns", () => {
+  it("keeps descriptions and durations compact while expanding nested agents and usage", () => {
     const events = createEventBus();
     const store = new ActivityStore();
     events.on(ACTIVITY_CHANNEL, (event) => store.accept(event));
@@ -84,14 +84,12 @@ describe("Subagent Activity projector", () => {
       expanded: true,
       lineLimit: 8,
     });
-    expect(expanded).toHaveLength(6);
+    expect(expanded).toHaveLength(4);
     expect(expanded[1]).toBe("  Context 82k/200k · Usage 140k · $0.12");
-    expect(expanded[2]).toBe("  Checking producer records…");
-    expect(expanded[3]).toContain("└ ● Agent · explore");
-    expect(expanded[3]).toContain("Inspect nested-agent lifecycle");
-    expect(expanded[3]).toContain("35s");
-    expect(expanded[4]).toBe("    Context 24k/200k · Usage 31k · $0.02");
-    expect(expanded[5]).toBe("    Reading shutdown handling…");
+    expect(expanded[2]).toContain("└ ● Agent · explore");
+    expect(expanded[2]).toContain("Inspect nested-agent lifecycle");
+    expect(expanded[2]).toContain("35s");
+    expect(expanded[3]).toBe("    Context 24k/200k · Usage 31k · $0.02");
 
     snapshots = snapshots.slice(0, 1);
     listener?.();
@@ -208,7 +206,6 @@ describe("Subagent Activity projector", () => {
     projector.start(notify);
     expect(store.records[0]).toMatchObject({
       expandedMetric: "Context 82k",
-      detail: "Reading renderer registration paths.",
     });
 
     snapshots = [

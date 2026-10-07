@@ -1,6 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
 import {
-  ACTIVITY_DETAIL_BYTE_LIMIT,
   ACTIVITY_TEXT_BYTE_LIMIT,
   createActivityPublisher,
   type ActivityPublisher,
@@ -66,7 +65,6 @@ export class SubagentActivityProjector {
       }
     }
     for (const snapshot of visible) {
-      const detail = safeDetail(snapshot);
       const expandedMetric = usageMetric(snapshot);
       const metric = summaryMetric(snapshot, visible);
       publisher.upsert({
@@ -74,7 +72,6 @@ export class SubagentActivityProjector {
         ...parentIdentity(snapshot.owner, ids),
         label: agentLabel(snapshot),
         title: activityTitle(snapshot),
-        ...(detail ? { detail } : {}),
         ...(expandedMetric ? { expandedMetric } : {}),
         ...(metric ? { metric } : {}),
         ...(typeof snapshot.owner === "object" &&
@@ -196,16 +193,6 @@ function usageMetric(snapshot: RuntimeSnapshot): string | undefined {
 
 function knownAmount(value: number | null | undefined): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
-}
-
-function safeDetail(snapshot: RuntimeSnapshot): string | undefined {
-  return snapshot.health?.lastAssistantText
-    ? bounded(
-        snapshot.health.lastAssistantText,
-        480,
-        ACTIVITY_DETAIL_BYTE_LIMIT,
-      )
-    : undefined;
 }
 
 function timestamp(value: string | undefined): number | undefined {
