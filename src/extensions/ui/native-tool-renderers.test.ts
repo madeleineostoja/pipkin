@@ -490,7 +490,14 @@ describe("native tool presentation", () => {
 
   it("uses neutral colors for routine progress and reserves warning/error colors for failed work", () => {
     const details: CodemodeToolDetails = {
-      calls: [{ id: "call-1/1", name: "edit", args: "{}", status: "running" }],
+      calls: [
+        {
+          id: "call-1/1",
+          name: "edit",
+          args: '{"path":"src/index.ts"}',
+          status: "running",
+        },
+      ],
     };
     const result = { content: [], details };
     const ctx = context({ isPartial: true });
@@ -503,12 +510,17 @@ describe("native tool presentation", () => {
     expect(running).toContain("[toolOutput]Running script…");
     expect(running).toContain("[toolOutput]… edit");
     expect(running).not.toContain("[warning]");
+    details.calls[0].status = "ok";
+    const succeededCall = text(
+      renderer.renderResult!(result, ctx, styledTheme, ctx),
+    );
+    expect(succeededCall).toContain("[success]✓ edit[toolOutput] src/index.ts");
     details.calls[0].status = "error";
     const failedCall = text(
       renderer.renderResult!(result, ctx, styledTheme, ctx),
     );
     expect(failedCall).toContain("[warning]Running script…");
-    expect(failedCall).toContain("[error]✗ edit");
+    expect(failedCall).toContain("[error]✗ edit[toolOutput] src/index.ts");
   });
 
   it("shows codemode progress and caught nested failures without claiming the script failed", () => {

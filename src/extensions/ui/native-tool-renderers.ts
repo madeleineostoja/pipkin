@@ -372,8 +372,8 @@ function codemodeRenderers(progress?: CodemodeProgress): CompactRenderers {
           new Text(
             theme.fg(
               style.color,
-              `${style.icon} ${compactDisplayText(call.name)}${detail ? ` ${detail}` : ""}`,
-            ),
+              `${style.icon} ${compactDisplayText(call.name)}`,
+            ) + (detail ? theme.fg("toolOutput", ` ${detail}`) : ""),
             0,
             0,
           ),

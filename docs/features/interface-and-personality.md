@@ -45,7 +45,7 @@ Codemode's compact view shows a muted `Preparing script…` label while the call
 
 Codemode's compact roster shows the most recent eight calls in order: `✓` succeeded (green), `✗` failed (red), `…` running (neutral), and `⊘` cancelled (muted). When earlier calls are omitted, an explicit notice points to expansion; aggregate outcome counts still cover every call.
 
-Selected nested calls add one identity, bounded to 120 characters, without per-call timers:
+Selected nested calls add one identity in default grey, bounded to 120 characters, without per-call timers. Only the status icon and tool name receive the outcome colour:
 
 | Nested tools                                                 | Detail                                                                      |
 | ------------------------------------------------------------ | --------------------------------------------------------------------------- |
