@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { EventEmitter } from "node:events";
+import { describe, expect, it, vi } from "vitest";
 import { BrowserError } from "./errors.js";
 import { BrowserOwner, sanitizeUrl } from "./owner.js";
 
@@ -125,6 +126,55 @@ describe("BrowserOwner invocation lane", () => {
     expect(locale).toBe("en-US");
     expect(() => new Intl.DateTimeFormat(locale)).not.toThrow();
     await owner.shutdown();
+  });
+
+  it("contains background recovery failures without hiding tool-awaited failures", async () => {
+    let closed = false;
+    const page = Object.assign(new EventEmitter(), {
+      isClosed: () => closed,
+    });
+    const replacement = Object.assign(new EventEmitter(), {
+      isClosed: () => false,
+    });
+    const error = new Error(
+      "browserContext.newPage: Target page, context or browser has been closed",
+    );
+    const context = {
+      setDefaultTimeout: () => {},
+      setDefaultNavigationTimeout: () => {},
+      on: () => {},
+      newPage: vi
+        .fn()
+        .mockResolvedValueOnce(page)
+        .mockRejectedValueOnce(error)
+        .mockRejectedValueOnce(error)
+        .mockResolvedValueOnce(replacement),
+      close: async () => {},
+    };
+    const browser = {
+      isConnected: () => true,
+      on: () => {},
+      newContext: async () => context,
+      close: async () => {},
+    };
+    const owner = new BrowserOwner({ launch: async () => browser } as never);
+
+    try {
+      await owner.run(undefined, () => owner.page());
+      closed = true;
+      page.emit("close");
+      // Let background recovery reject through Node's unhandled-rejection checkpoint.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(owner.activeTab()).toBeUndefined();
+      await expect(
+        owner.run(undefined, () => owner.page()),
+      ).rejects.toMatchObject({ category: "page_gone" });
+      await expect(owner.run(undefined, () => owner.page())).resolves.toBe(
+        replacement,
+      );
+    } finally {
+      await owner.shutdown();
+    }
   });
 
   it("reports recreated-context state loss once", async () => {

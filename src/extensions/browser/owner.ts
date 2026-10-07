@@ -510,7 +510,8 @@ export class BrowserOwner {
       if (this.active === tab) {
         this.active = undefined;
         this.activeChange = "Active tab closed; selected a fallback tab.";
-        void this.recoverActive();
+        // Background recovery can race context closure; tool calls retry and report failures.
+        void this.recoverActive().catch(() => {});
       }
     });
     return tab;
