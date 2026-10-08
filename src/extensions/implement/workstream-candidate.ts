@@ -31,6 +31,7 @@ import type {
   SubagentHandle,
 } from "./subagents.js";
 import { spawnValidatedWorker } from "./worker-invocation.js";
+import { openFindingObligations } from "./finding-context.js";
 import { StateError, type RunState } from "./store.js";
 
 export type WorkstreamPacket = {
@@ -46,6 +47,7 @@ export type WorkstreamPacket = {
   tasks: WorkerRequirementTask[];
   priorCheckpoints: Record<string, string>;
   sourceMaterial: Array<{ path: string; content: string }>;
+  carriedFindings: RunState["findings"][string][];
 };
 
 export type WorkstreamCandidateOutcome =
@@ -242,6 +244,7 @@ export async function runWorkstreamCandidate(
   const trustedCandidate = admittedCheckpoint
     ? await checkpointCandidate({
         workstreamId: args.workstreamId,
+        generation: args.state.generation,
         baseSha: workspace.baseSha,
         checkpoint: admittedCheckpoint,
         git: workspaceGit,
@@ -382,7 +385,7 @@ export function buildWorkstreamPacket(args: {
   return {
     role: "implementer",
     completionKind: "implementer",
-    identity: `${args.state.run.id}/${args.workstreamId}`,
+    identity: `${args.state.run.id}/g${args.state.generation}/${args.workstreamId}`,
     workspace: {
       path: expectedWorkspace.worktreePath,
       mutationBoundary:
@@ -393,6 +396,7 @@ export function buildWorkstreamPacket(args: {
     tasks,
     priorCheckpoints,
     sourceMaterial,
+    carriedFindings: openFindingObligations(args.state, args.workstreamId),
   };
 }
 
@@ -413,8 +417,12 @@ export function workstreamWorkspace(
   }
   return {
     taskId: workstreamId,
-    branchName: `pipkin/implement/${state.run.id}/${workstreamId}`,
-    worktreePath: join(worktreesRunRoot(state), workstreamId),
+    branchName: `pipkin/implement/${state.run.id}/g${state.generation}/${workstreamId}`,
+    worktreePath: join(
+      worktreesRunRoot(state),
+      `g${state.generation}`,
+      workstreamId,
+    ),
     baseSha,
   };
 }
@@ -459,7 +467,7 @@ async function unavailableCandidateOutcome(args: {
   return {
     kind: "candidate_ready",
     candidate: {
-      id: `candidate:${args.workstream.id}:${args.observation.head}`,
+      id: `candidate:${args.workspace.branchName}:${args.observation.head}`,
       workstream: { kind: "source", id: args.workstream.id },
       baseSha: args.workspace.baseSha,
       commitSha: args.observation.head,
@@ -552,7 +560,7 @@ async function validateCompletion(args: {
     return {
       kind: "satisfaction_claimed",
       candidate: {
-        id: `satisfied:${args.workstream.id}:${args.workspace.baseSha}`,
+        id: `satisfied:${args.workspace.branchName}:${args.workspace.baseSha}`,
         workstream: { kind: "source", id: args.workstream.id },
         baseSha: args.workspace.baseSha,
         commitSha: args.workspace.baseSha,
@@ -617,7 +625,7 @@ async function validateCompletion(args: {
   return {
     kind: "candidate_ready",
     candidate: {
-      id: `candidate:${args.workstream.id}:${observedHead}`,
+      id: `candidate:${args.workspace.branchName}:${observedHead}`,
       workstream: { kind: "source", id: args.workstream.id },
       baseSha: args.workspace.baseSha,
       commitSha: observedHead,
@@ -691,6 +699,7 @@ async function checkpointCandidate(args: {
   workstreamId: string;
   baseSha: string;
   checkpoint: string;
+  generation: number;
   git: GitClient;
 }): Promise<RunState["candidates"][string] | undefined> {
   if (
@@ -701,7 +710,7 @@ async function checkpointCandidate(args: {
     return undefined;
   }
   return {
-    id: `checkpoint:${args.workstreamId}:${args.checkpoint}`,
+    id: `checkpoint:g${args.generation}:${args.workstreamId}:${args.checkpoint}`,
     workstream: { kind: "source", id: args.workstreamId },
     baseSha: args.baseSha,
     commitSha: args.checkpoint,

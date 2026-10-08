@@ -11,6 +11,7 @@ import {
   buildAnchoredOverallReviewPrompt,
   buildInitialOverallReviewPrompt,
 } from "./prompts.js";
+import { openFindingObligations } from "./finding-context.js";
 import { sha256 } from "./source-integrity.js";
 import { loadRequirementsContext } from "./requirements-context.js";
 import {
@@ -98,11 +99,11 @@ export function buildWholePlanReviewPacket(args: {
     .flatMap((candidate) => candidate.implementationEvidence?.uncertainty ?? [])
     .filter((value, index, all) => all.indexOf(value) === index);
   const sourceResiduals = sourceResidualContext(args.state, args.plan);
-  const latestOverallRepair = latestOverallRepairContext(args.state);
+  const deliveredOverallRepairs = deliveredOverallRepairContext(args.state);
   return {
     role: "reviewer",
     completionKind: args.completionKind,
-    identity: `${args.state.run.id}/whole-plan/${args.currentTargetSha}`,
+    identity: `${args.state.run.id}/g${args.state.generation}/whole-plan/${args.currentTargetSha}`,
     workspace: {
       path: args.state.run.checkout.root,
       mutationBoundary:
@@ -115,11 +116,7 @@ export function buildWholePlanReviewPacket(args: {
     baseSha: args.state.run.checkout.startHead,
     ...(args.previousSha ? { previousSha: args.previousSha } : {}),
     outstandingFindings: args.outstandingFindings,
-    canonicalFindings:
-      args.state.wholePlanReview.epoch?.findingIds.flatMap((id) => {
-        const finding = args.state.findings[id];
-        return finding ? [finding] : [];
-      }) ?? [],
+    canonicalFindings: Object.values(args.state.findings),
     ...(args.state.wholePlanReview.handoffDraft
       ? { priorHandoffDraft: args.state.wholePlanReview.handoffDraft }
       : {}),
@@ -149,12 +146,8 @@ export function buildWholePlanReviewPacket(args: {
       `Current target: ${args.currentTargetSha}`,
       "## Delivered workstreams, public behavior, interfaces, and implementation decisions",
       JSON.stringify(completed, null, 2),
-      ...(latestOverallRepair
-        ? [
-            "## Latest published whole-plan repair candidate",
-            JSON.stringify(latestOverallRepair, null, 2),
-          ]
-        : []),
+      "## Cumulative delivered whole-plan repair evidence",
+      JSON.stringify(deliveredOverallRepairs, null, 2),
       "## Publication and satisfaction evidence",
       JSON.stringify(
         {
@@ -168,7 +161,13 @@ export function buildWholePlanReviewPacket(args: {
       sourceResiduals.length > 0
         ? JSON.stringify(sourceResiduals, null, 2)
         : "No open source findings.",
-      "## Retained verification and uncertainty",
+      ...(args.state.wholePlanReview.handoffDraft
+        ? [
+            "## Historical handoff draft (context, not approval)",
+            args.state.wholePlanReview.handoffDraft,
+          ]
+        : []),
+      "## Retained uncertainty (including discarded execution; not delivery evidence)",
       uncertainty.length > 0
         ? uncertainty.map((item) => `- ${item}`).join("\n")
         : "No retained uncertainty.",
@@ -178,30 +177,30 @@ export function buildWholePlanReviewPacket(args: {
   };
 }
 
-function latestOverallRepairContext(state: RunState) {
-  const latestRepair = state.wholePlanReview.epoch?.latestRepair;
-  const candidate = latestRepair
-    ? state.candidates[latestRepair.candidateId]
-    : undefined;
-  if (!latestRepair || !candidate) {
-    return undefined;
-  }
-  return {
-    id: candidate.id,
-    commitSha: candidate.commitSha,
-    treeSha: candidate.treeSha,
-    changedPaths: candidate.changedPaths ?? latestRepair.changedPaths,
-    evidenceStatus: candidate.evidenceStatus ?? "unavailable",
-    implementationEvidence: inlineImplementationEvidence(
-      candidate.implementationEvidence,
-    ),
-    publication: Object.values(state.publication.receipts).filter(
-      (receipt) => receipt.candidateId === candidate.id,
-    ),
-    satisfaction: Object.values(state.satisfaction.receipts).filter(
-      (receipt) => receipt.candidateId === candidate.id,
-    ),
-  };
+function deliveredOverallRepairContext(state: RunState) {
+  const receipts = Object.values(state.publication.receipts);
+  const candidateIds = [
+    ...new Set(receipts.map((receipt) => receipt.candidateId)),
+  ];
+  return candidateIds.flatMap((id) => {
+    const candidate = state.candidates[id]!;
+    if (candidate.workstream.kind !== "overall") {
+      return [];
+    }
+    return [
+      {
+        id: candidate.id,
+        commitSha: candidate.commitSha,
+        treeSha: candidate.treeSha,
+        changedPaths: candidate.changedPaths ?? [],
+        evidenceStatus: candidate.evidenceStatus ?? "unavailable",
+        implementationEvidence: inlineImplementationEvidence(
+          candidate.implementationEvidence,
+        ),
+        publication: receipts.filter((receipt) => receipt.candidateId === id),
+      },
+    ];
+  });
 }
 
 export function sourceResidualContext(state: RunState, plan: ExecutionPlan) {
@@ -266,7 +265,8 @@ export async function runWholePlanReview(args: {
     Object.values(args.state.publication.intents).some(
       (intent) =>
         !args.state.publication.receipts[intent.id] &&
-        !args.state.publication.supersessions[intent.id],
+        !args.state.publication.supersessions[intent.id] &&
+        !args.state.publication.abandonments[intent.id],
     )
   ) {
     throw new Error(
@@ -307,9 +307,11 @@ export async function runWholePlanReview(args: {
         }
         return finding;
       })
-    : [];
+    : args.state.generation > 0
+      ? openFindingObligations(args.state)
+      : [];
   if (
-    new Set(anchored ? epoch!.pendingCorrectionIds : []).size !==
+    new Set(outstandingFindings.map((finding) => finding.id)).size !==
     outstandingFindings.length
   ) {
     throw new Error(
@@ -354,6 +356,8 @@ export async function runWholePlanReview(args: {
             baseSha: workerPacket.baseSha,
             currentSha: workerPacket.target.commitSha,
             worktreePath: workerPacket.workspace.path,
+            outstandingFindings: workerPacket.outstandingFindings,
+            canonicalFindings: workerPacket.canonicalFindings,
           }),
   });
   const result = await args.subagents.waitFor<unknown>(handle, args.signal);
@@ -385,6 +389,7 @@ export async function runWholePlanReview(args: {
       evidence,
     );
     await args.dispatch({
+      generation: args.state.generation,
       kind: "whole_plan_review_completed",
       outcome: {
         kind: "anchored",
@@ -396,11 +401,21 @@ export async function runWholePlanReview(args: {
     });
     return;
   }
-  if (completion.findings.length === 0) {
+  assertCapturedAssessmentCoverage(
+    outstandingFindings.map((finding) => finding.id),
+    completion.assessments ?? [],
+    evidence,
+  );
+  const unresolved = (completion.assessments ?? []).some(
+    (assessment) => assessment.status === "unresolved",
+  );
+  if (completion.findings.length === 0 && !unresolved) {
     await args.dispatch({
+      generation: args.state.generation,
       kind: "whole_plan_review_completed",
       outcome: {
         kind: "approved",
+        assessments: completion.assessments,
         evidence,
         handoffDraft: completion.handoffDraft,
         reviewedTargetSha: target,
@@ -411,12 +426,14 @@ export async function runWholePlanReview(args: {
   }
   const repairId = nextRepairId(args.state);
   await args.dispatch({
+    generation: args.state.generation,
     kind: "whole_plan_review_completed",
     outcome: {
       kind: "changes_requested",
+      assessments: completion.assessments,
       repairId,
       candidate: {
-        id: `overall-baseline:${args.state.run.id}:${repairId}:${target}`,
+        id: `overall-baseline:${args.state.run.id}:g${args.state.generation}:${repairId}:${target}`,
         workstream: { kind: "overall", repairId },
         baseSha: target,
         commitSha: target,
@@ -441,7 +458,7 @@ function assertCapturedAssessmentCoverage(
   } catch (error) {
     if (error instanceof AssessmentCoverageError) {
       throw new WorkerPacketError(
-        `Invalid anchored whole-plan review completion.\n${formatAssessmentCoverage(error.coverage)}\nReview artifact: ${evidence}`,
+        `Invalid whole-plan finding assessment coverage.\n${formatAssessmentCoverage(error.coverage)}\nReview artifact: ${evidence}`,
       );
     }
     throw error;
@@ -474,6 +491,7 @@ export async function completeWholePlanRun(args: {
   }
   const [head, tree] = await Promise.all([args.git.head(), args.git.tree()]);
   await args.dispatch({
+    generation: args.state.generation,
     kind: "run_completed",
     targetSha: head,
     targetTreeSha: tree,
@@ -502,10 +520,14 @@ function inlineImplementationEvidence(
 
 function nextRepairId(state: RunState): string {
   let number = 1;
-  while (state.workstreams.overall[`overall-repair-${number}`]) {
+  while (state.workstreams.overall[repairIdForGeneration(state, number)]) {
     number++;
   }
-  return `overall-repair-${number}`;
+  return repairIdForGeneration(state, number);
+}
+
+function repairIdForGeneration(state: RunState, number: number): string {
+  return `overall-repair-${number}${state.generation ? `-g${state.generation}` : ""}`;
 }
 
 function writeWholePlanEvidence(path: string, value: unknown): string {

@@ -344,7 +344,7 @@ export async function runRevision(args: {
   const completion =
     response?.status === "completed" ? response.result : undefined;
   const candidate: RunState["candidates"][string] = {
-    id: `revision:${revisionTaskId(args.effect.workstream)}:${observation.head}`,
+    id: `revision:g${args.state.generation}:${revisionTaskId(args.effect.workstream)}:${observation.head}`,
     workstream: args.effect.workstream,
     baseSha: packet.candidate.baseSha,
     ...(packet.candidate.integrationBaseSha
@@ -452,9 +452,7 @@ function workspaceFor(
   return overallRepairWorkspace(
     state,
     workstream.repairId,
-    candidate?.baseSha ??
-      currentCandidate?.baseSha ??
-      state.run.checkout.startHead,
+    candidate?.baseSha ?? currentCandidate?.baseSha ?? state.executionTarget,
   );
 }
 

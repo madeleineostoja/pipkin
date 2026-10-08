@@ -6,6 +6,7 @@ import {
   acquireCheckoutLease,
   checkoutPaths,
   loadRunState,
+  failureGeneration,
   RunStore,
   type CheckoutLeaseCapability,
   type RunState,
@@ -148,6 +149,16 @@ export function formatStatus(state: RunState): string {
       `Run: ${state.run.id}`,
       `Run start target: ${state.run.checkout.startHead}`,
       `Phase: ${state.phase}`,
+      `Generation: ${state.generation} · target ${state.executionTarget}`,
+      ...(state.restartPreparation
+        ? [
+            `Restart preparation: generation ${state.restartPreparation.generation} · ${state.restartPreparation.blockers.join("; ") || "pending prerequisites"}`,
+          ]
+        : []),
+      ...state.generationHistory.map(
+        (history) =>
+          `Prior generation ${history.generation}: ${history.phase}${history.failure ? ` · ${history.failure.reason}` : ""}`,
+      ),
       `Active revisions: ${["failed", "incomplete"].includes(state.phase) ? 0 : activeRevisions.length}`,
       ...(terminalLanes.length > 0
         ? [`Unavailable lanes: ${terminalLanes.join(", ")}`]
@@ -189,6 +200,7 @@ export function formatStatus(state: RunState): string {
               ? [
                   `Latest failure: ${latestFailure.category} · ${latestFailure.assignment}`,
                   `Failure evidence: ${latestFailure.evidence}`,
+                  `Failure generation: ${failureGeneration(state, latestFailure.id)}`,
                 ]
               : []),
             ...(state.failure

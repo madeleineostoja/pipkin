@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { expectedTargetHead } from "./run.js";
 import type { RunState } from "./store.js";
 
-type TargetState = Pick<RunState, "run" | "publication">;
+type TargetState = Pick<RunState, "run" | "publication" | "executionTarget">;
 
 describe("expected target history", () => {
   it("uses a newer publication receipt after an older supersession", () => {
@@ -58,6 +58,7 @@ describe("expected target history", () => {
 
 function targetState(): TargetState {
   return {
+    executionTarget: "target-a",
     run: {
       checkout: { startHead: "target-a" },
     } as RunState["run"],

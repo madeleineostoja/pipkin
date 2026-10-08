@@ -283,7 +283,7 @@ export async function runReconciliation(args: {
     response?.status === "completed" ? response.result : undefined;
   return {
     candidate: {
-      id: `reconciliation:${reconciliationTaskId(args.effect.workstream)}:${observation.head}`,
+      id: `reconciliation:g${args.state.generation}:${reconciliationTaskId(args.effect.workstream)}:${observation.head}`,
       workstream: args.effect.workstream,
       baseSha: packet.candidate.baseSha,
       integrationBaseSha: packet.failedTarget.commitSha,

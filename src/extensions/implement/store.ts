@@ -39,6 +39,14 @@ import {
   sha256,
 } from "./source-integrity.js";
 
+import {
+  assertRestartPreflight,
+  deliveredSourceIds,
+  validateRestartResources,
+  type RestartPreflight,
+  type RestartResource,
+} from "./restart.js";
+
 const nonEmpty = z.string().trim().min(1);
 const handoffDraft = z.string().min(1).max(12_000).regex(/\S/);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -532,6 +540,14 @@ const publicationAbandonmentSchema = z
     targetBaseSha: nonEmpty,
     evidence: nonEmpty,
     abandonedAt: nonEmpty,
+    restartProof: z
+      .object({
+        generation: z.number().int().positive(),
+        targetSha: nonEmpty,
+        targetTreeSha: nonEmpty,
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -630,9 +646,109 @@ const wholePlanReviewSchema = z
     "An approved whole-plan review requires immutable target identity, evidence, and handoff draft.",
   );
 
+const restartPreparationSchema = z
+  .object({
+    generation: z.number().int().positive(),
+    targetSha: nonEmpty,
+    targetTreeSha: nonEmpty,
+    branchRef: nonEmpty,
+    preservedSourceIds: z.array(id),
+    resetSourceIds: z.array(id),
+    transactionIntentIds: z.array(nonEmpty),
+    resources: z.array(
+      z
+        .object({
+          id: nonEmpty,
+          kind: z.enum(["worktree", "staging", "branch"]),
+          path: nonEmpty,
+          branch: nonEmpty,
+          candidateId: nonEmpty.optional(),
+          operationId: nonEmpty.optional(),
+          ownershipEvidence: nonEmpty,
+          status: z.enum(["pending", "retired"]),
+        })
+        .strict(),
+    ),
+    progress: z
+      .object({
+        transactionsSettled: z.boolean(),
+        projectionSettled: z.boolean(),
+        targetValidated: z.boolean(),
+      })
+      .strict(),
+    blockers: z.array(nonEmpty),
+    preparedAt: nonEmpty,
+  })
+  .strict();
+
+const generationExecutionSchema = z
+  .object({
+    generation: z.number().int().nonnegative(),
+    executionTarget: nonEmpty,
+    executionStartedAt: nonEmpty.optional(),
+    phase: z.enum([
+      "planning",
+      "running",
+      "whole_plan_review",
+      "stopping",
+      "failed",
+      "incomplete",
+      "completed",
+    ]),
+    workstreams: z
+      .object({
+        source: z.record(id, sourceWorkstreamSchema),
+        overall: z.record(id, overallWorkstreamSchema),
+      })
+      .strict(),
+    tasks: z.record(id, taskRuntimeSchema),
+    operationIds: z.array(nonEmpty),
+    failureIds: z.array(nonEmpty),
+    candidateIds: z.array(nonEmpty),
+    reviews: z.record(nonEmpty, reviewStateSchema),
+    revisionAssignments: z.record(nonEmpty, revisionAssignmentSchema),
+    operationalRetries: z.record(nonEmpty, operationalRetrySchema),
+    workspaceRecreations: z.record(nonEmpty, workspaceRecreationSchema),
+    reconciliationAssignments: z.record(
+      nonEmpty,
+      reconciliationAssignmentSchema,
+    ),
+    failure: failureSchema.optional(),
+    wholePlanReview: wholePlanReviewSchema,
+    activatedRestart: restartPreparationSchema.optional(),
+  })
+  .strict();
+
+const reviewHistorySchema = z
+  .object({
+    generation: z.number().int().nonnegative(),
+    revision: z.number().int().nonnegative(),
+    findings: z.record(nonEmpty, findingSchema),
+    reviews: z.record(nonEmpty, reviewStateSchema),
+    wholePlanReview: wholePlanReviewSchema,
+  })
+  .strict();
+
 export const RunStateSchema = z
   .object({
-    version: z.literal(11),
+    version: z.literal(12),
+    generation: z.number().int().nonnegative(),
+    executionTarget: nonEmpty,
+    executionStartedAt: nonEmpty.optional(),
+    generationHistory: z.array(generationExecutionSchema),
+    reviewHistory: z.array(reviewHistorySchema),
+    startupRecoveries: z.array(
+      z
+        .object({
+          generation: z.number().int().positive(),
+          phase: z.enum(["failed", "incomplete"]),
+          failure: failureSchema.optional(),
+          recoveredAt: nonEmpty,
+        })
+        .strict(),
+    ),
+    restartPreparation: restartPreparationSchema.optional(),
+    activatedRestart: restartPreparationSchema.optional(),
     revision: z.number().int().nonnegative(),
     run: z
       .object({
@@ -770,6 +886,18 @@ export class CheckoutLeaseBusyError extends Error {
     this.name = "CheckoutLeaseBusyError";
   }
 }
+
+const restartTransition = Symbol("validated restart transition");
+const startupRecoveryTransition = Symbol(
+  "validated unlaunched startup recovery",
+);
+const restartDeliveryTransition = Symbol(
+  "prepared restart delivery settlement",
+);
+type StoreTransition =
+  | typeof restartTransition
+  | typeof startupRecoveryTransition
+  | typeof restartDeliveryTransition;
 
 const updates = new Map<string, Promise<void>>();
 
@@ -918,7 +1046,12 @@ export function createPlanningRun(args: {
   const now = args.now ?? new Date().toISOString();
   const path = runStatePath(args.lease.paths, args.runId);
   const state: RunState = {
-    version: 11,
+    version: 12,
+    generation: 0,
+    executionTarget: args.checkout.startHead,
+    generationHistory: [],
+    startupRecoveries: [],
+    reviewHistory: [],
     revision: 0,
     run: {
       id: args.runId,
@@ -1006,6 +1139,14 @@ export class RunStore {
     expectedRevision: number,
     update: (current: RunState) => RunState,
   ): Promise<RunState> {
+    return this.atomicUpdate(expectedRevision, update);
+  }
+
+  private async atomicUpdate(
+    expectedRevision: number,
+    update: (current: RunState) => RunState,
+    transition?: StoreTransition,
+  ): Promise<RunState> {
     this.lease.assertOwned();
     const queued = updates.get(this.path) ?? Promise.resolve();
     const operation = queued
@@ -1021,15 +1162,46 @@ export class RunStore {
             current.revision,
           );
         }
+        const proposed = update(structuredClone(current));
+        const reviewChanged =
+          JSON.stringify([
+            current.findings,
+            current.reviews,
+            current.wholePlanReview,
+          ]) !==
+          JSON.stringify([
+            proposed.findings,
+            proposed.reviews,
+            proposed.wholePlanReview,
+          ]);
+        if (
+          JSON.stringify(proposed.reviewHistory) !==
+          JSON.stringify(current.reviewHistory)
+        ) {
+          throw new StateError(
+            "Review history is host-owned immutable evidence.",
+            this.path,
+          );
+        }
+        if (reviewChanged) {
+          proposed.reviewHistory.push({
+            generation: current.generation,
+            revision: current.revision,
+            findings: current.findings,
+            reviews: current.reviews,
+            wholePlanReview: current.wholePlanReview,
+          });
+        }
         const next = validateRunState(
           {
-            ...update(structuredClone(current)),
-            version: 11,
+            ...proposed,
+            version: 12,
             revision: current.revision + 1,
             updatedAt: new Date().toISOString(),
           },
           this.path,
           current,
+          transition,
         );
         if (
           JSON.stringify(next.protectedArtifactHashes) !==
@@ -1046,6 +1218,273 @@ export class RunStore {
     updates.set(this.path, operation);
     await operation;
     return this.read();
+  }
+
+  async prepareRestart(
+    proof: RestartPreflight,
+    resources: RestartResource[],
+  ): Promise<RunState> {
+    const current = this.read();
+    assertRestartPreflight(proof, current);
+    if (
+      current.restartPreparation ||
+      (current.generation > 0 &&
+        !current.executionStartedAt &&
+        current.phase !== "completed")
+    ) {
+      return current;
+    }
+    validateRestartResources(
+      current,
+      resources,
+      join(this.lease.paths.worktrees, current.run.id),
+    );
+    return this.atomicUpdate(
+      current.revision,
+      (state) => {
+        const preservedSourceIds = Object.values(state.workstreams.source)
+          .filter(
+            (lane) =>
+              Object.values(state.publication.receipts).some(
+                (receipt) => receipt.candidateId === lane.candidateId,
+              ) ||
+              Object.values(state.satisfaction.receipts).some(
+                (receipt) => receipt.candidateId === lane.candidateId,
+              ) ||
+              Object.values(state.publication.intents).some(
+                (intent) =>
+                  intent.candidateId === lane.candidateId &&
+                  intent.preparedCommitSha === proof.targetSha,
+              ),
+          )
+          .map((lane) => lane.id);
+        state.restartPreparation = {
+          generation: state.generation + 1,
+          targetSha: proof.targetSha,
+          targetTreeSha: proof.targetTreeSha,
+          branchRef: proof.branchRef,
+          preservedSourceIds,
+          resetSourceIds: Object.keys(state.workstreams.source).filter(
+            (id) => !preservedSourceIds.includes(id),
+          ),
+          transactionIntentIds: Object.values(state.publication.intents)
+            .filter(
+              (intent) =>
+                !state.publication.receipts[intent.id] &&
+                !state.publication.supersessions[intent.id] &&
+                !state.publication.abandonments[intent.id],
+            )
+            .map((intent) => intent.id),
+          resources,
+          progress: {
+            transactionsSettled: false,
+            projectionSettled: false,
+            targetValidated: false,
+          },
+          blockers: [],
+          preparedAt: new Date().toISOString(),
+        };
+        return state;
+      },
+      restartTransition,
+    );
+  }
+
+  async recordRestartProgress(
+    expectedRevision: number,
+    progress: NonNullable<RunState["restartPreparation"]>,
+  ): Promise<RunState> {
+    return this.atomicUpdate(
+      expectedRevision,
+      (state) => {
+        if (!state.restartPreparation) {
+          throw new StateError("No pending restart preparation.", this.path);
+        }
+        const {
+          progress: _oldProgress,
+          blockers: _oldBlockers,
+          resources: oldResources,
+          ...identity
+        } = state.restartPreparation;
+        const {
+          progress: _progress,
+          blockers: _blockers,
+          resources,
+          ...nextIdentity
+        } = progress;
+        if (
+          JSON.stringify(identity) !== JSON.stringify(nextIdentity) ||
+          resources.length !== oldResources.length ||
+          resources.some((resource, index) => {
+            const { status, ...owned } = oldResources[index]!;
+            const { status: nextStatus, ...nextOwned } = resource;
+            return (
+              JSON.stringify(owned) !== JSON.stringify(nextOwned) ||
+              (status === "retired" && nextStatus !== "retired")
+            );
+          }) ||
+          Object.entries(state.restartPreparation.progress).some(
+            ([key, done]) =>
+              done && !progress.progress[key as keyof typeof progress.progress],
+          )
+        ) {
+          throw new StateError(
+            "Restart progress cannot replace its reserved identity or reverse completed work.",
+            this.path,
+          );
+        }
+        state.restartPreparation = progress;
+        return state;
+      },
+      restartTransition,
+    );
+  }
+
+  async abandonRestartPublication(
+    proof: RestartPreflight,
+    intentId: string,
+    evidence: string,
+  ): Promise<RunState> {
+    const current = this.read();
+    assertRestartPreflight(proof, current);
+    return this.atomicUpdate(
+      current.revision,
+      (state) => {
+        const pending = state.restartPreparation;
+        const intent = state.publication.intents[intentId];
+        const operation = Object.values(state.operationSettlements)
+          .reverse()
+          .find(
+            (operation) =>
+              operation.kind === "publication" &&
+              operation.publicationIntentId === intentId,
+          );
+        if (
+          !pending ||
+          !pending.transactionIntentIds.includes(intentId) ||
+          !intent ||
+          !operation ||
+          proof.targetSha !== intent.targetBaseSha ||
+          proof.targetSha === intent.preparedCommitSha ||
+          proof.targetSha !== pending.targetSha ||
+          proof.targetTreeSha !== pending.targetTreeSha ||
+          state.publication.receipts[intentId] ||
+          state.publication.supersessions[intentId]
+        ) {
+          throw new StateError(
+            "Restart abandonment requires an exact unpublished transaction at its validated base.",
+            this.path,
+          );
+        }
+        if (state.publication.abandonments[intentId]) {
+          return state;
+        }
+        state.publication.abandonments[intentId] = {
+          intentId,
+          publicationOperationId: operation.operationId,
+          preparationOperationId: intent.operationId,
+          workstream: intent.workstream,
+          candidateId: intent.candidateId,
+          preparationId: intent.preparationId,
+          targetRef: intent.targetRef,
+          targetBaseSha: intent.targetBaseSha,
+          evidence,
+          abandonedAt: new Date().toISOString(),
+          restartProof: {
+            generation: pending.generation,
+            targetSha: proof.targetSha,
+            targetTreeSha: proof.targetTreeSha,
+          },
+        };
+        return state;
+      },
+      restartDeliveryTransition,
+    );
+  }
+
+  async settleRestartPublishedLane(
+    expectedRevision: number,
+    intentId: string,
+  ): Promise<RunState> {
+    return this.atomicUpdate(
+      expectedRevision,
+      (state) => {
+        const intent = state.publication.intents[intentId];
+        const receipt = state.publication.receipts[intentId];
+        const pending = state.restartPreparation;
+        if (
+          !intent ||
+          !receipt ||
+          !pending ||
+          receipt.publishedCommitSha !== pending.targetSha ||
+          (intent.workstream.kind === "source" &&
+            !pending.preservedSourceIds.includes(intent.workstream.id))
+        ) {
+          throw new StateError(
+            "Restart delivery requires its prepared exact published receipt.",
+            this.path,
+          );
+        }
+        const lane =
+          intent.workstream.kind === "source"
+            ? state.workstreams.source[intent.workstream.id]
+            : state.workstreams.overall[intent.workstream.repairId];
+        if (!lane || lane.candidateId !== receipt.candidateId) {
+          throw new StateError(
+            "Restart delivery lost its publication candidate.",
+            this.path,
+          );
+        }
+        lane.phase = "completed";
+        return state;
+      },
+      restartDeliveryTransition,
+    );
+  }
+
+  async activateRestart(proof: RestartPreflight): Promise<RunState> {
+    const current = this.read();
+    assertRestartPreflight(proof, current);
+    const pending = current.restartPreparation;
+    if (!pending) {
+      if (
+        current.generation > 0 &&
+        !current.executionStartedAt &&
+        current.phase !== "completed"
+      ) {
+        if (current.phase === "failed" || current.phase === "incomplete") {
+          return this.atomicUpdate(
+            current.revision,
+            (state) => restartStartupRecovery(state, new Date().toISOString()),
+            startupRecoveryTransition,
+          );
+        }
+        return current;
+      }
+      throw new StateError("No pending successor to activate.", this.path);
+    }
+    if (
+      proof.targetSha !== pending.targetSha ||
+      proof.targetTreeSha !== pending.targetTreeSha ||
+      !Object.values(pending.progress).every(Boolean) ||
+      pending.blockers.length ||
+      pending.resources.some((resource) => resource.status !== "retired") ||
+      current.projectionDebt.length ||
+      Object.keys(current.processLeases).length ||
+      Object.values(current.publication.intents).some(
+        (intent) =>
+          !current.publication.receipts[intent.id] &&
+          !current.publication.supersessions[intent.id] &&
+          !current.publication.abandonments[intent.id],
+      )
+    ) {
+      throw new StateError("Restart prerequisites are not settled.", this.path);
+    }
+    return this.atomicUpdate(
+      current.revision,
+      (state) => restartActivation(state),
+      restartTransition,
+    );
   }
 
   async bindExecutionPlan(plan: ExecutionPlan): Promise<RunState> {
@@ -1234,12 +1673,13 @@ export function validateRunState(
   value: unknown,
   path: string,
   previous?: RunState,
+  transition?: StoreTransition,
 ): RunState {
   const parsed = RunStateSchema.safeParse(value);
   if (!parsed.success) {
     const version = versionOf(value);
     const message =
-      version !== 11
+      version !== 12
         ? "Run state has an unsupported schema."
         : "Run state is invalid.";
     throw new StateError(
@@ -1251,7 +1691,7 @@ export function validateRunState(
     );
   }
   const state = parsed.data;
-  const issues = invariantIssues(state, path, previous);
+  const issues = invariantIssues(state, path, previous, transition);
   if (issues.length > 0) {
     throw new StateError(
       " run state violates lifecycle invariants.",
@@ -1410,9 +1850,70 @@ function invariantIssues(
   state: RunState,
   path: string,
   previous?: RunState,
+  transition?: StoreTransition,
 ): string[] {
   const issues: string[] = [];
   const bound = state.executionPlan !== undefined;
+  if (
+    state.generationHistory.length !== state.generation ||
+    state.generationHistory.some(
+      (history, index) =>
+        history.generation !== index ||
+        history.operationIds.some((id) => !state.operationSettlements[id]) ||
+        history.failureIds.some((id) => !state.failures[id]) ||
+        history.candidateIds.some((id) => !state.candidates[id]),
+    )
+  ) {
+    issues.push(
+      "generation history must retain every predecessor and its evidence",
+    );
+  }
+  if (
+    state.startupRecoveries.some(
+      (recovery, index) =>
+        recovery.generation > state.generation ||
+        (index > 0 &&
+          recovery.generation < state.startupRecoveries[index - 1]!.generation),
+    )
+  ) {
+    issues.push(
+      "startup recovery history must retain ordered activated-generation evidence",
+    );
+  }
+  if (
+    (state.generation === 0 && state.activatedRestart) ||
+    (state.generation > 0 &&
+      (!state.activatedRestart ||
+        state.activatedRestart.generation !== state.generation ||
+        state.activatedRestart.targetSha !== state.executionTarget))
+  ) {
+    issues.push("current generation requires its immutable activation receipt");
+  }
+  if (
+    state.generation === 0 &&
+    state.executionTarget !== state.run.checkout.startHead
+  ) {
+    issues.push("generation zero must use the original start target");
+  }
+  if (state.restartPreparation) {
+    const pending = state.restartPreparation;
+    const laneIds = [...pending.preservedSourceIds, ...pending.resetSourceIds];
+    if (
+      pending.generation !== state.generation + 1 ||
+      !bound ||
+      Object.keys(state.processLeases).length > 0 ||
+      pending.branchRef !== state.run.checkout.branchRef ||
+      new Set(laneIds).size !== laneIds.length ||
+      !sameKeys(laneIds, new Set(Object.keys(state.workstreams.source))) ||
+      new Set(pending.resources.map((resource) => resource.id)).size !==
+        pending.resources.length ||
+      pending.transactionIntentIds.some((id) => !state.publication.intents[id])
+    ) {
+      issues.push(
+        "pending preparation must reserve exactly one quiescent successor with complete lane and transaction identity",
+      );
+    }
+  }
   if (state.phase === "planning" && bound) {
     issues.push("planning cannot bind an execution plan");
   }
@@ -1553,28 +2054,11 @@ function invariantIssues(
       const finding = state.findings[findingId];
       if (!finding) {
         issues.push("whole-plan review epoch lost a canonical finding");
-      } else if (
-        finding.scope.kind !== "whole_plan" ||
-        finding.scope.initialTargetSha !== wholePlanEpoch.initialTargetSha ||
-        finding.scope.initialTargetTreeSha !==
-          wholePlanEpoch.initialTargetTreeSha
-      ) {
-        issues.push(
-          `whole-plan review epoch has a finding outside its immutable scope: ${findingId}`,
-        );
       }
     }
     for (const findingId of wholePlanEpoch.pendingCorrectionIds) {
       const finding = state.findings[findingId];
-      if (
-        !epochIds.has(findingId) ||
-        !finding ||
-        finding.status !== "open" ||
-        finding.scope.kind !== "whole_plan" ||
-        finding.scope.initialTargetSha !== wholePlanEpoch.initialTargetSha ||
-        finding.scope.initialTargetTreeSha !==
-          wholePlanEpoch.initialTargetTreeSha
-      ) {
+      if (!epochIds.has(findingId) || !finding || finding.status !== "open") {
         issues.push("whole-plan review epoch has an invalid pending finding");
       }
     }
@@ -1858,7 +2342,26 @@ function invariantIssues(
       state.publication.receipts[key] ||
       state.publication.supersessions[key] ||
       operation?.kind !== "publication" ||
-      !isProvenNoWriteAbandonment(operation) ||
+      !(
+        isProvenNoWriteAbandonment(operation) ||
+        (abandonment.restartProof &&
+          [
+            state.restartPreparation,
+            state.activatedRestart,
+            ...state.generationHistory.map(
+              (history) => history.activatedRestart,
+            ),
+          ].some(
+            (preparation) =>
+              preparation?.generation ===
+                abandonment.restartProof?.generation &&
+              preparation?.targetSha === abandonment.targetBaseSha &&
+              preparation?.targetSha === abandonment.restartProof?.targetSha &&
+              preparation?.targetTreeSha ===
+                abandonment.restartProof?.targetTreeSha &&
+              preparation?.transactionIntentIds.includes(abandonment.intentId),
+          ))
+      ) ||
       operation.publicationIntentId !== abandonment.intentId ||
       intent.operationId !== abandonment.preparationOperationId ||
       !sameWorkstreamIdentity(intent.workstream, abandonment.workstream) ||
@@ -1880,7 +2383,16 @@ function invariantIssues(
     if (
       candidate.workstream.kind === "source" &&
       state.workstreams.source[candidate.workstream.id]?.baseSha !==
-        candidate.baseSha
+        candidate.baseSha &&
+      !state.generationHistory.some(
+        (history) =>
+          history.candidateIds.includes(candidate.id) &&
+          history.workstreams.source[
+            candidate.workstream.kind === "source"
+              ? candidate.workstream.id
+              : ""
+          ]?.baseSha === candidate.baseSha,
+      )
     ) {
       issues.push(
         `candidate ${key} does not match its workstream runtime base`,
@@ -1911,10 +2423,20 @@ function invariantIssues(
           finding.workstream.id !== finding.scope.id)) ||
       (finding.scope.kind === "whole_plan" &&
         (finding.workstream.kind !== "overall" ||
-          state.wholePlanReview.epoch?.initialTargetSha !==
-            finding.scope.initialTargetSha ||
-          state.wholePlanReview.epoch?.initialTargetTreeSha !==
-            finding.scope.initialTargetTreeSha))
+          ![
+            state.wholePlanReview,
+            ...state.generationHistory.map(
+              (history) => history.wholePlanReview,
+            ),
+            ...state.reviewHistory.map((history) => history.wholePlanReview),
+          ].some(
+            (review) =>
+              finding.scope.kind === "whole_plan" &&
+              review.epoch?.initialTargetSha ===
+                finding.scope.initialTargetSha &&
+              review.epoch.initialTargetTreeSha ===
+                finding.scope.initialTargetTreeSha,
+          )))
     ) {
       issues.push(`finding ${key} has an invalid immutable scope`);
     }
@@ -2072,8 +2594,7 @@ function invariantIssues(
           (assignment.workstream.kind === "source"
             ? finding.workstream.kind !== "source" ||
               finding.workstream.id !== assignment.workstream.id
-            : finding.scope.kind !== "whole_plan" ||
-              !state.wholePlanReview.epoch?.findingIds.includes(findingId))
+            : !state.wholePlanReview.epoch?.findingIds.includes(findingId))
         );
       },
     );
@@ -2286,6 +2807,7 @@ function invariantIssues(
       !sameWorkstreamIdentity(candidate.workstream, intent.workstream) ||
       (state.publication.supersessions[key] === undefined &&
         state.publication.abandonments[key] === undefined &&
+        state.publication.receipts[key] === undefined &&
         workstreamCandidateId(state, intent.workstream) !==
           intent.candidateId) ||
       preparation.candidateId !== intent.candidateId ||
@@ -2322,7 +2844,102 @@ function invariantIssues(
       );
     }
   }
+  const activating =
+    previous !== undefined &&
+    state.generation === previous.generation + 1 &&
+    transition === restartTransition;
+  const recoveringStartup = transition === startupRecoveryTransition;
+  const settlingRestartDelivery =
+    previous?.restartPreparation !== undefined &&
+    transition === restartDeliveryTransition;
   if (previous) {
+    if (
+      transition !== restartDeliveryTransition &&
+      Object.values(state.publication.abandonments).some(
+        (abandonment) =>
+          abandonment.restartProof &&
+          !previous.publication.abandonments[abandonment.intentId],
+      )
+    ) {
+      issues.push("restart abandonment requires its host-validated transition");
+    }
+    if (
+      !activating &&
+      !recoveringStartup &&
+      ["failed", "incomplete", "completed"].includes(previous.phase) &&
+      state.phase !== previous.phase
+    ) {
+      issues.push("terminal run reactivation requires restart");
+    }
+    if (state.generation !== previous.generation && !activating) {
+      issues.push(
+        "generation advances only through validated restart activation",
+      );
+    }
+    if (
+      !activating &&
+      (state.executionTarget !== previous.executionTarget ||
+        JSON.stringify(state.activatedRestart) !==
+          JSON.stringify(previous.activatedRestart) ||
+        JSON.stringify(state.generationHistory) !==
+          JSON.stringify(previous.generationHistory))
+    ) {
+      issues.push("generation execution identity and history are immutable");
+    }
+    if (
+      previous.failure &&
+      !activating &&
+      !recoveringStartup &&
+      JSON.stringify(state.failure) !== JSON.stringify(previous.failure)
+    ) {
+      issues.push("failure metadata is immutable generation evidence");
+    }
+    if (
+      previous.executionStartedAt &&
+      !activating &&
+      state.executionStartedAt !== previous.executionStartedAt
+    ) {
+      issues.push("execution startup evidence is immutable");
+    }
+    if (
+      JSON.stringify(state.restartPreparation) !==
+        JSON.stringify(previous.restartPreparation) &&
+      transition !== restartTransition
+    ) {
+      issues.push("restart preparation is host-owned");
+    }
+    if (
+      !recoveringStartup &&
+      JSON.stringify(state.startupRecoveries) !==
+        JSON.stringify(previous.startupRecoveries)
+    ) {
+      issues.push("startup recovery evidence is host-owned and immutable");
+    }
+    if (recoveringStartup || activating) {
+      const expected = RunStateSchema.parse(
+        recoveringStartup
+          ? restartStartupRecovery(
+              previous,
+              state.startupRecoveries.at(-1)!.recoveredAt,
+            )
+          : restartActivation(previous),
+      );
+      const {
+        revision: _revision,
+        updatedAt: _updatedAt,
+        reviewHistory: _reviewHistory,
+        ...actual
+      } = state;
+      const {
+        revision: _expectedRevision,
+        updatedAt: _expectedUpdatedAt,
+        reviewHistory: _expectedHistory,
+        ...wanted
+      } = expected;
+      if (JSON.stringify(actual) !== JSON.stringify(wanted)) {
+        issues.push("restart must install the exact validated execution state");
+      }
+    }
     if (JSON.stringify(previous.run) !== JSON.stringify(state.run)) {
       issues.push("immutable run identity was overwritten");
     }
@@ -2333,17 +2950,57 @@ function invariantIssues(
     ) {
       issues.push("bound execution plan identity was overwritten");
     }
+    for (const [id, task] of Object.entries(previous.tasks)) {
+      const next = state.tasks[id];
+      if (
+        (task.phase === "published" ||
+          (task.phase === "reviewed_satisfied" &&
+            deliveredSourceIds(previous).includes(task.workstreamId))) &&
+        JSON.stringify(next) !== JSON.stringify(task) &&
+        !(
+          task.phase === "reviewed_satisfied" &&
+          JSON.stringify(next) ===
+            JSON.stringify({ ...task, phase: "published" })
+        )
+      ) {
+        issues.push(`delivered task ${id} was overwritten`);
+      }
+    }
+    if (
+      state.reviewHistory.length < previous.reviewHistory.length ||
+      previous.reviewHistory.some(
+        (entry, index) =>
+          JSON.stringify(entry) !== JSON.stringify(state.reviewHistory[index]),
+      )
+    ) {
+      issues.push(
+        "prior review assessments and resolution evidence are immutable",
+      );
+    }
     for (const [id, workstream] of Object.entries(
       previous.workstreams.source,
     )) {
       const current = state.workstreams.source[id];
       if (
+        workstream.phase === "completed" &&
+        (preservedSourceLane(previous, id) ||
+          Object.values(previous.publication.receipts).some(
+            (receipt) => receipt.candidateId === workstream.candidateId,
+          )) &&
+        JSON.stringify(current) !== JSON.stringify(workstream)
+      ) {
+        issues.push(`delivered source workstream ${id} was overwritten`);
+      }
+      if (
+        !activating &&
         workstream.baseSha !== undefined &&
         current?.baseSha !== workstream.baseSha
       ) {
         issues.push(`source workstream ${id} runtime base was overwritten`);
       }
       if (
+        !activating &&
+        !settlingRestartDelivery &&
         ["failed", "dependency_skipped"].includes(workstream.phase) &&
         current?.phase !== workstream.phase
       ) {
@@ -2354,6 +3011,8 @@ function invariantIssues(
       previous.workstreams.overall,
     )) {
       if (
+        !activating &&
+        !settlingRestartDelivery &&
         workstream.phase === "failed" &&
         state.workstreams.overall[id]?.phase !== "failed"
       ) {
@@ -2445,13 +3104,59 @@ function invariantIssues(
     }
   }
   if (previous) {
+    if (!activating) {
+      for (const [id, retry] of Object.entries(previous.operationalRetries)) {
+        const retained = state.operationalRetries[id];
+        if (
+          !retained ||
+          retained.attempts < retry.attempts ||
+          (retry.status === "exhausted" && retained.status !== "exhausted") ||
+          JSON.stringify(retained.evidence.slice(0, retry.evidence.length)) !==
+            JSON.stringify(retry.evidence) ||
+          JSON.stringify({
+            ...retained,
+            attempts: retry.attempts,
+            evidence: retry.evidence,
+            status: retry.status,
+          }) !== JSON.stringify(retry)
+        ) {
+          issues.push(
+            `operational retry ${id} lost its bounded accounting or identity`,
+          );
+        }
+      }
+      for (const [key, review] of Object.entries(previous.reviews)) {
+        const retained = state.reviews[key];
+        if (
+          !retained ||
+          (review.correctionConsumed && !retained.correctionConsumed) ||
+          (review.publicationCommitSubject &&
+            retained.publicationCommitSubject !==
+              review.publicationCommitSubject)
+        ) {
+          issues.push(
+            `review ${key} lost its correction allowance or publication subject`,
+          );
+        }
+      }
+      if (
+        previous.wholePlanReview.reviewRetry &&
+        (!state.wholePlanReview.reviewRetry ||
+          state.wholePlanReview.reviewRetry.attempts <
+            previous.wholePlanReview.reviewRetry.attempts)
+      ) {
+        issues.push(
+          "whole-plan review retry allowance was replenished without restart",
+        );
+      }
+    }
     for (const [id, failure] of Object.entries(previous.failures)) {
       if (JSON.stringify(state.failures[id]) !== JSON.stringify(failure)) {
         issues.push(`failure ${id} was overwritten or removed`);
       }
     }
     for (const [id, assignment] of Object.entries(
-      previous.revisionAssignments,
+      activating ? {} : previous.revisionAssignments,
     )) {
       const retained = state.revisionAssignments[id];
       if (
@@ -2459,6 +3164,11 @@ function invariantIssues(
         retained.candidateId !== assignment.candidateId ||
         retained.comparisonBase !== assignment.comparisonBase ||
         retained.findingEpoch !== assignment.findingEpoch ||
+        retained.executionFailures < assignment.executionFailures ||
+        JSON.stringify(
+          retained.evidence.slice(0, assignment.evidence.length),
+        ) !== JSON.stringify(assignment.evidence) ||
+        (assignment.status !== "open" && retained.status === "open") ||
         JSON.stringify(retained.pendingCorrectionIds) !==
           JSON.stringify(assignment.pendingCorrectionIds) ||
         JSON.stringify(retained.authority) !==
@@ -2470,7 +3180,7 @@ function invariantIssues(
       }
     }
     for (const [id, assignment] of Object.entries(
-      previous.reconciliationAssignments,
+      activating ? {} : previous.reconciliationAssignments,
     )) {
       const retained = state.reconciliationAssignments[id];
       if (!retained) {
@@ -2489,7 +3199,13 @@ function invariantIssues(
         attemptEvidence: _retainedAttemptEvidence,
         ...retainedIdentity
       } = retained;
-      if (JSON.stringify(identity) !== JSON.stringify(retainedIdentity)) {
+      if (
+        JSON.stringify(identity) !== JSON.stringify(retainedIdentity) ||
+        retained.executionFailures < assignment.executionFailures ||
+        JSON.stringify(
+          retained.attemptEvidence.slice(0, assignment.attemptEvidence.length),
+        ) !== JSON.stringify(assignment.attemptEvidence)
+      ) {
         issues.push(
           `reconciliation assignment ${id} rewrites its immutable failed replay context`,
         );
@@ -2499,13 +3215,194 @@ function invariantIssues(
   return issues;
 }
 
+function restartStartupRecovery(
+  current: RunState,
+  recoveredAt: string,
+): RunState {
+  if (
+    current.generation === 0 ||
+    current.executionStartedAt ||
+    current.restartPreparation ||
+    !["failed", "incomplete"].includes(current.phase) ||
+    Object.keys(current.processLeases).length ||
+    current.projectionDebt.length ||
+    Object.values(current.publication.intents).some(
+      (intent) =>
+        !current.publication.receipts[intent.id] &&
+        !current.publication.supersessions[intent.id] &&
+        !current.publication.abandonments[intent.id],
+    )
+  ) {
+    throw new StateError(
+      "Startup recovery requires a settled, unlaunched activated generation.",
+      "run-state",
+    );
+  }
+  const state = structuredClone(current);
+  state.startupRecoveries.push({
+    generation: current.generation,
+    phase: current.phase as "failed" | "incomplete",
+    ...(current.failure ? { failure: current.failure } : {}),
+    recoveredAt,
+  });
+  state.phase =
+    current.failure?.originPhase ??
+    (Object.values(current.workstreams.source).every(
+      (lane) => lane.phase === "completed",
+    )
+      ? "whole_plan_review"
+      : "running");
+  delete state.failure;
+  if (state.wholePlanReview.status === "reviewing") {
+    state.wholePlanReview.status = "pending";
+  }
+  return state;
+}
+
+function restartActivation(current: RunState): RunState {
+  const pending = current.restartPreparation;
+  if (!pending || pending.generation !== current.generation + 1) {
+    throw new StateError("Restart successor is not reserved.", "run-state");
+  }
+  const preserved = deliveredSourceIds(current);
+  if (
+    JSON.stringify([...preserved].sort()) !==
+    JSON.stringify([...pending.preservedSourceIds].sort())
+  ) {
+    throw new StateError(
+      "Settled delivery differs from the prepared lane classification.",
+      "run-state",
+    );
+  }
+  if (
+    preserved.some(
+      (id) => current.workstreams.source[id]?.phase !== "completed",
+    )
+  ) {
+    throw new StateError(
+      "Restart activation requires delivered lane settlement before projection and reset.",
+      "run-state",
+    );
+  }
+  const state = structuredClone(current);
+  state.generationHistory.push({
+    generation: current.generation,
+    executionTarget: current.executionTarget,
+    ...(current.executionStartedAt
+      ? { executionStartedAt: current.executionStartedAt }
+      : {}),
+    phase: current.phase,
+    workstreams: current.workstreams,
+    tasks: current.tasks,
+    operationIds: Object.keys(current.operationSettlements),
+    failureIds: Object.keys(current.failures),
+    candidateIds: Object.keys(current.candidates),
+    reviews: current.reviews,
+    revisionAssignments: current.revisionAssignments,
+    operationalRetries: current.operationalRetries,
+    workspaceRecreations: current.workspaceRecreations,
+    reconciliationAssignments: current.reconciliationAssignments,
+    ...(current.failure ? { failure: current.failure } : {}),
+    wholePlanReview: current.wholePlanReview,
+    ...(current.activatedRestart
+      ? { activatedRestart: current.activatedRestart }
+      : {}),
+  });
+  state.activatedRestart = pending;
+  state.generation = pending.generation;
+  state.executionTarget = pending.targetSha;
+  delete state.executionStartedAt;
+  delete state.failure;
+  delete state.restartPreparation;
+  state.workstreams.overall = {};
+  for (const lane of Object.values(state.workstreams.source)) {
+    if (preserved.includes(lane.id)) {
+      continue;
+    }
+    state.workstreams.source[lane.id] = {
+      kind: "source",
+      id: lane.id,
+      taskIds: lane.taskIds,
+      dependsOn: lane.dependsOn,
+      phase: "queued",
+    };
+    for (const taskId of lane.taskIds) {
+      state.tasks[taskId] = { workstreamId: lane.id, phase: "pending" };
+    }
+  }
+  state.reviews = Object.fromEntries(
+    Object.entries(state.reviews).filter(([key]) =>
+      preserved.some((id) => key === `source:${id}`),
+    ),
+  );
+  state.revisionAssignments = {};
+  state.operationalRetries = {};
+  state.workspaceRecreations = {};
+  state.reconciliationAssignments = {};
+  state.wholePlanReview = {
+    status: "pending",
+    ...(current.wholePlanReview.handoffDraft
+      ? { handoffDraft: current.wholePlanReview.handoffDraft }
+      : {}),
+  };
+  state.phase = Object.values(state.workstreams.source).every(
+    (lane) => lane.phase === "completed",
+  )
+    ? "whole_plan_review"
+    : "running";
+  return state;
+}
+
+export function candidateGeneration(
+  state: RunState,
+  candidateId: string,
+): number {
+  return (
+    state.generationHistory.find((history) =>
+      history.candidateIds.includes(candidateId),
+    )?.generation ?? state.generation
+  );
+}
+
+export function failureGeneration(state: RunState, failureId: string): number {
+  return (
+    state.generationHistory.find((history) =>
+      history.failureIds.includes(failureId),
+    )?.generation ?? state.generation
+  );
+}
+
+export function currentOperationSettlements(
+  state: RunState,
+): RunState["operationSettlements"][string][] {
+  const historical = new Set(
+    state.generationHistory.flatMap((history) => history.operationIds),
+  );
+  return Object.values(state.operationSettlements).filter(
+    (operation) => !historical.has(operation.operationId),
+  );
+}
+
+export function preservedSourceLane(state: RunState, id: string): boolean {
+  const previous = state.generationHistory.at(-1)?.workstreams.source[id];
+  return (
+    previous?.candidateId !== undefined &&
+    previous.candidateId === state.workstreams.source[id]?.candidateId &&
+    deliveredSourceIds(state).includes(id)
+  );
+}
+
 function workstreamExists(
   state: RunState,
   workstream: z.infer<typeof candidateSchema>["workstream"],
 ): boolean {
   return workstream.kind === "source"
     ? state.workstreams.source[workstream.id] !== undefined
-    : state.workstreams.overall[workstream.repairId] !== undefined;
+    : state.workstreams.overall[workstream.repairId] !== undefined ||
+        state.generationHistory.some(
+          (history) =>
+            history.workstreams.overall[workstream.repairId] !== undefined,
+        );
 }
 
 function workstreamIdentity(

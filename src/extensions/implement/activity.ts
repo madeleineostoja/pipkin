@@ -12,7 +12,7 @@ import {
 import { formatDuration } from "#lib/ui/metrics";
 import { readExecutionPlan, type ExecutionPlan } from "./execution-plan.js";
 import type { SchedulerEvent } from "./scheduler/scheduler.js";
-import type { RunState } from "./store.js";
+import { currentOperationSettlements, type RunState } from "./store.js";
 
 type TransitionEvent = SchedulerEvent | { kind: "planner_bound" };
 export function createImplementActivity(
@@ -245,7 +245,7 @@ function durableWorkstreamStart(
   if (startedAt !== undefined) {
     return { startedAt };
   }
-  const settlement = Object.values(state.operationSettlements ?? {})
+  const settlement = currentOperationSettlements(state)
     .filter(matches)
     .sort((left, right) => right.settledAt.localeCompare(left.settledAt))[0];
   const settledAt = timestamp(settlement?.settledAt);

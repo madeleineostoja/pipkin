@@ -61,7 +61,7 @@ export function createTerminalHandoffPublisher(
       ) {
         return;
       }
-      const identity = `${state.run.id}:${event.kind}`;
+      const identity = `${state.run.id}:g${state.generation}:${event.kind}`;
       if (captured.has(identity) || delivered.has(identity) || pending) {
         return;
       }

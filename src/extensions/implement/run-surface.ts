@@ -13,7 +13,7 @@ import { Panel } from "#lib/ui/panel";
 import { ScrollViewport } from "#lib/ui/scroll-viewport";
 import { plannerAttemptPath } from "./execution-plan.js";
 import { sourceCorpusPath } from "./requirements-context.js";
-import { checkoutPaths, type RunState } from "./store.js";
+import { checkoutPaths, failureGeneration, type RunState } from "./store.js";
 import { verificationText } from "./verification.js";
 import { stripVTControlCharacters } from "node:util";
 import type { RunInspection, RunSummary } from "./inspection-schema.js";
@@ -135,6 +135,12 @@ export function runMarkdown(
   const overview = [
     "## Overview",
     `- **Phase:** ${state.phase}`,
+    `- **Generation:** ${state.generation} · target ${state.executionTarget}`,
+    ...(state.restartPreparation
+      ? [
+          `- **Restart preparation:** generation ${state.restartPreparation.generation} · ${state.restartPreparation.blockers.join("; ") || "pending prerequisites"}`,
+        ]
+      : []),
     `- **Tasks:** ${taskProgress(state)}`,
     `- **Workstreams:** ${workstreams.length}`,
     `- **Active processes:** ${activeProcesses.length}`,
@@ -148,10 +154,31 @@ export function runMarkdown(
     sections.push([
       "## Latest failure",
       `- **${latestFailure.category}:** ${"evidence" in latestFailure ? latestFailure.evidence : latestFailure.reason}`,
+      `- **Generation:** ${"id" in latestFailure ? failureGeneration(state, latestFailure.id) : state.generation}`,
     ]);
   }
   if (mode === "overview") {
     return sections.map((section) => section.join("\n")).join("\n\n");
+  }
+
+  if (state.generationHistory.length > 0) {
+    sections.push([
+      "## Prior generations",
+      ...state.generationHistory.map(
+        (history) =>
+          `- **Generation ${history.generation}:** ${history.phase}${history.failure ? ` · ${history.failure.reason}` : ""}`,
+      ),
+    ]);
+  }
+
+  if (state.startupRecoveries.length > 0) {
+    sections.push([
+      "## Recovered startup failures",
+      ...state.startupRecoveries.map(
+        (recovery) =>
+          `- **Generation ${recovery.generation}:** ${recovery.phase}${recovery.failure ? ` · ${recovery.failure.reason}` : ""}`,
+      ),
+    ]);
   }
 
   if (workstreams.length > 0) {
@@ -284,6 +311,8 @@ export function runSummary(state: RunState): RunSummary {
   return {
     runId: surfaceText(state.run.id),
     phase: state.phase,
+    generation: state.generation,
+    restartPending: state.restartPreparation !== undefined,
     createdAt: surfaceText(state.createdAt),
     updatedAt: surfaceText(state.updatedAt),
     tasks: tasks.length,
@@ -391,7 +420,20 @@ export function projectRunSurface(
   for (const candidate of Object.values(state.candidates)) {
     add(candidate.id, "implementation", candidate.implementationEvidence);
   }
-  for (const review of Object.values(state.reviews)) {
+  const retainedReviews = [
+    ...Object.values(state.reviews),
+    ...state.reviewHistory.flatMap((history) => Object.values(history.reviews)),
+  ];
+  const reviewed = new Set<string>();
+  for (const review of retainedReviews) {
+    const identity = JSON.stringify([
+      review.candidateId,
+      review.latestCorrection,
+    ]);
+    if (reviewed.has(identity)) {
+      continue;
+    }
+    reviewed.add(identity);
     const correction = review.latestCorrection;
     if (correction?.verification) {
       add(review.candidateId, "correction", {
@@ -412,9 +454,33 @@ export function projectRunSurface(
     })),
   ]);
   const outcomes = take([
+    ...(state.restartPreparation
+      ? [
+          {
+            kind: "restart_preparation",
+            text: bounded(
+              `Generation ${state.restartPreparation.generation}: ${state.restartPreparation.blockers.join("; ") || "pending prerequisites"}`,
+            ),
+          },
+        ]
+      : []),
+    ...state.generationHistory.map((history) => ({
+      kind: "generation_outcome",
+      text: bounded(
+        `Generation ${history.generation}: ${history.phase}${history.failure ? ` · ${history.failure.reason}` : ""}`,
+      ),
+    })),
+    ...state.startupRecoveries.map((recovery) => ({
+      kind: "startup_recovery",
+      text: bounded(
+        `Generation ${recovery.generation}: ${recovery.phase}${recovery.failure ? ` · ${recovery.failure.reason}` : ""}`,
+      ),
+    })),
     ...Object.values(state.failures).map((failure) => ({
       kind: failure.category,
-      text: bounded(failure.evidence),
+      text: bounded(
+        `Generation ${failureGeneration(state, failure.id)}: ${failure.evidence}`,
+      ),
     })),
     ...Object.values(state.findings)
       .filter((finding) => finding.status === "open")

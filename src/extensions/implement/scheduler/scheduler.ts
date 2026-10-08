@@ -10,10 +10,14 @@ import {
   type FailureCategory,
   type FailureCommandEvidence,
 } from "../failure-policy.js";
-import type { AnchoredOverallReviewCompletion } from "../result-schemas.js";
+import type {
+  AnchoredOverallReviewCompletion,
+  InitialOverallReviewCompletion,
+} from "../result-schemas.js";
 import {
   applyAnchoredWorkstreamReview,
   applyInitialWorkstreamReview,
+  assessCarriedFindings,
   retargetAnchoredReview,
   reviewKey,
   workstreamReviewFindings,
@@ -21,7 +25,11 @@ import {
   type ReviewOutcome,
 } from "../review.js";
 import { sha256 } from "../source-integrity.js";
-import type { RunState } from "../store.js";
+import {
+  currentOperationSettlements,
+  preservedSourceLane,
+  type RunState,
+} from "../store.js";
 
 export type RuntimeWorkstream = RunState["candidates"][string]["workstream"];
 type ProcessLease = RunState["processLeases"][string];
@@ -66,7 +74,7 @@ type ImplementationOutcome =
       evidence: Record<string, string>;
     };
 
-export type SchedulerEvent =
+export type SchedulerEvent = (
   | {
       kind: "workstreams_selected";
       now: string;
@@ -306,6 +314,7 @@ export type SchedulerEvent =
       outcome:
         | {
             kind: "approved";
+            assessments?: InitialOverallReviewCompletion["assessments"];
             evidence: string;
             handoffDraft: string;
             reviewedTargetSha: string;
@@ -313,6 +322,7 @@ export type SchedulerEvent =
           }
         | {
             kind: "changes_requested";
+            assessments?: InitialOverallReviewCompletion["assessments"];
             repairId: string;
             candidate: RunState["candidates"][string];
             findings: Array<{
@@ -348,7 +358,8 @@ export type SchedulerEvent =
       kind: "projection_debt_recorded";
       debt: RunState["projectionDebt"][number];
     }
-  | { kind: "projection_debt_settled"; debtId: string };
+  | { kind: "projection_debt_settled"; debtId: string }
+) & { generation?: number };
 
 export type SchedulerEffect =
   | {
@@ -499,9 +510,47 @@ export function reduceRunEvent(
   input: RunState,
   event: SchedulerEvent,
 ): SchedulerTransition {
+  if (
+    (event.generation !== undefined && event.generation !== input.generation) ||
+    (input.generation > 0 &&
+      [
+        "whole_plan_review_completed",
+        "whole_plan_review_failed",
+        "run_completed",
+      ].includes(event.kind) &&
+      event.generation === undefined)
+  ) {
+    return {
+      state: input,
+      effects: [],
+      accepted: false,
+      error: "stale or unbound generation event",
+    };
+  }
+  if (input.restartPreparation) {
+    return {
+      state: input,
+      effects: [],
+      accepted: false,
+      error: "restart preparation blocks executable lifecycle events",
+    };
+  }
   const priorOperationId = "leaseId" in event ? event.leaseId : undefined;
   if (priorOperationId) {
     const settlement = input.operationSettlements[priorOperationId];
+    if (
+      settlement &&
+      !currentOperationSettlements(input).some(
+        (operation) => operation.operationId === priorOperationId,
+      )
+    ) {
+      return {
+        state: input,
+        effects: [],
+        accepted: false,
+        error: "stale-generation completion",
+      };
+    }
     if (settlement) {
       if (settlement.eventFingerprint === JSON.stringify(event)) {
         return { state: input, effects: [], accepted: true };
@@ -588,6 +637,7 @@ export function reduceRunEvent(
               );
               return (
                 receipts.length > 0 &&
+                !preservedSourceLane(state, dependencyId) &&
                 !receipts.some(
                   (receipt) => receipt.assessedTargetSha === assignedBase,
                 )
@@ -1042,6 +1092,11 @@ export function reduceRunEvent(
               state.candidates[event.outcome.candidateId]!.baseSha,
             completion: event.outcome.completion,
             evidence: event.outcome.evidence,
+            generation: state.generation,
+            carriedFindings: workstreamReviewFindings(
+              state,
+              event.workstream,
+            ).filter((finding) => finding.status === "open"),
           });
           state.reviews[key] = update.review;
           for (const finding of update.findings) {
@@ -1063,7 +1118,7 @@ export function reduceRunEvent(
           const findings = event.outcome.completion.findings.map(
             (finding, index) => ({
               ...finding,
-              id: `${reviewKey(event.workstream).replace(":", "-")}-repository-${review.round + 1}-${index + 1}`,
+              id: `${reviewKey(event.workstream).replace(":", "-")}-g${state.generation}-repository-${review.round + 1}-${index + 1}`,
               candidateId: event.outcome.candidateId,
               workstream: sourceWorkstream,
               scope: { kind: "source" as const, id: sourceWorkstream.id },
@@ -1132,6 +1187,18 @@ export function reduceRunEvent(
             findings: workstreamReviewFindings(state, event.workstream),
             evidence: event.outcome.evidence,
             correctionPaths: event.outcome.changedPaths,
+            ...(event.workstream.kind === "overall" &&
+            state.wholePlanReview.epoch
+              ? {
+                  regressionScope: {
+                    kind: "whole_plan" as const,
+                    initialTargetSha:
+                      state.wholePlanReview.epoch.initialTargetSha,
+                    initialTargetTreeSha:
+                      state.wholePlanReview.epoch.initialTargetTreeSha,
+                  },
+                }
+              : {}),
           });
           const wholePlanEpoch = state.wholePlanReview.epoch;
           state.reviews[key] = update.review;
@@ -1657,6 +1724,7 @@ export function reduceRunEvent(
         !workstream ||
         !candidate ||
         workstream.phase !== "completed" ||
+        preservedSourceLane(state, event.workstream.id) ||
         candidate.commitSha !== candidate.baseSha ||
         !Object.values(state.satisfaction.receipts).some(
           (receipt) => receipt.candidateId === candidate.id,
@@ -2019,7 +2087,7 @@ export function reduceRunEvent(
             "the unchanged failed replay context already has retained reconciliation history",
           );
         }
-        const id = `reconcile:${workstreamId(event.workstream)}:${candidateId}:${Object.keys(state.reconciliationAssignments).length + 1}`;
+        const id = `reconcile:g${state.generation}:${workstreamId(event.workstream)}:${candidateId}:${Object.keys(state.reconciliationAssignments).length + 1}`;
         state.reconciliationAssignments[id] = {
           id,
           workstream: event.workstream,
@@ -2470,7 +2538,35 @@ export function reduceRunEvent(
       if (state.wholePlanReview.reviewRetry) {
         state.wholePlanReview.reviewRetry.status = "completed";
       }
+      if (event.outcome.kind !== "anchored") {
+        try {
+          const carried =
+            state.generation > 0
+              ? Object.values(state.findings).filter(
+                  (finding) => finding.status === "open",
+                )
+              : [];
+          for (const finding of assessCarriedFindings(
+            carried,
+            event.outcome.assessments ?? [],
+          )) {
+            state.findings[finding.id] = finding;
+          }
+        } catch (error) {
+          return reject(error instanceof Error ? error.message : String(error));
+        }
+      }
       if (event.outcome.kind === "approved") {
+        if (
+          state.generation > 0 &&
+          Object.values(state.findings).some(
+            (finding) => finding.status === "open",
+          )
+        ) {
+          return reject(
+            "whole-plan approval cannot omit outstanding carried obligations",
+          );
+        }
         if (state.wholePlanReview.epoch) {
           return reject("an anchored whole-plan review requires assessments");
         }
@@ -2523,6 +2619,11 @@ export function reduceRunEvent(
             }),
             evidence: event.outcome.evidence,
             correctionPaths: epoch.latestRepair.changedPaths,
+            regressionScope: {
+              kind: "whole_plan",
+              initialTargetSha: epoch.initialTargetSha,
+              initialTargetTreeSha: epoch.initialTargetTreeSha,
+            },
           });
           if (update.findings.length < epoch.findingIds.length) {
             return reject(
@@ -2572,9 +2673,19 @@ export function reduceRunEvent(
         return reject("whole-plan baseline does not match its reviewed target");
       }
       const initialFindings = event.outcome.findings.map((finding, index) => ({
-        id: `overall-${repairId}-r${index + 1}`,
+        id: `overall-${repairId}-g${state.generation}-r${index + 1}`,
         ...finding,
       }));
+      const carriedIds =
+        state.generation > 0
+          ? Object.values(state.findings)
+              .filter((finding) => finding.status === "open")
+              .map((finding) => finding.id)
+          : [];
+      const requiredIds = [
+        ...carriedIds,
+        ...initialFindings.map((finding) => finding.id),
+      ];
       return queueWholePlanRepair(
         state,
         {
@@ -2582,15 +2693,15 @@ export function reduceRunEvent(
           targetSha: event.outcome.reviewedTargetSha,
           targetTreeSha: event.outcome.reviewedTargetTreeSha,
           candidate,
-          findingIds: initialFindings.map((finding) => finding.id),
+          findingIds: requiredIds,
           initialFindings,
           evidence: event.outcome.evidence,
           handoffDraft: event.outcome.handoffDraft,
           epoch: {
             initialTargetSha: event.outcome.reviewedTargetSha,
             initialTargetTreeSha: event.outcome.reviewedTargetTreeSha,
-            findingIds: initialFindings.map((finding) => finding.id),
-            pendingCorrectionIds: initialFindings.map((finding) => finding.id),
+            findingIds: requiredIds,
+            pendingCorrectionIds: requiredIds,
           },
         },
         reject,
@@ -2728,7 +2839,7 @@ function queueWholePlanRepair(
   const candidate =
     args.candidate ??
     ({
-      id: `overall-baseline:${state.run.id}:${args.repairId}:${args.targetSha}`,
+      id: `overall-baseline:${state.run.id}:g${state.generation}:${args.repairId}:${args.targetSha}`,
       workstream,
       baseSha: args.targetSha,
       commitSha: args.targetSha,
@@ -2761,9 +2872,8 @@ function queueWholePlanRepair(
   }
   if (args.initialFindings) {
     if (
-      args.initialFindings.length !== args.findingIds.length ||
       args.initialFindings.some(
-        (finding, index) => finding.id !== args.findingIds[index],
+        (finding) => !args.findingIds.includes(finding.id),
       )
     ) {
       return reject(
@@ -2793,9 +2903,7 @@ function queueWholePlanRepair(
     (id) => state.findings[id]?.status === "open",
   );
   if (
-    args.epoch.findingIds.some(
-      (id) => state.findings[id]?.scope.kind !== "whole_plan",
-    ) ||
+    args.epoch.findingIds.some((id) => !state.findings[id]) ||
     JSON.stringify(args.epoch.pendingCorrectionIds) !==
       JSON.stringify(openEpochFindingIds) ||
     JSON.stringify(args.findingIds) !==
@@ -2980,7 +3088,7 @@ function createReconciliationEscalation(
   state: RunState,
   assignment: RunState["reconciliationAssignments"][string],
 ): RunState["reconciliationAssignments"][string] {
-  const id = `reconcile:${workstreamId(assignment.workstream)}:${assignment.candidateId}:escalated:${Object.keys(state.reconciliationAssignments).length + 1}`;
+  const id = `reconcile:g${state.generation}:${workstreamId(assignment.workstream)}:${assignment.candidateId}:escalated:${Object.keys(state.reconciliationAssignments).length + 1}`;
   return {
     ...assignment,
     id,
@@ -3085,14 +3193,14 @@ function createLease(
   const attempt =
     [
       ...Object.values(state.processLeases),
-      ...Object.values(state.operationSettlements),
+      ...currentOperationSettlements(state),
     ].filter(
       (operation) =>
         sameWorkstream(operation.workstream, workstream) &&
         operation.kind === kind,
     ).length + 1;
   return {
-    id: `${kind}:${state.run.id}:${state.revision + 1}:${Object.keys(state.operationSettlements).length + index}`,
+    id: `${kind}:${state.run.id}:g${state.generation}:${state.revision + 1}:${Object.keys(state.operationSettlements).length + index}`,
     workstream,
     kind,
     ...(getWorkstream(state, workstream)?.candidateId
@@ -3364,7 +3472,7 @@ function createRevisionAssignment(
       "revision assignment authority does not match the active review epoch",
     );
   }
-  const id = `revision:${workstreamId(workstream)}:${candidate.commitSha}:${review.round}:${Object.keys(state.revisionAssignments).length + 1}`;
+  const id = `revision:g${state.generation}:${workstreamId(workstream)}:${candidate.commitSha}:${review.round}:${Object.keys(state.revisionAssignments).length + 1}`;
   const existing = state.revisionAssignments[id];
   if (existing && existing.status === "open") {
     return reject("current candidate already has an open revision assignment");
@@ -3409,7 +3517,7 @@ function createWorkspaceRecreation(
       "workspace recreation requires an exact admitted candidate or workstream base",
     );
   }
-  const id = `workspace:${workstreamId(workstream)}:${checkpoint}:${Object.keys(state.workspaceRecreations).length + 1}`;
+  const id = `workspace:g${state.generation}:${workstreamId(workstream)}:${checkpoint}:${Object.keys(state.workspaceRecreations).length + 1}`;
   state.workspaceRecreations[id] = {
     id,
     workstream,
@@ -3546,7 +3654,7 @@ function scheduleOperationalRetry(
     return reject("operational retry has no workstream");
   }
   const candidateId = runtime.candidateId;
-  const id = `retry:${lane}:${workstreamId(workstream)}:${candidateId ?? "base"}`;
+  const id = `retry:g${state.generation}:${lane}:${workstreamId(workstream)}:${candidateId ?? "base"}`;
   const retry = state.operationalRetries[id] ?? {
     id,
     workstream,

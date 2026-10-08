@@ -12,6 +12,7 @@ import {
   buildAnchoredWorkstreamReviewPrompt,
   buildInitialWorkstreamReviewPrompt,
 } from "./prompts.js";
+import { openFindingObligations } from "./finding-context.js";
 import { sha256 } from "./source-integrity.js";
 import {
   loadRequirementsContext,
@@ -315,12 +316,24 @@ export function buildReviewPacket(args: {
     ...(candidate.implementationEvidence?.uncertainty
       ? { uncertainty: candidate.implementationEvidence.uncertainty }
       : {}),
-    outstandingFindings: workstreamReviewFindings(args.state, args.workstream)
-      .filter((finding) => review?.pendingCorrectionIds.includes(finding.id))
+    outstandingFindings: (review
+      ? workstreamReviewFindings(args.state, args.workstream)
+      : openFindingObligations(
+          args.state,
+          args.workstream.kind === "source" ? args.workstream.id : undefined,
+        )
+    )
+      .filter((finding) =>
+        review
+          ? review.pendingCorrectionIds.includes(finding.id)
+          : finding.status === "open",
+      )
       .sort(
         (left, right) =>
-          review!.pendingCorrectionIds.indexOf(left.id) -
-          review!.pendingCorrectionIds.indexOf(right.id),
+          (review?.pendingCorrectionIds.indexOf(left.id) ??
+            left.introducedRound) -
+          (review?.pendingCorrectionIds.indexOf(right.id) ??
+            right.introducedRound),
       ),
     ...(review?.latestCorrection
       ? { latestCorrection: review.latestCorrection }
@@ -392,11 +405,6 @@ export function buildSourceReviewWorkerPacket(args: {
     };
   }
   if (!args.review) {
-    if (args.packet.outstandingFindings.length > 0) {
-      throw new Error(
-        `Reviewer packet ${args.workstream.id} has findings without a review epoch.`,
-      );
-    }
     return {
       ...common,
       completionKind:
@@ -620,6 +628,13 @@ export async function runWorkstreamReview(args: {
     packet,
     completion: result.result,
   });
+  if (workerPacket.mode !== "anchored") {
+    assertCapturedAssessmentCoverage(
+      workerPacket.outstandingFindings.map((finding) => finding.id),
+      (result.result as InitialWorkstreamReviewCompletion).assessments ?? [],
+      evidence,
+    );
+  }
   if (workerPacket.mode === "anchored") {
     assertCapturedAssessmentCoverage(
       workerPacket.outstandingFindings.map((finding) => finding.id),
@@ -878,6 +893,36 @@ Open source review context: ${JSON.stringify(sourceResidualContext(args.state, a
   };
 }
 
+export function assessCarriedFindings(
+  findings: ReviewFinding[],
+  assessments: NonNullable<InitialWorkstreamReviewCompletion["assessments"]>,
+): ReviewFinding[] {
+  assertAssessmentCoverage(
+    findings
+      .filter((finding) => finding.status === "open")
+      .map((finding) => finding.id),
+    assessments,
+  );
+  const byId = new Map(
+    assessments.map((assessment) => [assessment.id, assessment]),
+  );
+  return findings.map((finding) => {
+    const assessment = byId.get(finding.id);
+    if (!assessment) {
+      return finding;
+    }
+    return assessment.status === "resolved"
+      ? { ...finding, status: "resolved", evidence: assessment.evidence }
+      : {
+          ...finding,
+          summary: assessment.summary,
+          evidence: assessment.evidence,
+          requiredChange: assessment.requiredChange,
+          acceptanceCriteria: assessment.acceptanceCriteria,
+        };
+  });
+}
+
 export function applyInitialWorkstreamReview(args: {
   workstream: RuntimeWorkstream;
   candidateId: string;
@@ -889,6 +934,8 @@ export function applyInitialWorkstreamReview(args: {
     | RepositoryStateReviewCompletion;
   evidence: string;
   scope?: ReviewFinding["scope"];
+  generation?: number;
+  carriedFindings?: ReviewFinding[];
 }): { review: ReviewState; findings: ReviewFinding[] } {
   const scope =
     args.scope ??
@@ -898,16 +945,23 @@ export function applyInitialWorkstreamReview(args: {
   if (!scope) {
     throw new Error("Whole-plan findings require an observed target tree.");
   }
-  const findings = args.completion.findings.map((finding, index) => ({
-    scope,
-    ...finding,
-    id: `${reviewKey(args.workstream).replace(":", "-")}-r${index + 1}`,
-    candidateId: args.candidateId,
-    workstream: args.workstream,
-    origin: "initial" as const,
-    introducedRound: 0,
-    status: "open" as const,
-  }));
+  const carried = assessCarriedFindings(
+    args.carriedFindings ?? [],
+    args.completion.assessments ?? [],
+  );
+  const findings = [
+    ...carried,
+    ...args.completion.findings.map((finding, index) => ({
+      scope,
+      ...finding,
+      id: `${reviewKey(args.workstream).replace(":", "-")}${args.generation ? `-g${args.generation}` : ""}-r${index + 1}`,
+      candidateId: args.candidateId,
+      workstream: args.workstream,
+      origin: "initial" as const,
+      introducedRound: 0,
+      status: "open" as const,
+    })),
+  ];
   return {
     review: {
       candidateId: args.candidateId,
@@ -915,8 +969,10 @@ export function applyInitialWorkstreamReview(args: {
       candidateTreeSha: args.candidateTreeSha,
       comparisonBase: args.comparisonBase,
       round: 0,
-      pendingCorrectionIds: findings.map((finding) => finding.id),
-      correctionConsumed: findings.length > 0,
+      pendingCorrectionIds: findings
+        .filter((finding) => finding.status === "open")
+        .map((finding) => finding.id),
+      correctionConsumed: findings.some((finding) => finding.status === "open"),
       evidence: [args.evidence],
       observations: [],
       ...("publicationCommitSubject" in args.completion
@@ -936,6 +992,7 @@ export function applyAnchoredWorkstreamReview(args: {
   findings: ReviewFinding[];
   evidence: string;
   correctionPaths: string[];
+  regressionScope?: ReviewFinding["scope"];
 }): { review: ReviewState; findings: ReviewFinding[] } {
   assertAssessmentCoverage(
     args.state.pendingCorrectionIds,
@@ -949,14 +1006,11 @@ export function applyAnchoredWorkstreamReview(args: {
       return (
         !finding ||
         finding.status !== "open" ||
-        (args.workstream.kind === "source"
-          ? finding.workstream.kind !== "source" ||
+        (args.workstream.kind === "source" &&
+          (finding.workstream.kind !== "source" ||
             finding.workstream.id !== args.workstream.id ||
             finding.scope.kind !== "source" ||
-            finding.scope.id !== args.workstream.id
-          : finding.workstream.kind !== "overall" ||
-            finding.workstream.repairId !== args.workstream.repairId ||
-            finding.scope.kind !== "whole_plan")
+            finding.scope.id !== args.workstream.id))
       );
     })
   ) {
@@ -1010,10 +1064,11 @@ export function applyAnchoredWorkstreamReview(args: {
     evidence: finding.evidence,
     requiredChange: finding.requiredChange,
     acceptanceCriteria: finding.acceptanceCriteria,
-    id: `${reviewKey(args.workstream).replace(":", "-")}-r${nextNumber + index}`,
+    id: `${reviewKey(args.workstream).replace(":", "-")}-${sha256(args.state.candidateId).slice(0, 12)}-r${nextNumber + index}`,
     candidateId: args.state.candidateId,
     workstream: args.workstream,
-    scope: regressionScope(args.workstream, args.findings),
+    scope:
+      args.regressionScope ?? regressionScope(args.workstream, args.findings),
     origin: "regression" as const,
     introducedRound: nextRound,
     status: "open" as const,
@@ -1165,7 +1220,7 @@ function assertCapturedAssessmentCoverage(
   } catch (error) {
     if (error instanceof AssessmentCoverageError) {
       throw new WorkerPacketError(
-        `Invalid anchored review completion.\n${formatAssessmentCoverage(error.coverage)}\nReview artifact: ${evidence}`,
+        `Invalid finding assessment coverage.\n${formatAssessmentCoverage(error.coverage)}\nReview artifact: ${evidence}`,
       );
     }
     throw error;

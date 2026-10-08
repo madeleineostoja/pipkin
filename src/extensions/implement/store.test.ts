@@ -177,13 +177,14 @@ describe("checkout store transitions", () => {
       workerConcurrency: 1,
     });
 
-    for (const version of [10, 12]) {
-      writeFileSync(store.path, JSON.stringify({ ...store.read(), version }));
-      expect(() => RunStore.open(lease, store.path)).toThrow(StateError);
-      expect(() => RunStore.open(lease, store.path)).toThrow(
-        "Run state has an unsupported schema.",
-      );
-    }
+    writeFileSync(
+      store.path,
+      JSON.stringify({ ...store.read(), version: 999 }),
+    );
+    expect(() => RunStore.open(lease, store.path)).toThrow(StateError);
+    expect(() => RunStore.open(lease, store.path)).toThrow(
+      "Run state has an unsupported schema.",
+    );
   });
 
   it("rejects approved whole-plan states with omitted or blank handoff drafts", async () => {

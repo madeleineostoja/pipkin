@@ -51,8 +51,8 @@ describe("completed run resource release", () => {
     const workstreamId = "task";
     const paths = checkoutPaths(root);
     const runDirectory = join(paths.runs, runId);
-    const worktree = join(paths.worktrees, runId, workstreamId);
-    const branch = `pipkin/implement/${runId}/${workstreamId}`;
+    const worktree = join(paths.worktrees, runId, "g0", workstreamId);
+    const branch = `pipkin/implement/${runId}/g0/${workstreamId}`;
     const stagingBranch = `pipkin/implement/${runId}/staging-abcd`;
     const stagingWorktree = join(paths.worktrees, runId, "staging-abcd");
     const head = git(root, "rev-parse", "HEAD");
@@ -68,10 +68,13 @@ describe("completed run resource release", () => {
 
     const state = {
       phase: "completed",
+      generation: 0,
+      generationHistory: [],
       processLeases: {},
       run: { id: runId, checkout: { root, gitDir } },
       candidates: {
         candidate: {
+          id: "candidate",
           workstream: { kind: "source", id: workstreamId },
           commitSha: head,
         },

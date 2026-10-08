@@ -9,7 +9,12 @@ import { pipkinProjectDirectory } from "#lib/project-path";
 import { basename, join, relative, resolve } from "node:path";
 import { stagingIdentity } from "./candidate-replay.js";
 import type { GitClient } from "./git.js";
-import type { CheckoutLeaseCapability, RunState, RunStore } from "./store.js";
+import {
+  candidateGeneration,
+  type CheckoutLeaseCapability,
+  type RunState,
+  type RunStore,
+} from "./store.js";
 
 type OwnedResource = {
   branchName: string;
@@ -163,9 +168,10 @@ function ownedResources(state: RunState): Map<string, OwnedResource> {
       candidate.workstream.kind === "source"
         ? candidate.workstream.id
         : candidate.workstream.repairId;
+    const generation = candidateGeneration(state, candidate.id);
     add(
-      `pipkin/implement/${state.run.id}/${id}`,
-      join(root, id),
+      `pipkin/implement/${state.run.id}/g${generation}/${id}`,
+      join(root, `g${generation}`, id),
       candidate.commitSha,
     );
   }

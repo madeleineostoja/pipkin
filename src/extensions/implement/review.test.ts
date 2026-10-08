@@ -348,7 +348,7 @@ describe("canonical review findings", () => {
           correctionPaths: ["src/endpoint.ts"],
         }),
       ).toThrow(
-        "Anchored review must assess each outstanding finding exactly once.",
+        "Review must assess each required outstanding finding exactly once.",
       );
     }
   });

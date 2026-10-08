@@ -15,6 +15,7 @@ import {
 import {
   StateError,
   StaleRevisionError,
+  preservedSourceLane,
   type RunState,
   type RunStore,
 } from "../store.js";
@@ -42,6 +43,7 @@ export type EffectExecution = (args: {
   effect: SchedulerEffect;
   signal: AbortSignal;
   dispatch: (event: SchedulerEvent) => Promise<void>;
+  markExecutionStarted: () => Promise<void>;
 }) => Promise<void>;
 
 export type PlannerExecution = (args: {
@@ -72,8 +74,12 @@ export class SchedulerActor {
   private queue = Promise.resolve();
   private drivePromise: Promise<void> | undefined;
   private stopping = false;
+  private readonly generation: number;
+  private readonly startupRecoveryCount: number;
 
   constructor(private readonly options: SchedulerActorOptions) {
+    this.generation = options.store.read().generation;
+    this.startupRecoveryCount = options.store.read().startupRecoveries.length;
     this.now = options.now ?? (() => new Date().toISOString());
   }
 
@@ -163,12 +169,22 @@ export class SchedulerActor {
       for (;;) {
         const current = this.options.store.read();
         if (
+          current.generation !== this.generation ||
+          current.startupRecoveries.length !== this.startupRecoveryCount ||
+          current.restartPreparation
+        ) {
+          return { effects: [], persistedEvent: undefined };
+        }
+        if (
           expectedRevision !== undefined &&
           current.revision !== expectedRevision
         ) {
           return { effects: [], persistedEvent: undefined };
         }
-        let eventToPersist = event;
+        let eventToPersist: SchedulerEvent = {
+          generation: this.generation,
+          ...event,
+        };
         if (
           sourceEffect &&
           ["failed", "incomplete", "completed"].includes(current.phase)
@@ -258,7 +274,7 @@ export class SchedulerActor {
     }
     const baseSha = this.options.targetHead
       ? await this.options.targetHead()
-      : state.run.checkout.startHead;
+      : state.executionTarget;
     const staleDependency = unassigned
       .flatMap(
         (workstream) => state.workstreams.source[workstream.id]!.dependsOn,
@@ -277,6 +293,7 @@ export class SchedulerActor {
             );
             return (
               receipts.length > 0 &&
+              !preservedSourceLane(state, dependencyId) &&
               !receipts.some((receipt) => receipt.assessedTargetSha === baseSha)
             );
           })()
@@ -313,6 +330,13 @@ export class SchedulerActor {
       }
     | undefined {
     const state = this.snapshot();
+    if (
+      state.generation !== this.generation ||
+      state.startupRecoveries.length !== this.startupRecoveryCount ||
+      state.restartPreparation
+    ) {
+      return undefined;
+    }
     if (state.phase === "planning") {
       return this.processes.has("planner") ? undefined : { kind: "planner" };
     }
@@ -612,6 +636,25 @@ export class SchedulerActor {
     let finalSettlementAttempted = false;
     const process = Promise.resolve()
       .then(async () => {
+        const admitted = this.queue.then(async () => {
+          const current = this.options.store.refresh();
+          if (
+            current.generation !== this.generation ||
+            current.startupRecoveries.length !== this.startupRecoveryCount ||
+            current.restartPreparation ||
+            controller.signal.aborted
+          ) {
+            return false;
+          }
+          return true;
+        });
+        this.queue = admitted.then(
+          () => undefined,
+          () => undefined,
+        );
+        if (!(await admitted)) {
+          return;
+        }
         const managed =
           effect.kind === "run_implementation" ||
           effect.kind === "run_revision" ||
@@ -636,9 +679,41 @@ export class SchedulerActor {
             );
           }
         }
+        const markExecutionStarted = async () => {
+          const started = this.queue.then(async () => {
+            const current = this.options.store.refresh();
+            if (
+              current.generation !== this.generation ||
+              current.startupRecoveries.length !== this.startupRecoveryCount ||
+              current.restartPreparation ||
+              controller.signal.aborted
+            ) {
+              throw new SchedulerActorError(
+                "Execution launch admission was revoked.",
+              );
+            }
+            if (!current.executionStartedAt) {
+              await this.options.store.update(current.revision, (state) => ({
+                ...state,
+                executionStartedAt: this.now(),
+              }));
+            }
+          });
+          this.queue = started.then(
+            () => undefined,
+            () => undefined,
+          );
+          await started;
+        };
+        // Managed effects mark at worker launch, after their own packet/workspace preflight.
+        // Host effects mark before execution because they can mutate durable delivery state.
+        if (!managed) {
+          await markExecutionStarted();
+        }
         let executionError: unknown;
         try {
           await this.options.executeEffect!({
+            markExecutionStarted,
             effect,
             signal: controller.signal,
             dispatch: async (event) => {
@@ -698,6 +773,17 @@ export class SchedulerActor {
               ? "target_moved"
               : "publication_uncertain",
             error.message,
+          );
+          return;
+        }
+        if (this.generation > 0 && !this.snapshot().executionStartedAt) {
+          await this.fail(
+            error instanceof WorkerPacketError
+              ? "protocol_failure"
+              : error instanceof WorkstreamCandidateLifecycleError
+                ? error.category
+                : "runtime",
+            error instanceof Error ? error.message : String(error),
           );
           return;
         }

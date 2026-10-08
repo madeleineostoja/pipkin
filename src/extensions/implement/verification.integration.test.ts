@@ -155,7 +155,7 @@ describe("durable selected execution evidence", () => {
     expect(JSON.stringify(saved)).not.toContain(f.root);
   });
 
-  it("roundtrips execution descriptors through v11 state and downstream inspection", async () => {
+  it("roundtrips execution descriptors through v12 state and downstream inspection", async () => {
     const run = await createLifecycleFixture();
     roots.push(run.root);
     const captured = fixture();

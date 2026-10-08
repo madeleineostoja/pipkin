@@ -11,7 +11,7 @@ export type AssessmentCoverage = {
 
 export class AssessmentCoverageError extends Error {
   constructor(readonly coverage: AssessmentCoverage) {
-    super("Anchored review must assess each outstanding finding exactly once.");
+    super("Review must assess each required outstanding finding exactly once.");
   }
 }
 

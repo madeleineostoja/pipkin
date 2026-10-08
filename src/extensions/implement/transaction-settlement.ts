@@ -4,6 +4,7 @@ import { settleCheckboxProjection } from "./projection.js";
 import { WriteAheadPublisher } from "./write-ahead-publication.js";
 import type { GitClient } from "./git.js";
 import type { RunStore } from "./store.js";
+import { preflightRestart } from "./restart.js";
 
 export async function settlePublicationTransactions(args: {
   store: RunStore;
@@ -16,7 +17,19 @@ export async function settlePublicationTransactions(args: {
         ? state.workstreams.source[intent.workstream.id]
         : state.workstreams.overall[intent.workstream.repairId];
     if (
-      workstream?.phase === "completed" ||
+      (workstream?.phase === "completed" &&
+        workstream.candidateId === intent.candidateId) ||
+      (state.publication.receipts[intent.id] &&
+        state.generationHistory.some((history) => {
+          const delivered =
+            intent.workstream.kind === "source"
+              ? history.workstreams.source[intent.workstream.id]
+              : history.workstreams.overall[intent.workstream.repairId];
+          return (
+            delivered?.phase === "completed" &&
+            delivered.candidateId === intent.candidateId
+          );
+        })) ||
       state.publication.supersessions[intent.id] ||
       state.publication.abandonments[intent.id]
     ) {
@@ -30,6 +43,23 @@ export async function settlePublicationTransactions(args: {
     }).recover(intent);
     if (outcome.kind === "published") {
       if (!state.publication.receipts[intent.id]) {
+        const operation = [
+          ...Object.values(state.processLeases),
+          ...Object.values(state.operationSettlements),
+        ]
+          .reverse()
+          .find(
+            (operation) =>
+              operation.kind === "publication" &&
+              operation.publicationIntentId === intent.id,
+          );
+        if (!operation) {
+          throw new Error(
+            "Publication recovery lost its host-owned operation identity.",
+          );
+        }
+        const operationId =
+          "operationId" in operation ? operation.operationId : operation.id;
         await args.store.update(state.revision, (current) => ({
           ...current,
           publication: {
@@ -38,11 +68,17 @@ export async function settlePublicationTransactions(args: {
               ...current.publication.receipts,
               [intent.id]: {
                 ...outcome.receipt,
-                operationId: intent.operationId,
+                operationId,
               },
             },
           },
         }));
+      }
+      if (args.store.read().restartPreparation) {
+        await args.store.settleRestartPublishedLane(
+          args.store.read().revision,
+          intent.id,
+        );
       }
       continue;
     }
@@ -54,6 +90,13 @@ export async function settlePublicationTransactions(args: {
         outcome.kind === "safety_paused"
           ? outcome.reason
           : "Publication recovery could not prove an exact durable transaction state.",
+      );
+    }
+    if (state.restartPreparation) {
+      await args.store.abandonRestartPublication(
+        await preflightRestart(args.store, args.git),
+        intent.id,
+        "Exact transaction recovery proved the publication remained at its trusted base.",
       );
     }
   }

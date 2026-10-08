@@ -224,8 +224,9 @@ async function captureTargetBoundary(
   });
 }
 
+// Live execution can reconcile a proven pre-CAS target move; restart cannot adopt it.
 export function expectedTargetHead(
-  state: Pick<RunState, "run" | "publication">,
+  state: Pick<RunState, "run" | "publication" | "executionTarget">,
 ): string {
   const intents = Object.values(state.publication.intents);
   const pending = intents.filter(
@@ -234,11 +235,11 @@ export function expectedTargetHead(
       !state.publication.supersessions[intent.id] &&
       !state.publication.abandonments[intent.id],
   );
+  if (pending.length > 1) {
+    throw new Error("Run has multiple unresolved publication intents.");
+  }
   if (pending.length === 1) {
     return pending[0]!.targetBaseSha;
-  }
-  if (pending.length > 1) {
-    throw new Error("Resume found multiple unresolved publication intents.");
   }
   for (const intent of [...intents].reverse()) {
     const receipt = state.publication.receipts[intent.id];
@@ -253,7 +254,7 @@ export function expectedTargetHead(
       return intent.targetBaseSha;
     }
   }
-  return state.run.checkout.startHead;
+  return state.executionTarget;
 }
 
 export async function stopRun(
@@ -308,12 +309,26 @@ export function createRuntime(args: {
     targetHead: () => args.git.head(),
     captureTargetBoundary: () =>
       captureTargetBoundary(args.store.read(), args.git),
-    executeEffect: async ({ effect, signal, dispatch }) => {
+    executeEffect: async ({
+      effect,
+      signal,
+      dispatch,
+      markExecutionStarted,
+    }) => {
+      const executionSubagents: SubagentClient = {
+        spawn: async (spawnArgs) => {
+          await markExecutionStarted();
+          return subagents.spawn(spawnArgs);
+        },
+        stop: (id) => subagents.stop(id),
+        waitFor: (id, workerSignal) => subagents.waitFor(id, workerSignal),
+      };
       const state = args.store.read();
       const artifactsPath = join(
         args.lease.paths.runs,
         state.run.id,
         "artifacts",
+        `g${state.generation}`,
       );
       if (effect.kind === "run_implementation") {
         const outcome =
@@ -325,7 +340,7 @@ export function createRuntime(args: {
                 )!,
                 workstreamId: effect.workstream.id,
                 git: args.git,
-                subagents,
+                subagents: executionSubagents,
                 signal,
                 roles: args.roles,
                 artifactsPath,
@@ -340,7 +355,7 @@ export function createRuntime(args: {
                   )!,
                   repairId: effect.workstream.repairId,
                   git: args.git,
-                  subagents,
+                  subagents: executionSubagents,
                   signal,
                   artifactsPath,
                   operationId: effect.leaseId,
@@ -361,7 +376,7 @@ export function createRuntime(args: {
           plan: readExecutionPlan(join(args.lease.paths.runs, state.run.id))!,
           workstream: effect.workstream,
           git: args.git,
-          subagents,
+          subagents: executionSubagents,
           signal,
           artifactsPath,
           roles: args.roles,
@@ -414,7 +429,7 @@ export function createRuntime(args: {
           state,
           effect,
           git: args.git,
-          subagents,
+          subagents: executionSubagents,
           artifactsPath,
           signal,
           roles: args.roles,
@@ -765,7 +780,7 @@ export function createRuntime(args: {
           state,
           plan,
           git: args.git,
-          subagents,
+          subagents: executionSubagents,
           artifactsPath,
           signal,
           dispatch,
@@ -786,7 +801,7 @@ export function createRuntime(args: {
           state,
           effect,
           git: args.git,
-          subagents,
+          subagents: executionSubagents,
           artifactsPath,
           signal,
           roles: args.roles,

@@ -13,6 +13,9 @@ function state(
   return {
     run: { id: runId },
     tasks: {},
+    generation: 0,
+    generationHistory: [],
+    operationSettlements: {},
     workstreams: { source, overall },
     phase: "executing",
   } as unknown as RunState;

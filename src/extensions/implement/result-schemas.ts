@@ -254,35 +254,6 @@ const publicationCommitSubject = () =>
     "Conventional Commit subject for the complete reviewed workstream or repair, not an internal checkpoint or correction commit.",
   );
 
-export const initialWorkstreamReviewSchema = Type.Object(
-  {
-    findings: Type.Array(directReviewFindingSchema, {
-      description:
-        "Complete set of direct material findings for the reviewed workstream.",
-    }),
-    publicationCommitSubject: publicationCommitSubject(),
-  },
-  { additionalProperties: false },
-);
-export const repositoryStateReviewSchema = Type.Object(
-  {
-    findings: Type.Array(directReviewFindingSchema, {
-      description: "Complete set of direct material repository-state findings.",
-    }),
-  },
-  { additionalProperties: false },
-);
-export const initialOverallReviewSchema = Type.Object(
-  {
-    findings: Type.Array(directReviewFindingSchema, {
-      description:
-        "Complete set of direct material findings for the whole run.",
-    }),
-    handoffDraft: handoffDraft(),
-  },
-  { additionalProperties: false },
-);
-
 const findingAssessmentSchema = Type.Union([
   Type.Object(
     {
@@ -320,6 +291,46 @@ const findingAssessmentSchema = Type.Union([
     { additionalProperties: false },
   ),
 ]);
+const carriedAssessments = () =>
+  Type.Optional(
+    Type.Array(findingAssessmentSchema, {
+      description:
+        "Exactly one explicit assessment for each supplied carried open finding. Required when obligations are supplied; omit only when none are supplied.",
+    }),
+  );
+export const initialWorkstreamReviewSchema = Type.Object(
+  {
+    findings: Type.Array(directReviewFindingSchema, {
+      description:
+        "New direct material findings, excluding supplied carried identities.",
+    }),
+    assessments: carriedAssessments(),
+    publicationCommitSubject: publicationCommitSubject(),
+  },
+  { additionalProperties: false },
+);
+export const repositoryStateReviewSchema = Type.Object(
+  {
+    findings: Type.Array(directReviewFindingSchema, {
+      description:
+        "New direct material repository-state findings, excluding supplied carried identities.",
+    }),
+    assessments: carriedAssessments(),
+  },
+  { additionalProperties: false },
+);
+export const initialOverallReviewSchema = Type.Object(
+  {
+    findings: Type.Array(directReviewFindingSchema, {
+      description:
+        "New direct material whole-plan findings, excluding supplied carried identities.",
+    }),
+    assessments: carriedAssessments(),
+    handoffDraft: handoffDraft(),
+  },
+  { additionalProperties: false },
+);
+
 const regressionFindingSchema = Type.Object(
   {
     summary: summary(

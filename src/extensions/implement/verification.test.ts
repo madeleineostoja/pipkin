@@ -56,7 +56,7 @@ describe("typed persisted verification", () => {
   it("roundtrips typed verification and rejects uncaptured execution and untyped evidence", async () => {
     const f = await fixture();
     expect(loadRunState(f.store.path)).toEqual(f.store.read());
-    expect(f.store.read().version).toBe(11);
+    expect(f.store.read().version).toBe(12);
     const invalid = f.store.read() as any;
     invalid.candidates.candidate.implementationEvidence.verification = [
       {
@@ -96,7 +96,7 @@ describe("typed persisted verification", () => {
 
   it("rejects unsupported persisted schemas without rewriting them", async () => {
     const f = await fixture();
-    const raw = JSON.stringify({ ...f.store.read(), version: 10 });
+    const raw = JSON.stringify({ ...f.store.read(), version: 999 });
     writeFileSync(f.store.path, raw);
     expect(() => loadRunState(f.store.path)).toThrow("unsupported schema");
     expect(inspectImplementRun(f.root, { runId: "run-1" })).toMatchObject({

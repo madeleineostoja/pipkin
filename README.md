@@ -47,7 +47,7 @@ Give Implement a Markdown plan and it owns the run from dependency-aware schedul
 
 **Plan → dependency graph → isolated parallel work → review and repair → protected publication**
 
-Implement coordinates trusted workers in disposable Git worktrees, publishes through one serialized integration lane, and retains durable evidence for inspection and cleanup. The target branch moves only after hooks, candidate verification, and compare-and-swap checks succeed.
+Implement coordinates trusted workers in disposable Git worktrees, publishes through one serialized integration lane, and retains generation-scoped execution and review evidence for inspection and cleanup. The target branch moves only after hooks, candidate verification, and compare-and-swap checks succeed.
 
 [Implementation guide →](docs/features/implementation.md)
 

@@ -4,6 +4,8 @@ const text = Type.String({ maxLength: 2000 });
 export const RunSummarySchema = Type.Object(
   {
     runId: text,
+    generation: Type.Integer({ minimum: 0 }),
+    restartPending: Type.Boolean(),
     phase: Type.Union([
       Type.Literal("planning"),
       Type.Literal("running"),

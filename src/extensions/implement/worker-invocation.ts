@@ -52,21 +52,21 @@ export const completionContracts = {
     role: "reviewer",
     readOnly: true,
     description:
-      "Return direct whole-plan findings; the scheduler derives approval.",
+      "Assess every supplied carried finding explicitly and return new direct whole-plan findings; the scheduler derives approval.",
     schema: initialOverallReviewSchema,
   },
   "initial-review": {
     role: "reviewer",
     readOnly: true,
     description:
-      "Review a changed workstream and author its publication subject.",
+      "Assess supplied carried findings, review a fresh changed workstream, and author its publication subject.",
     schema: initialWorkstreamReviewSchema,
   },
   "repository-state-review": {
     role: "reviewer",
     readOnly: true,
     description:
-      "Return direct repository-state findings; the scheduler derives approval.",
+      "Assess every supplied carried finding explicitly and return new direct repository-state findings; the scheduler derives approval.",
     schema: repositoryStateReviewSchema,
   },
   "initial-anchored-review": {

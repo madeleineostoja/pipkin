@@ -282,7 +282,7 @@ describe("revision policy", () => {
       },
     });
 
-    const pendingId = "source-first-stream-repository-1-1";
+    const pendingId = "source-first-stream-g0-repository-1-1";
     expect(reassessed.accepted).toBe(true);
     expect(reassessed.state.workstreams.source["first-stream"]?.phase).toBe(
       "revising",
@@ -452,7 +452,7 @@ describe("revision policy", () => {
 
   it("creates one canonical whole-plan finding ledger shared with its repair", async () => {
     const completed = await wholePlanRepairResult();
-    const ids = ["overall-repair-1-r1", "overall-repair-1-r2"];
+    const ids = ["overall-repair-1-g0-r1", "overall-repair-1-g0-r2"];
 
     expect(completed.accepted).toBe(true);
     expect(completed.state.wholePlanReview).toMatchObject({
@@ -791,7 +791,7 @@ describe("revision policy", () => {
     assignment.status = "completed";
     assignment.pendingCorrectionIds = ["unknown-finding"];
     expect(invariantIssues(invalidSnapshot)).toContain(
-      "revision assignment revision:source:first-stream:first-sha:0:1 does not match its review epoch",
+      "revision assignment revision:g0:source:first-stream:first-sha:0:1 does not match its review epoch",
     );
   });
 
@@ -809,7 +809,7 @@ describe("revision policy", () => {
     const workstream = { kind: "overall" as const, repairId: "repair-1" };
     const baselineId = "overall-baseline:run-1:repair-1:target-sha";
     const candidateId = "overall-repair:repair-1";
-    const findingIds = ["overall-repair-1-r1", "overall-repair-1-r2"];
+    const findingIds = ["overall-repair-1-g0-r1", "overall-repair-1-g0-r2"];
     state.candidates[candidateId] = {
       id: candidateId,
       workstream,
@@ -1042,7 +1042,7 @@ describe("revision policy", () => {
     const workstream = { kind: "overall" as const, repairId };
     const baselineId = "overall-baseline:run-1:repair-1:target-sha";
     const candidateId = "overall-repair:repair-1";
-    const findingIds = ["overall-repair-1-r1", "overall-repair-1-r2"];
+    const findingIds = ["overall-repair-1-g0-r1", "overall-repair-1-g0-r2"];
     state.phase = "whole_plan_review";
     state.candidates[candidateId] = {
       id: candidateId,

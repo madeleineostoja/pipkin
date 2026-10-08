@@ -56,8 +56,8 @@ export function overallRepairWorkspace(
   );
   return {
     taskId: repairId,
-    branchName: `pipkin/implement/${state.run.id}/${repairId}`,
-    worktreePath: join(root, repairId),
+    branchName: `pipkin/implement/${state.run.id}/g${state.generation}/${repairId}`,
+    worktreePath: join(root, `g${state.generation}`, repairId),
     baseSha,
   };
 }
@@ -216,7 +216,7 @@ export async function runOverallRepair(args: {
   ) {
     return {
       candidate: {
-        id: `overall:${args.state.run.id}:${args.repairId}:${observation.head}`,
+        id: `overall:${args.state.run.id}:g${args.state.generation}:${args.repairId}:${observation.head}`,
         workstream: {
           kind: "overall",
           repairId: args.repairId,
@@ -272,7 +272,7 @@ export async function runOverallRepair(args: {
   const evidenceStatus = completion ? "reported" : "unavailable";
   return {
     candidate: {
-      id: `overall:${args.state.run.id}:${args.repairId}:${observation.head}`,
+      id: `overall:${args.state.run.id}:g${args.state.generation}:${args.repairId}:${observation.head}`,
       workstream: {
         kind: "overall",
         repairId: args.repairId,

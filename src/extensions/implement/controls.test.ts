@@ -43,9 +43,9 @@ describe("retained run listing", () => {
     mkdirSync(directory, { recursive: true });
     const path = join(directory, "run-state.json");
     for (const value of [
-      { version: 11 },
+      { version: 12 },
       {
-        version: 11,
+        version: 12,
         phase: "planning",
         run: { id: "old-run", checkout: { root } },
       },

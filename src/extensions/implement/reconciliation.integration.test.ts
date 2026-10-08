@@ -285,7 +285,7 @@ describe("semantic reconciliation admission", () => {
     expect(error).toHaveProperty(
       "message",
       expect.stringContaining(
-        "Invalid anchored review completion.\nExpected IDs: none\nReceived IDs: historical-finding\nMissing IDs: none\nUnexpected IDs: historical-finding",
+        "Invalid finding assessment coverage.\nExpected IDs: none\nReceived IDs: historical-finding\nMissing IDs: none\nUnexpected IDs: historical-finding",
       ),
     );
     expect(reviewer.invocations).toHaveLength(1);
@@ -349,7 +349,7 @@ async function reconciliationFixture(
   const baseSha = await gitClient.head();
   const workspace = {
     taskId: "first-stream",
-    branchName: "pipkin/implement/run-1/first-stream",
+    branchName: "pipkin/implement/run-1/g0/first-stream",
     worktreePath: join(
       root,
       ".pi",
@@ -357,6 +357,7 @@ async function reconciliationFixture(
       "implement",
       "worktrees",
       "run-1",
+      "g0",
       "first-stream",
     ),
     baseSha,
@@ -408,6 +409,7 @@ async function reconciliationFixture(
   const targetTreeSha = await gitClient.tree();
   const branch = await gitClient.currentBranch();
   const state = {
+    generation: 0,
     run: {
       id: "run-1",
       checkout: { root, branchRef: `refs/heads/${branch}` },

@@ -156,7 +156,7 @@ describe("whole-plan review packet", () => {
     expect(dispatch).not.toHaveBeenCalled();
   });
 
-  it("includes the latest published overall repair evidence in an anchored review", async () => {
+  it("includes cumulative delivered repair checks across generations but not abandoned repair evidence", async () => {
     const { run: store, plan } = createUnboundSchedulerRun();
     await store.bindExecutionPlan(plan);
     const state = store.read();
@@ -207,6 +207,97 @@ describe("whole-plan review packet", () => {
         },
       },
     };
+    const earlierId = "overall-repair:earlier-generation";
+    const time = "2026-01-01T00:00:00.000Z";
+    state.candidates[earlierId] = {
+      ...state.candidates[candidateId]!,
+      id: earlierId,
+      workstream: { kind: "overall", repairId: "earlier-repair" },
+      commitSha: "earlier-repair-sha",
+      treeSha: "earlier-repair-tree",
+      implementationEvidence: {
+        summary: "Earlier delivered repair decisions",
+        verification: [
+          ...(["passed", "failed"] as const).map((outcome) => ({
+            kind: "execution" as const,
+            label: `Earlier repair ${outcome} check`,
+            artifactPath: `artifacts/verification/${"a".repeat(64)}.json`,
+            outcome,
+            execution: {
+              state:
+                outcome === "passed"
+                  ? ("completed" as const)
+                  : ("failed" as const),
+              exitCode: outcome === "passed" ? 0 : 1,
+              startedAt: time,
+              endedAt: time,
+            },
+            sourceTool: "bash",
+            commandTruncated: false,
+            truncated: false,
+            outputComplete: true,
+            droppedBytes: 0,
+            attemptId: "earlier-attempt",
+            workerId: "earlier-worker",
+            candidateCommitSha: "earlier-repair-sha",
+            candidateCoverage: "not_attested" as const,
+            capturedAt: time,
+          })),
+          {
+            kind: "not_run",
+            label: "Earlier repair unverified check",
+            reason: "Required service unavailable",
+          },
+        ],
+      },
+    };
+    state.publication.receipts["publication:earlier-repair"] = {
+      ...state.publication.receipts["publication:repair-1"]!,
+      intentId: "publication:earlier-repair",
+      operationId: "earlier-publication",
+      candidateId: earlierId,
+      publishedCommitSha: "earlier-repair-sha",
+      publishedTreeSha: "earlier-repair-tree",
+    };
+    state.candidates["abandoned-repair"] = {
+      ...state.candidates[candidateId]!,
+      id: "abandoned-repair",
+      implementationEvidence: {
+        summary: "Discarded unpublished repair decisions",
+        verification: [
+          {
+            kind: "inspection",
+            label: "Abandoned repair check",
+            evidence: "Not delivered",
+          },
+        ],
+      },
+    };
+    const sourceLane = Object.values(state.workstreams.source)[0]!;
+    sourceLane.candidateId = "delivered-source";
+    sourceLane.phase = "completed";
+    state.candidates["delivered-source"] = {
+      ...state.candidates[candidateId]!,
+      id: "delivered-source",
+      workstream: { kind: "source", id: sourceLane.id },
+      implementationEvidence: {
+        summary: "Delivered source decisions",
+        verification: [
+          {
+            kind: "inspection",
+            label: "Source behavior",
+            evidence: "Delivered source verification",
+          },
+        ],
+      },
+    };
+    state.publication.receipts["source-publication"] = {
+      ...state.publication.receipts["publication:repair-1"]!,
+      intentId: "source-publication",
+      operationId: "source-publication",
+      candidateId: "delivered-source",
+    };
+    state.generation = 2;
     const packet = buildWholePlanReviewPacket({
       state,
       plan,
@@ -228,7 +319,7 @@ describe("whole-plan review packet", () => {
     });
 
     expect(packet.candidateContext).toContain(
-      "Latest published whole-plan repair candidate",
+      "Cumulative delivered whole-plan repair evidence",
     );
     expect(packet.candidateContext).toContain(candidateId);
     expect(packet.candidateContext).toContain("repair-tree");
@@ -237,7 +328,28 @@ describe("whole-plan review packet", () => {
       "No end-to-end session was available.",
     );
     expect(packet.candidateContext).toContain("publication:repair-1");
-    expect(prompt).toContain("Latest published whole-plan repair candidate");
+    expect(prompt).toContain("Cumulative delivered whole-plan repair evidence");
+    expect(packet.candidateContext).toContain(
+      "Earlier delivered repair decisions",
+    );
+    expect(packet.candidateContext).toContain("Earlier repair passed check");
+    expect(packet.candidateContext).toContain('"outcome": "passed"');
+    expect(packet.candidateContext).toContain("Earlier repair failed check");
+    expect(packet.candidateContext).toContain('"outcome": "failed"');
+    expect(packet.candidateContext).toContain(
+      "Earlier repair unverified check",
+    );
+    expect(packet.candidateContext).toContain("Required service unavailable");
+    expect(packet.candidateContext).toContain("publication:earlier-repair");
+    expect(packet.candidateContext).toContain("Delivered source verification");
+    expect(packet.candidateContext).toContain("source-publication");
+    expect(packet.candidateContext).not.toContain(
+      "Discarded unpublished repair decisions",
+    );
+    expect(packet.candidateContext).not.toContain("Abandoned repair check");
+    for (const task of plan.tasks) {
+      expect(packet.planContext).toContain(task.id);
+    }
     expect(prompt).toContain("Prior accepted reviewer handoff.");
   });
 });
