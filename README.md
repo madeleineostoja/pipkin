@@ -39,7 +39,7 @@ All four model presets are required for the complete model-powered feature set. 
 
 ### Implement
 
-Give Implement a Markdown plan and it owns the run from dependency-aware scheduling through reviewed publication:
+Give Implement a Markdown plan and it schedules coherent workstreams within the plan's substantive constraints, owning the run through reviewed publication:
 
 ```text
 /implement docs/plan.md

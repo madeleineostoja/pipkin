@@ -52,6 +52,12 @@ Implement follows ordinary local Markdown links recursively and freezes reachabl
 
 Missing, unreadable, empty, escaping, or invalid local Markdown targets block the run. Images, external URLs, fragment-only links, and non-Markdown files are not added. Code paths, proposed files, URLs, tickets, and other pointers remain ordinary task instructions.
 
+## Scheduling authority
+
+The source plan defines outcomes, scope, acceptance criteria, and material delivery constraints. Implement owns execution ordering and workstream grouping: checklist order, task numbering, and generic instructions such as “execute sequentially” are advisory. Concrete prerequisites, atomicity requirements, and rollout constraints remain binding; direct user instructions outside the source-plan corpus take precedence.
+
+The planner grounds prerequisites in task contracts and relevant repository source, then groups work at coherent implementation and review boundaries. Every external task prerequisite gates the entire containing workstream; consumers wait for the whole upstream workstream to be delivered. Grouping should not unnecessarily delay independent work or consumers of shared foundations, including through whole-plan verification obligations. Whole-plan review does not substitute for required execution checks. Serial execution remains appropriate when substantive constraints justify it; worker capacity is not a utilization quota.
+
 ## Run lifecycle
 
 1. **Plan once.** A high-reasoning planner creates one immutable schedule covering every unchecked task exactly once. It identifies dependencies and groups work at coherent implementation and review boundaries.
@@ -119,7 +125,7 @@ Both tools are deferred in namespace `implement` and read-only. Pagination defau
 
 Inspection caps each workstream/outcome/verification/artifact inventory at `25`, with bounded text and an overall payload bound. It reports truncation rather than returning mutable internal state or private prompts. Discover artifact descriptors before reading retained files. Execution paths are relative to the run directory; other descriptors identify retained state/corpus/evidence locations. The collapsed row shows a concise run/phase or list summary; expansion shows the same useful typed payload delivered to direct and codemode callers. Managed Implement workers cannot call either operation.
 
-The shared Activity view shows only active Implement work: the generated session title, compact run phase/progress/duration, and active or settlement-waiting workstream lanes. The run's `x/y` reports published tasks across the plan; each source workstream separately shows its assigned task total alongside any duration. Completed lanes disappear immediately; failed lanes remain muted as waiting context only while the parent run is active, and terminal run settlement clears the projection. Workstream duration is shown only when a durable operation timestamp exists. `/agents` reports the active Implement agent count as non-selectable context but leaves run inspection and control with Implement.
+The shared Activity view shows only active Implement work: the generated session title, compact run phase/progress/duration, and active or settlement-waiting workstream lanes. The run's `x/y` reports published tasks across the plan; each source workstream separately shows its assigned task total alongside any duration. Completed lanes disappear immediately; failed lanes remain muted as waiting context only while the parent run is active, and terminal run settlement clears the projection. Workstream duration is shown only when a durable operation timestamp exists. Numbered lanes and expanded dependency/review details follow the [Activity presentation contract](interface-and-personality.md#ui). `/agents` reports the active Implement agent count as non-selectable context but leaves run inspection and control with Implement.
 
 ## Target protection and Sandbox
 

@@ -1,12 +1,80 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
 import { ACTIVITY_CHANNEL, type ActivityPublisher } from "#ui/activity";
 import { ActivityStore } from "../ui/activity-store.js";
 import { createImplementActivity } from "./activity.js";
+import { compileExecutionPlan, writeExecutionPlan } from "./execution-plan.js";
+import { buildMaterialStore } from "./material-store.js";
+import { parsePlan } from "./plan.js";
 import type { RunState } from "./store.js";
 
+const directories: string[] = [];
+afterEach(() => {
+  for (const directory of directories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+function attachPlan(running: RunState, orderedIds: string[]): void {
+  const directory = mkdtempSync(join(tmpdir(), "pipkin-activity-"));
+  directories.push(directory);
+  const planPath = join(directory, "plan.md");
+  const title =
+    "A long task title that should not be repeated in dependency details";
+  const plan = parsePlan(
+    planPath,
+    `# Plan\n\n${orderedIds.map(() => `- [ ] ${title}`).join("\n")}\n`,
+  );
+  const result = compileExecutionPlan(
+    {
+      version: 1,
+      tasks: orderedIds.map((id, index) => ({
+        id: `task-${id}`,
+        planIndex: index + 1,
+        title,
+        dependsOn: running.workstreams.source[id]!.dependsOn.map(
+          (dependency) => `task-${dependency}`,
+        ),
+        compiledContract: {
+          objective: `Implement ${id}`,
+          inScope: [id],
+          acceptanceCriteria: [`${id} works`],
+          outOfScope: ["Sibling work"],
+        },
+      })),
+      workstreams: orderedIds.map((id) => ({ id, taskIds: [`task-${id}`] })),
+    },
+    {
+      plan,
+      planHash: "plan-hash",
+      materialStore: buildMaterialStore({
+        plan,
+        planPath,
+        repoRoot: directory,
+      }),
+      checkoutId: "checkout",
+      baseSha: "base-sha",
+      workerConcurrency: 3,
+    },
+  );
+  if (!result.ok) {
+    throw new Error(result.reason);
+  }
+  writeExecutionPlan(directory, result.value);
+  running.executionPlan = {
+    path: join(directory, "execution-plan.json"),
+    hash: "plan-hash",
+  };
+}
+
 function state(
-  source: Record<string, { id: string; phase: string; taskIds: string[] }> = {},
+  source: Record<
+    string,
+    { id: string; phase: string; taskIds: string[]; dependsOn?: string[] }
+  > = {},
   overall: Record<string, { repairId: string; phase: string }> = {},
   runId = "run",
 ): RunState {
@@ -16,7 +84,22 @@ function state(
     generation: 0,
     generationHistory: [],
     operationSettlements: {},
-    workstreams: { source, overall },
+    reviews: {},
+    wholePlanReview: { status: "pending" },
+    workstreams: {
+      source: Object.fromEntries(
+        Object.entries(source).map(([id, workstream]) => [
+          id,
+          { kind: "source", dependsOn: [], ...workstream },
+        ]),
+      ),
+      overall: Object.fromEntries(
+        Object.entries(overall).map(([id, workstream]) => [
+          id,
+          { kind: "overall", ...workstream },
+        ]),
+      ),
+    },
     phase: "executing",
   } as unknown as RunState;
 }
@@ -88,8 +171,176 @@ describe("Implement Activity projector", () => {
       records.find((record) => record.label === "Implement"),
     ).toMatchObject({ progress: { completed: 1, total: 3 } });
     expect(
-      records.find((record) => record.label === "Workstream"),
+      records.find((record) => record.label === "Workstream 1"),
     ).toMatchObject({ metric: "3 tasks" });
+  });
+
+  it("keeps plan numbering stable and updates only unfinished direct dependencies", () => {
+    const events = createEventBus();
+    const store = new ActivityStore();
+    events.on(ACTIVITY_CHANNEL, (event) => store.accept(event));
+    const activity = createImplementActivity(events, {} as never);
+    const running = state({
+      consumer: {
+        id: "consumer",
+        phase: "queued",
+        taskIds: ["task-consumer"],
+        dependsOn: ["branch", "independent"],
+      },
+      independent: {
+        id: "independent",
+        phase: "implementing",
+        taskIds: ["task-independent"],
+      },
+      branch: {
+        id: "branch",
+        phase: "queued",
+        taskIds: ["task-branch"],
+        dependsOn: ["foundation"],
+      },
+      foundation: {
+        id: "foundation",
+        phase: "implementing",
+        taskIds: ["task-foundation"],
+      },
+    });
+    attachPlan(running, ["foundation", "branch", "independent", "consumer"]);
+    const details = () =>
+      store.records
+        .filter((record) => record.parent)
+        .map(({ label, detail }) => ({ label, detail }));
+
+    activity.update(running);
+    expect(details()).toEqual(
+      expect.arrayContaining([
+        { label: "Workstream 2", detail: "Waiting for: Workstream 1" },
+        { label: "Workstream 4", detail: "Waiting for: Workstreams 2, 3" },
+      ]),
+    );
+    expect(
+      store.records.find((record) => record.label === "Workstream 4")?.title,
+    ).toContain("A long task title");
+
+    running.workstreams.source.foundation!.phase = "completed";
+    running.workstreams.source.independent!.phase = "completed";
+    activity.update(running);
+    expect(details()).toEqual(
+      expect.arrayContaining([
+        { label: "Workstream 2", detail: "Queued" },
+        { label: "Workstream 4", detail: "Waiting for: Workstream 2" },
+      ]),
+    );
+    expect(details().map(({ label }) => label)).toEqual([
+      "Workstream 4",
+      "Workstream 2",
+    ]);
+
+    running.workstreams.source.branch!.phase = "completed";
+    activity.update(running);
+    expect(details()).toEqual([{ label: "Workstream 4", detail: "Queued" }]);
+  });
+
+  it("bounds long lists of pending prerequisites", () => {
+    const publisher = fakePublisher();
+    const activity = createImplementActivity(
+      {} as never,
+      {} as never,
+      publisher,
+    );
+    const ids = ["a", "b", "c", "d", "e"];
+    const running = state(
+      Object.fromEntries(
+        ids.map((id) => [
+          id,
+          {
+            id,
+            phase: "implementing",
+            taskIds: [`task-${id}`],
+          },
+        ]),
+      ),
+    );
+    running.workstreams.source.consumer = {
+      kind: "source",
+      id: "consumer",
+      phase: "queued",
+      taskIds: ["task-consumer"],
+      dependsOn: ids,
+    };
+    attachPlan(running, [...ids, "consumer"]);
+
+    activity.update(running);
+
+    expect(publisher.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        label: "Workstream 6",
+        detail: "Waiting for: Workstreams 1, 2, 3 +2 more",
+      }),
+    );
+  });
+
+  it("distinguishes initial reviews from reassessment even at review round zero", () => {
+    const publisher = fakePublisher();
+    const activity = createImplementActivity(
+      {} as never,
+      {} as never,
+      publisher,
+    );
+    const running = state(
+      { lane: { id: "lane", phase: "reviewing", taskIds: [] } },
+      { repair: { repairId: "repair", phase: "reviewing" } },
+    );
+    const laneDetails = () =>
+      publisher.upsert.mock.calls
+        .map(([record]) => record)
+        .filter((record) => record.parent)
+        .map((record) => record.detail);
+
+    activity.update(running);
+    expect(laneDetails()).toEqual(["Reviewing", "Reviewing"]);
+
+    const review: RunState["reviews"][string] = {
+      candidateId: "candidate",
+      candidateCommitSha: "commit",
+      candidateTreeSha: "tree",
+      comparisonBase: "base",
+      round: 0,
+      pendingCorrectionIds: ["finding"],
+      correctionConsumed: true,
+      evidence: ["Initial review evidence"],
+      observations: [],
+    };
+    running.reviews = { "source:lane": review, "overall:repair": review };
+    publisher.upsert.mockClear();
+    activity.update(running);
+    expect(laneDetails()).toEqual(["Re-reviewing", "Re-reviewing"]);
+  });
+
+  it("uses sentence case for run phases and multi-word lane phases", () => {
+    const publisher = fakePublisher();
+    const activity = createImplementActivity(
+      {} as never,
+      {} as never,
+      publisher,
+    );
+    const running = state({
+      lane: { id: "lane", phase: "candidate_ready", taskIds: [] },
+    });
+    running.phase = "whole_plan_review";
+    activity.update(running);
+
+    expect(publisher.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        label: "Implement",
+        metric: "Whole-plan review",
+      }),
+    );
+    expect(publisher.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        label: "Workstream 1",
+        detail: "Candidate ready",
+      }),
+    );
   });
 
   it("collapses dependency-skipped lanes while retaining failures", () => {
@@ -109,7 +360,7 @@ describe("Implement Activity projector", () => {
     expect(children).toHaveLength(1);
     expect(children[0]).toMatchObject({
       state: "waiting",
-      detail: "failed",
+      detail: "Failed",
     });
   });
 
@@ -221,9 +472,9 @@ describe("Implement Activity projector", () => {
       expect.arrayContaining([
         expect.objectContaining({ label: "Implement", state: "running" }),
         expect.objectContaining({
-          label: "Workstream",
+          label: "Workstream 1",
           state: "waiting",
-          detail: "failed",
+          detail: "Failed",
         }),
       ]),
     );

@@ -11,6 +11,7 @@ import {
 } from "#ui/activity";
 import { formatDuration } from "#lib/ui/metrics";
 import { readExecutionPlan, type ExecutionPlan } from "./execution-plan.js";
+import { workstreamReviewState } from "./review.js";
 import type { SchedulerEvent } from "./scheduler/scheduler.js";
 import { currentOperationSettlements, type RunState } from "./store.js";
 
@@ -132,6 +133,11 @@ function publishActivity(
   const taskTitles = new Map(
     plan?.tasks.map((task) => [task.id, sanitize(task.title)]),
   );
+  const workstreamNumbers = new Map(
+    (plan?.workstreams ?? Object.values(state.workstreams.source)).map(
+      (workstream, index) => [workstream.id, index + 1],
+    ),
+  );
   for (const workstream of Object.values(state.workstreams.source)) {
     if (terminalWorkstream(workstream.phase)) {
       continue;
@@ -152,9 +158,9 @@ function publishActivity(
       publisher.upsert({
         id,
         parent: { source: "implement", id: runId },
-        label: "Workstream",
+        label: `Workstream ${workstreamNumbers.get(workstream.id)}`,
         title: shorten(title, 240),
-        detail: shorten(workstreamPhase(workstream.phase), 120),
+        detail: sourceWorkstreamDetail(state, workstream, workstreamNumbers),
         state: workstreamState(workstream.phase),
         ...timing,
         metric: timing.metric ? `${taskMetric} · ${timing.metric}` : taskMetric,
@@ -175,7 +181,10 @@ function publishActivity(
         parent: { source: "implement", id: runId },
         label: "Repair",
         title: "Whole-plan repair",
-        detail: shorten(workstreamPhase(workstream.phase), 120),
+        detail: workstreamPhase(
+          workstream.phase,
+          Boolean(workstreamReviewState(state, workstream)),
+        ),
         state: workstreamState(workstream.phase),
         ...durableWorkstreamStart(state, {
           kind: "overall",
@@ -375,14 +384,43 @@ function runPhase(state: RunState): string {
   }
   if (state.phase === "whole_plan_review") {
     return state.wholePlanReview.status === "repairing"
-      ? "whole-plan repair"
-      : "whole-plan review";
+      ? "Whole-plan repair"
+      : "Whole-plan review";
   }
-  return state.phase.replaceAll("_", " ");
+  return sentenceCase(state.phase);
 }
 
-function workstreamPhase(phase: string): string {
-  return phase.replaceAll("_", " ");
+function sourceWorkstreamDetail(
+  state: RunState,
+  workstream: RunState["workstreams"]["source"][string],
+  numbers: ReadonlyMap<string, number>,
+): string {
+  if (workstream.phase === "queued") {
+    const pending = workstream.dependsOn
+      .filter((id) => state.workstreams.source[id]?.phase !== "completed")
+      .map((id) => numbers.get(id)!)
+      .sort((left, right) => left - right);
+    if (pending.length > 0) {
+      const shown = pending.slice(0, 3).join(", ");
+      const remaining = pending.length - 3;
+      return `Waiting for: ${pending.length === 1 ? "Workstream" : "Workstreams"} ${shown}${remaining > 0 ? ` +${remaining} more` : ""}`;
+    }
+  }
+  return workstreamPhase(
+    workstream.phase,
+    Boolean(workstreamReviewState(state, workstream)),
+  );
+}
+
+function workstreamPhase(phase: string, reviewed: boolean): string {
+  return phase === "reviewing" && reviewed
+    ? "Re-reviewing"
+    : sentenceCase(phase);
+}
+
+function sentenceCase(phase: string): string {
+  const text = phase.replaceAll("_", " ");
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 function shorten(value: string, max = 180): string {

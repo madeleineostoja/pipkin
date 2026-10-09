@@ -62,10 +62,12 @@ const strictExecutionTaskSchema = Type.Object(
     }),
     title: text("Concise task title describing the intended change."),
     dependsOn: Type.Array(
-      text("Identifier of an earlier task this task depends on."),
+      text(
+        "Identifier of a task providing a required prerequisite, not merely an earlier checklist item.",
+      ),
       {
         description:
-          "Earlier task identifiers that must complete before this task.",
+          "Task prerequisites required for behavior or contracts, correctness invariants, or material delivery constraints; checklist order and generic sequential instructions do not establish dependencies.",
       },
     ),
     supportingDocuments: Type.Optional(
@@ -108,7 +110,7 @@ export const strictExecutionPlanSchema = Type.Object(
     workstreams: Type.Array(strictWorkstreamSchema, {
       minItems: 1,
       description:
-        "Ordered task groupings for coherent implementation and review.",
+        "Dependency-ordered task groupings for coherent implementation and review with useful independence; each external task prerequisite gates its entire containing workstream.",
     }),
   },
   { additionalProperties: false },

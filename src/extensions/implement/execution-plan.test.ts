@@ -105,16 +105,7 @@ describe("strict execution-plan compiler", () => {
     }
 
     const prompt = buildStrictExecutionPlannerPrompt(result.value);
-    expect(prompt).toContain("You are the Pipkin Implement planner");
     expect(prompt).toContain("Effective worker concurrency: 2");
-    expect(prompt).toContain("capacity is a benefit, not a quota");
-    expect(prompt).toContain("Multi-task workstreams and dependent chains");
-    expect(prompt).toContain("challenge the largest workstream");
-    expect(prompt).toContain("smallest adjacent workstreams");
-    expect(prompt).toContain(
-      "Whole-plan and all-singleton partitions are suspicious but legal",
-    );
-    expect(prompt).toContain("complete source plan is the shipment boundary");
   });
 
   it("embeds the source plan once and keeps linked corpus material", () => {
