@@ -19,6 +19,7 @@ import { ensureGitInfoExclude } from "#lib/git";
 import { pipkinProjectDirectory } from "#lib/project-path";
 import { z } from "zod";
 import { verificationSchema } from "./verification.js";
+import { createCheckboxProjectionIntent } from "./projection.js";
 import { writeAtomicJson, type AtomicJsonWriteHooks } from "./atomic-json.js";
 import {
   publicationIntentId,
@@ -42,6 +43,8 @@ import {
 import {
   assertRestartPreflight,
   deliveredSourceIds,
+  interruptedRestartState,
+  restartPreservedSourceIds,
   validateRestartResources,
   type RestartPreflight,
   type RestartResource,
@@ -845,6 +848,7 @@ export type CheckoutLeaseOwner = z.infer<typeof checkoutLeaseOwnerSchema>;
 export type CheckoutLeaseCapability = {
   readonly paths: CheckoutPaths;
   readonly owner: CheckoutLeaseOwner;
+  readonly priorOwner?: CheckoutLeaseOwner;
   assertOwned(): void;
   release(): Promise<void>;
 };
@@ -920,15 +924,29 @@ export async function acquireCheckoutLease(args: {
   gitDir?: string;
   timeoutMs: number;
   signal?: AbortSignal;
+  retained?: true;
 }): Promise<CheckoutLeaseCapability> {
   assertSafeRunId(args.runId);
   const checkout = resolveGitCheckout(args.checkoutRoot);
   const paths = checkoutPaths(checkout.root);
-  await ensureGitInfoExclude(
-    checkout.root,
-    `/${relative(checkout.root, paths.root)}/`,
-  );
-  mkdirSync(paths.root, { recursive: true });
+  if (args.retained) {
+    if (
+      !existsSync(paths.lock) ||
+      lstatSync(paths.lock).isSymbolicLink() ||
+      !lstatSync(paths.lock).isFile()
+    ) {
+      throw new StateError(
+        "Resume requires the retained checkout lease anchor.",
+        paths.lock,
+      );
+    }
+  } else {
+    await ensureGitInfoExclude(
+      checkout.root,
+      `/${relative(checkout.root, paths.root)}/`,
+    );
+    mkdirSync(paths.root, { recursive: true });
+  }
   assertPathComponentsAreNotSymlinks(checkout.root, paths.root);
   assertContainedRealpath(
     paths.root,
@@ -959,6 +977,9 @@ export async function acquireCheckoutLease(args: {
     }
     throw error;
   }
+  const priorOwner = args.retained
+    ? readCheckoutLeaseOwner(paths.owner)
+    : undefined;
   const owner: CheckoutLeaseOwner = {
     runId: args.runId,
     runPath,
@@ -974,7 +995,24 @@ export async function acquireCheckoutLease(args: {
     await lease.release();
     throw error;
   }
-  return capability(paths, owner, lease);
+  return capability(paths, owner, lease, priorOwner);
+}
+
+/** Cheap menu eligibility only; exclusive lease acquisition remains the ownership authority. */
+export function checkoutRunHasLiveOwner(
+  checkoutRoot: string,
+  runId: string,
+): boolean {
+  const owner = readCheckoutLeaseOwner(checkoutPaths(checkoutRoot).owner);
+  if (!owner || owner.runId !== runId || owner.hostname !== hostname()) {
+    return false;
+  }
+  try {
+    process.kill(owner.pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
 }
 
 function readCheckoutLeaseOwner(
@@ -993,12 +1031,14 @@ function capability(
   paths: CheckoutPaths,
   owner: CheckoutLeaseOwner,
   lease: FileLease,
+  priorOwner: CheckoutLeaseOwner | undefined,
 ): CheckoutLeaseCapability {
   let released = false;
   let releasePromise: Promise<void> | undefined;
   return {
     paths,
     owner,
+    priorOwner,
     assertOwned() {
       if (released) {
         throw new StateError(
@@ -1014,7 +1054,11 @@ function capability(
       released = true;
       releasePromise = (async () => {
         try {
-          rmSync(paths.owner, { force: true });
+          if (priorOwner) {
+            writeAtomicJson(paths.owner, priorOwner);
+          } else {
+            rmSync(paths.owner, { force: true });
+          }
         } finally {
           await lease.release();
         }
@@ -1226,38 +1270,36 @@ export class RunStore {
   ): Promise<RunState> {
     const current = this.read();
     assertRestartPreflight(proof, current);
-    if (
-      current.restartPreparation ||
-      (current.generation > 0 &&
-        !current.executionStartedAt &&
-        current.phase !== "completed")
-    ) {
+    if (current.restartPreparation) {
       return current;
     }
+    if (
+      current.generation > 0 &&
+      !current.executionStartedAt &&
+      current.phase !== "completed"
+    ) {
+      return current.phase === "stopping" ||
+        Object.keys(current.processLeases).length
+        ? this.atomicUpdate(
+            current.revision,
+            interruptedRestartState,
+            restartTransition,
+          )
+        : current;
+    }
     validateRestartResources(
-      current,
+      interruptedRestartState(current),
       resources,
       join(this.lease.paths.worktrees, current.run.id),
     );
     return this.atomicUpdate(
       current.revision,
       (state) => {
-        const preservedSourceIds = Object.values(state.workstreams.source)
-          .filter(
-            (lane) =>
-              Object.values(state.publication.receipts).some(
-                (receipt) => receipt.candidateId === lane.candidateId,
-              ) ||
-              Object.values(state.satisfaction.receipts).some(
-                (receipt) => receipt.candidateId === lane.candidateId,
-              ) ||
-              Object.values(state.publication.intents).some(
-                (intent) =>
-                  intent.candidateId === lane.candidateId &&
-                  intent.preparedCommitSha === proof.targetSha,
-              ),
-          )
-          .map((lane) => lane.id);
+        state = interruptedRestartState(state);
+        const preservedSourceIds = restartPreservedSourceIds(
+          state,
+          proof.targetSha,
+        );
         state.restartPreparation = {
           generation: state.generation + 1,
           targetSha: proof.targetSha,
@@ -1416,7 +1458,6 @@ export class RunStore {
           !intent ||
           !receipt ||
           !pending ||
-          receipt.publishedCommitSha !== pending.targetSha ||
           (intent.workstream.kind === "source" &&
             !pending.preservedSourceIds.includes(intent.workstream.id))
         ) {
@@ -1436,6 +1477,33 @@ export class RunStore {
           );
         }
         lane.phase = "completed";
+        if (intent.workstream.kind === "source") {
+          const source = state.workstreams.source[intent.workstream.id]!;
+          const plan = readExecutionPlan(dirname(this.path))!;
+          const taskIds = source.taskIds.filter(
+            (id) =>
+              state.tasks[id]?.phase !== "published" &&
+              !state.projectionDebt.some((debt) => debt.taskIds.includes(id)),
+          );
+          if (taskIds.length) {
+            const projection = createCheckboxProjectionIntent({
+              id: `resume-projection:${intent.id}`,
+              checkoutRoot: state.run.checkout.root,
+              taskIds,
+              checkboxes: taskIds.map(
+                (id) => plan.tasks.find((task) => task.id === id)!.sourceAnchor,
+              ),
+            });
+            state.projectionDebt.push({
+              ...projection,
+              reason: "Recover delivered source publication.",
+              artifactPath: projection.canonicalPath,
+            });
+          }
+          for (const id of source.taskIds) {
+            state.tasks[id] = { ...state.tasks[id]!, phase: "published" };
+          }
+        }
         return state;
       },
       restartDeliveryTransition,

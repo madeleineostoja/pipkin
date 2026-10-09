@@ -1,4 +1,12 @@
-import { resolve, relative } from "node:path";
+import { readFileSync } from "node:fs";
+import { canonicalPath } from "./source-integrity.js";
+import { hostname } from "node:os";
+import { dirname, resolve, relative } from "node:path";
+import { inspectCheckboxProjection } from "./projection.js";
+import { reduceRunEvent } from "./scheduler/scheduler.js";
+import { readExecutionPlan } from "./execution-plan.js";
+import { loadRequirementsContext } from "./requirements-context.js";
+import { WriteAheadPublisher } from "./write-ahead-publication.js";
 import { openFindingObligations } from "./finding-context.js";
 import type { GitClient } from "./git.js";
 import {
@@ -46,6 +54,39 @@ export function assertRestartPreflight(
   }
 }
 
+export function restartDeliveredCandidateIds(
+  state: RunState,
+  targetSha: string,
+): Set<string> {
+  return new Set([
+    ...Object.values(state.publication.receipts).map(
+      (receipt) => receipt.candidateId,
+    ),
+    ...Object.values(state.satisfaction.receipts).map(
+      (receipt) => receipt.candidateId,
+    ),
+    ...Object.values(state.publication.intents)
+      .filter(
+        (intent) =>
+          !state.publication.receipts[intent.id] &&
+          !state.publication.abandonments[intent.id] &&
+          !state.publication.supersessions[intent.id] &&
+          intent.preparedCommitSha === targetSha,
+      )
+      .map((intent) => intent.candidateId),
+  ]);
+}
+
+export function restartPreservedSourceIds(
+  state: RunState,
+  targetSha: string,
+): string[] {
+  const delivered = restartDeliveredCandidateIds(state, targetSha);
+  return Object.values(state.workstreams.source)
+    .filter((lane) => lane.candidateId && delivered.has(lane.candidateId))
+    .map((lane) => lane.id);
+}
+
 export function deliveredSourceIds(state: RunState): string[] {
   return Object.values(state.workstreams.source)
     .filter((lane) => {
@@ -87,13 +128,120 @@ export function restartTarget(
   return state.executionTarget;
 }
 
+export function interruptedRestartState(current: RunState): RunState {
+  let state = structuredClone(current);
+  const apply = (event: Parameters<typeof reduceRunEvent>[1]) => {
+    const result = reduceRunEvent(state, event);
+    if (!result.accepted) {
+      throw new Error(
+        result.error ?? "Interrupted execution cannot settle safely.",
+      );
+    }
+    state = result.state;
+  };
+  if (["planning", "running", "whole_plan_review"].includes(state.phase)) {
+    // An activated, unlaunched actor already has a usable current generation.
+    if (
+      state.generation > 0 &&
+      !state.executionStartedAt &&
+      !Object.keys(state.processLeases).length
+    ) {
+      return state;
+    }
+    apply({
+      kind: "failure_requested",
+      category: "interrupted",
+      reason: "Run was retained after its actor ended.",
+      now: new Date().toISOString(),
+    });
+  }
+  if (state.phase === "stopping") {
+    for (const lease of Object.values(state.processLeases)) {
+      apply({ kind: "process_abandoned", leaseId: lease.id });
+    }
+    apply({ kind: "run_failed" });
+  }
+  return state;
+}
+
+function assertInterruptedOwnerGone(store: RunStore, state: RunState): void {
+  if (
+    ["failed", "incomplete", "completed"].includes(state.phase) &&
+    !Object.keys(state.processLeases).length
+  ) {
+    return;
+  }
+  if (
+    state.generation > 0 &&
+    !state.executionStartedAt &&
+    !Object.keys(state.processLeases).length
+  ) {
+    return;
+  }
+  const owner = store.lease.priorOwner;
+  if (
+    !owner ||
+    owner.runId !== state.run.id ||
+    owner.hostname !== hostname() ||
+    owner.checkoutRoot !== state.run.checkout.root ||
+    owner.gitDir !== state.run.checkout.gitDir ||
+    owner.runPath !== dirname(store.path)
+  ) {
+    throw new Error(
+      "Resume cannot prove the prior execution owner is gone; process ownership is uncertain.",
+    );
+  }
+  try {
+    process.kill(owner.pid, 0);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+      return;
+    }
+    throw new Error("Resume cannot verify prior process ownership.");
+  }
+  throw new Error(`Resume is blocked by live prior owner PID ${owner.pid}.`);
+}
+
+/** Accept only recorded projection sides, never arbitrary checkbox or prose edits. */
+function restartArtifactsMatch(state: RunState): boolean {
+  if (
+    Object.keys(state.protectedArtifactHashes).some(
+      (path) => canonicalPath(path) !== path,
+    )
+  ) {
+    return false;
+  }
+  const observation = structuredClone(state);
+  for (const debt of state.projectionDebt) {
+    const outcome = inspectCheckboxProjection(state.run.checkout.root, debt);
+    if (outcome.kind === "safety_paused") {
+      return false;
+    }
+    const newSide =
+      readFileSync(debt.canonicalPath, "utf-8") === debt.expectedNewContent;
+    observation.protectedArtifactHashes[debt.canonicalPath] = newSide
+      ? debt.expectedNewHash
+      : debt.expectedOldHash;
+    if (newSide) {
+      for (const id of debt.taskIds) {
+        observation.tasks[id]!.phase = "published";
+      }
+    }
+  }
+  return (
+    sourceIdentityMatches(observation) && protectedArtifactsMatch(observation)
+  );
+}
+
 /** Observational only. Transaction recovery and resource disposal are separate host obligations. */
 export async function preflightRestart(
   store: RunStore,
   git: GitClient,
 ): Promise<RestartPreflight> {
   store.lease.assertOwned();
-  const state = store.refresh();
+  const original = store.refresh();
+  assertInterruptedOwnerGone(store, original);
+  const state = interruptedRestartState(original);
   if (
     !state.executionPlan ||
     (!["failed", "incomplete", "completed"].includes(state.phase) &&
@@ -101,12 +249,17 @@ export async function preflightRestart(
     Object.keys(state.processLeases).length > 0
   ) {
     throw new Error(
-      "Restart requires a bound, settled run with no live execution owner.",
+      "Resume requires a bound, settled run with no live execution owner. Planning failures before plan binding cannot resume.",
     );
   }
-  if (!sourceIdentityMatches(state) || !protectedArtifactsMatch(state)) {
+  const plan = readExecutionPlan(dirname(store.path));
+  if (!plan || plan.executionPlanHash !== state.executionPlan.hash) {
+    throw new Error("Resume requires the original bound execution plan.");
+  }
+  loadRequirementsContext(dirname(store.path), plan);
+  if (!restartArtifactsMatch(state)) {
     throw new Error(
-      "Restart source or protected plan evidence is unavailable.",
+      "Resume source or protected plan evidence is unavailable; restore the original protected content before retrying.",
     );
   }
   const targetSha = await git.head();
@@ -117,7 +270,7 @@ export async function preflightRestart(
       !state.publication.supersessions[intent.id],
   );
   if (pending.length > 1) {
-    throw new Error("Restart cannot classify multiple unsettled publications.");
+    throw new Error("Resume cannot classify multiple unsettled publications.");
   }
   // A landed write-ahead commit is not delivery until the host settles its lane and projection.
   if (
@@ -130,21 +283,65 @@ export async function preflightRestart(
     )
   ) {
     throw new Error(
-      "Restart target differs from the exact trusted target receipt.",
+      `Resume target differs from the exact trusted target receipt: expected ${restartTarget(state)}${pending[0] ? ` or proven publication ${pending[0].preparedCommitSha}` : ""}, found ${targetSha}. Restore the retained target boundary; manual descendants cannot authorize Resume.`,
     );
+  }
+  for (const receipt of Object.values(state.publication.receipts)) {
+    if (
+      (await git.treeAt(receipt.publishedCommitSha)) !==
+        receipt.publishedTreeSha ||
+      (receipt.publishedCommitSha !== targetSha &&
+        !(await git.isAncestor(receipt.publishedCommitSha, targetSha)))
+    ) {
+      throw new Error(
+        "Resume target no longer contains its exact delivered publication evidence.",
+      );
+    }
+  }
+  let transactionClean = false;
+  if (pending.length) {
+    const outcome = await new WriteAheadPublisher({
+      git,
+      checkoutRoot: state.run.checkout.root,
+      checkoutIdentity: state.run.checkout.gitDir,
+      protectedPaths: Object.keys(state.protectedArtifactHashes),
+    }).inspectRecovery(pending[0]!);
+    if (!["published", "retry_from_base"].includes(outcome.kind)) {
+      throw new Error(
+        outcome.kind === "safety_paused"
+          ? outcome.reason
+          : "Resume cannot classify publication.",
+      );
+    }
+    transactionClean = true;
   }
   const branchRef = `refs/heads/${await git.currentBranch()}`;
   const protectedPaths = Object.keys(state.protectedArtifactHashes);
   if (
     resolve(await git.root()) !== resolve(state.run.checkout.root) ||
-    (await git.checkoutIdentity()) !== state.run.checkout.gitDir ||
-    branchRef !== state.run.checkout.branchRef ||
-    (await git.activeOperation()) ||
-    !(await git.isCleanExcept(protectedPaths)) ||
+    (await git.checkoutIdentity()) !== state.run.checkout.gitDir
+  ) {
+    throw new Error(
+      "Resume checkout identity differs from the original run; use its original checkout.",
+    );
+  }
+  if (branchRef !== state.run.checkout.branchRef) {
+    throw new Error(
+      `Resume requires branch ${state.run.checkout.branchRef}, found ${branchRef}.`,
+    );
+  }
+  const operation = await git.activeOperation();
+  if (operation) {
+    throw new Error(
+      `Resume is blocked by an active ${operation} operation; finish or abort it explicitly.`,
+    );
+  }
+  if (
+    (!transactionClean && !(await git.isCleanExcept(protectedPaths))) ||
     (await git.hasStagedChangesInPaths(protectedPaths))
   ) {
     throw new Error(
-      "Restart checkout identity, branch, operation, or cleanliness is invalid.",
+      "Resume checkout cleanliness is invalid: unrelated or staged protected changes remain. Preserve your changes outside this operation before retrying; Resume will not discard them.",
     );
   }
   openFindingObligations(state);

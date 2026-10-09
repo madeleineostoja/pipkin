@@ -564,6 +564,15 @@ export class SchedulerActor {
     await this.finalizeFailure();
   }
 
+  get isSettled(): boolean {
+    const state = this.options.store.read();
+    return (
+      ["completed", "incomplete", "failed"].includes(state.phase) &&
+      this.processes.size === 0 &&
+      Object.keys(state.processLeases).length === 0
+    );
+  }
+
   async settle(): Promise<void> {
     for (;;) {
       if (this.processes.size > 0) {

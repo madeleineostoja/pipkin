@@ -93,7 +93,7 @@ Long-lived resources start at `session_start` or on demand and dispose idempoten
 State belongs to the narrowest durable owner:
 
 - UI and agent activity belongs to the session;
-- Implement state belongs to a checkout;
+- Implement v12 state belongs to a checkout; its menu-only Resume uses the existing exclusive lease, atomic preparation/activation, and normal actor lifecycle, retaining generation evidence rather than worker sessions. Other schemas are rejected without migration; [Implementation](features/implementation.md#resume) owns the recovery contract;
 - Papercuts belongs to the canonical primary worktree;
 - repository policy belongs under Pi's project configuration directory in `pipkin/` (currently `.pi/pipkin/`);
 - personal model routing, native Pi credentials, and logs belong under Pi's agent directory.

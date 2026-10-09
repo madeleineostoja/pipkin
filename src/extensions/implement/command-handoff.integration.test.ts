@@ -477,6 +477,7 @@ function activeRun(
 ): ActiveRun {
   return {
     runId: state.run.id,
+    actor: { settle: async () => undefined },
     store: { read: () => state },
     lease: {
       release: async () => {

@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
 import { canonicalPath, sha256 } from "./source-integrity.js";
-import { settleCheckboxProjection } from "./projection.js";
+import {
+  inspectCheckboxProjection,
+  settleCheckboxProjection,
+} from "./projection.js";
 import { WriteAheadPublisher } from "./write-ahead-publication.js";
 import type { GitClient } from "./git.js";
 import type { RunStore } from "./store.js";
@@ -33,6 +36,10 @@ export async function settlePublicationTransactions(args: {
       state.publication.supersessions[intent.id] ||
       state.publication.abandonments[intent.id]
     ) {
+      continue;
+    }
+    if (state.restartPreparation && state.publication.receipts[intent.id]) {
+      await args.store.settleRestartPublishedLane(state.revision, intent.id);
       continue;
     }
     const outcome = await new WriteAheadPublisher({
@@ -144,24 +151,16 @@ function projectionDebtMatchesIntent(
     state.projectionDebt.map((debt) => canonicalPath(debt.canonicalPath)),
   );
   return (
-    state.projectionDebt.every((debt) => {
-      try {
-        const content = readFileSync(debt.canonicalPath, "utf-8");
-        const hash = sha256(content);
-        return (
-          (hash === debt.expectedOldHash &&
-            content === debt.expectedOldContent) ||
-          (hash === debt.expectedNewHash && content === debt.expectedNewContent)
-        );
-      } catch {
-        return false;
-      }
-    }) &&
-    state.run.source.corpus
-      .filter((artifact) => !projectedPaths.has(canonicalPath(artifact.path)))
-      .every((artifact) => {
+    state.projectionDebt.every(
+      (debt) =>
+        inspectCheckboxProjection(state.run.checkout.root, debt).kind !==
+        "safety_paused",
+    ) &&
+    Object.entries(state.protectedArtifactHashes)
+      .filter(([path]) => !projectedPaths.has(canonicalPath(path)))
+      .every(([path, hash]) => {
         try {
-          return sha256(readFileSync(artifact.path, "utf-8")) === artifact.hash;
+          return sha256(readFileSync(path, "utf-8")) === hash;
         } catch {
           return false;
         }

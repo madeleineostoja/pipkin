@@ -47,7 +47,7 @@ Give Implement a Markdown plan and it owns the run from dependency-aware schedul
 
 **Plan → dependency graph → isolated parallel work → review and repair → protected publication**
 
-Implement coordinates trusted workers in disposable Git worktrees, publishes through one serialized integration lane, and retains generation-scoped execution and review evidence for inspection and cleanup. The target branch moves only after hooks, candidate verification, and compare-and-swap checks succeed.
+Implement coordinates trusted workers in disposable Git worktrees, publishes through one serialized integration lane, and retains generation-scoped execution and review evidence for inspection and cleanup. The target branch moves only after hooks, candidate verification, and compare-and-swap checks succeed. The `/implement` menu can Resume recoverable partial runs, preserving delivered work and rebuilding unfinished execution after explicit confirmation.
 
 [Implementation guide →](docs/features/implementation.md)
 
@@ -95,7 +95,7 @@ Native Pi owns MCP configuration, authentication, discovery, and `/mcp`, includi
 | `/readonly [on\|off]` | Inspect or change confirmation for `edit` and `write`                     |
 | `/processes`          | Inspect and stop current-session managed processes                        |
 | `/agents`             | Inspect activity/results, guide, or stop public agents                    |
-| `/implement …`        | Start, inspect, stop, restart, or clean Implement runs                    |
+| `/implement …`        | Control Implement runs, including menu-only Resume                        |
 | `/papercuts`          | Browse, discuss one finding with the agent, close, and clean up Papercuts |
 | `/btw <question>`     | Ask an ephemeral side question; press `s` to promote a completed exchange |
 

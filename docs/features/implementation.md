@@ -65,18 +65,34 @@ Managed agents never run while integration or publication is active, and publica
 
 ## Outcomes and recovery
 
-| Outcome              | Meaning                                                                                                                      | Next step                                                                   |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `completed`          | Every source workstream was delivered and projected, followed by whole-plan review                                           | Read the durable handoff; clean retained history when no longer needed      |
-| `incomplete`         | Independent work settled, but some source tasks could not be safely delivered                                                | Inspect evidence, then explicitly clean before another run in that checkout |
-| `failed`             | The run was stopped/interrupted or a safety, ownership, persistence, projection, or publication boundary could not be proven | Inspect retained candidates and evidence; clean when finished               |
-| `dependency_skipped` | A workstream could not run because a direct dependency was unavailable                                                       | Diagnose the causal failed workstream rather than the derivative skip       |
+| Outcome              | Meaning                                                                                                                      | Next step                                                                  |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `completed`          | Every source workstream was delivered and projected, followed by whole-plan review                                           | Read the durable handoff; clean retained history when no longer needed     |
+| `incomplete`         | Independent work settled, but some source tasks could not be safely delivered                                                | Inspect evidence, then choose Resume or explicitly clean before a new run  |
+| `failed`             | The run was stopped/interrupted or a safety, ownership, persistence, projection, or publication boundary could not be proven | Inspect evidence, then choose Resume when recoverable; clean when finished |
+| `dependency_skipped` | A workstream could not run because a direct dependency was unavailable                                                       | Diagnose the causal failed workstream rather than the derivative skip      |
 
-Completed and partial runs capture a concise durable handoff. It summarizes delivered state, verification, residual findings, and exact inspection or cleanup commands without dumping forensic details into the transcript.
+Each settled execution generation captures one concise durable handoff; recoverable preparation or pre-launch startup failure does not consume that generation’s execution outcome. It summarizes delivered state, verification, residual findings, and exact inspection or cleanup commands without dumping forensic details into the transcript.
 
 Pipkin does not roll back published commits, auto-resume a terminal run, or automatically publish retained candidates. Independent successful lanes may remain published when another lane fails. Failed or interrupted workspaces are retained when needed for diagnosis.
 
-A crash-retained active run is terminalized as interrupted under the checkout lease without launching workers. Cleanup first settles durable publication and projection transactions, preserves published target and plan changes, and removes only resources Pipkin can prove it owns.
+Cleanup terminalizes a crash-retained active run as interrupted under the checkout lease without launching workers. It settles durable publication and projection transactions, preserves published target and plan changes, and removes only resources Pipkin can prove it owns.
+
+### Resume
+
+Open `/implement`, select a retained non-completed run, and choose **Resume**. No new plan path is requested. Completed runs keep the separate **Restart** action; Resume is menu-only, not a slash subcommand or model tool.
+
+The menu reads supported state cheaply. Selecting Resume acquires exclusive checkout ownership before checking recoverability and retains that lease through confirmation, preparation, and actor startup. A settled terminal actor in the current session releases ownership before transfer. A live actor, live prior host, or uncertain retained process ownership blocks recovery. Crash-retained execution requires proof that the recorded prior owner is gone; preview does not terminalize it.
+
+The preview names delivered lanes to preserve, unpublished execution and owned workspaces to discard, remaining transaction and cleanup steps, and the retained whole-plan review obligation. Confirmation explicitly authorizes disposal of unfinished changes inside proven owned unpublished workspaces, including dirty ones. Declining makes no run-state, workspace, publication, or checkbox changes. It releases acquired ownership; an existing pending preparation stays pending.
+
+Resume refuses unbound planning failures, missing or incompatible state, missing compiled/frozen inputs or required finding evidence, a changed checkout or branch, modified protected plan content, unsafe Git operations, unrelated tracked/staged/nonignored untracked dirt, and externally changed target history. `HEAD` must be the last trusted delivery target or the exact prepared commit proven by an outstanding durable publication intent. Only exact sanctioned checkbox/projection changes are allowed; Resume never stages, commits, discards, or self-heals user dirt to pass preflight.
+
+After confirmation, Resume revalidates observations and atomically reserves one successor with its resource inventory before settlement or deletion. It establishes actual lane/task delivery for an exact landed publication before projecting checkboxes. A provably unlanded intent is abandoned, never newly published for salvage. It discards only inventoried unpublished workspaces and references whose canonical path, durable execution ownership, branch, and confirmed Git-observed contents still match. Delivered evidence and the run directory survive. Missing resources after a recorded removal are idempotent progress; conflicting ownership, escaped paths, reappearing retired resources, or changed workspace contents block preparation.
+
+A preparation failure retains its blockers and completed safe steps. Select Resume again to inspect the remaining steps and confirm continuation of the **same reserved generation**, without another retry grant. Activation follows transaction/task settlement, cleanup, and final exact-target validation. If activation succeeded but no execution began, Resume recovers startup in that same generation. After durable execution-start evidence exists, another interruption requires a newly confirmed successor.
+
+Resume constructs a fresh actor, never attaches to old conversations, and never salvages unpublished candidates or approvals. [Execution generations](#execution-generations) describes preserved delivery, frozen plan identity, finding continuity, complete-plan review, and per-cycle limits.
 
 ## Commands
 
@@ -90,7 +106,7 @@ A crash-retained active run is terminalized as interrupted under the checkout le
 | `/implement cleanup <run-id>`                     | Settle terminal state and remove provably owned resources after confirmation                          |
 | `/implement stop`                                 | Settle owned processes and terminally stop the active run                                             |
 
-The menu also offers **Clean completed runs (N)** for retained completed history. It does not include failed, incomplete, or historical entries. The footer shows a short warning-yellow `cleaning` status while cleanup or automatic post-run resource release is pending.
+The menu also offers **Clean completed runs (N)** for retained completed history. It does not include failed, incomplete, or historical entries. The footer shows a short warning-yellow `cleaning` status while cleanup or automatic post-run resource release is pending, and `preparing` during confirmed Resume preparation.
 
 ## Model-facing inspection
 
@@ -143,9 +159,9 @@ Implement reads and writes RunState **v12**. Other schemas are rejected, not con
 
 ### Execution generations
 
-New runs begin at generation `0`. The original run ID, start commit, compiled task set, and frozen corpus remain immutable. A host-validated restart preparation reserves one successor and records its exact target, delivered/reset lanes, transaction obligations, resource retirement inventory, monotonic progress, and blockers. Activation is atomic and requires settled transactions/projection, retired resources, and a fresh exact-target preflight. Preparation recovery does not grant another generation or retry cycle. Restart target authority comes only from the last published receipt or the generation execution target, with an exact landed write-ahead publication from that trusted base allowed pending settlement; publication supersessions and unlanded intent bases do not authorize externally moved targets. Resume is not a menu action.
+New runs begin at generation `0`. The run ID, original start commit, compiled task set and worker concurrency, and frozen corpus remain immutable. Each confirmed Resume reserves one monotonically increasing successor; its validated execution target is recorded separately from the original start commit. Fresh unpublished workspaces use that execution target. The [Resume operation](#resume) owns preflight, atomic preparation/activation, resource retirement, and preparation recovery.
 
-Only published source work and durably reviewed satisfaction with delivery receipts survive as delivered. All other source lanes restart ordinary scheduling, including dependency-skipped lanes. Unpublished candidates and old approvals remain evidence, not executable authority. Each generation has the same bounded retry/correction/repair allowances; historical operations cannot consume current capacity or admit late completions. A durable execution-start marker is recorded at managed-worker launch admission, after target and worker preflight, or before a host effect can mutate delivery state. A failed activated generation with no launch admission can recover startup in the same generation without resetting attempt accounting; startup failure evidence remains inspectable.
+Only published source work and durably reviewed satisfaction with delivery receipts survive as delivered. All other source lanes restart ordinary scheduling, including dependency-skipped lanes. Unpublished candidates and old approvals remain evidence, not executable authority. Each generation has the same bounded retry/correction/repair allowances; historical operations cannot consume current capacity or admit late completions. An exhausted cycle requires another explicit Resume, never an automatic loop. A durable execution-start marker is recorded at managed-worker launch admission, after target and worker preflight, or before a host effect can mutate delivery state. A failed activated generation with no launch admission can recover startup in the same generation without resetting attempt accounting; startup failure evidence remains inspectable.
 
 Generation outcomes, failures, operation settlements, candidates, receipts, and prior review assessments remain inspectable. Open source findings travel as complete substantive obligations into fresh implementation and review without requiring a discarded worktree. Fresh reviews must assess each carried ID exactly once; omitted or duplicate assessments reject completion. Carried obligations are bounded to `48,000` serialized characters and refused rather than truncated. Resolved findings stay resolved; recurrences receive new identities. Whole-plan review includes the original full plan, delivered source evidence, every receipted repair's retained verification, and canonical findings, including obligations on delivered source lanes. Unpublished abandoned repairs are not delivered verification. Historical handoff drafts are cumulative context, not approval of a fresh target.
 

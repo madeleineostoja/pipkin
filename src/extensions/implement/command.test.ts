@@ -66,7 +66,7 @@ describe("/implement command", () => {
     ]);
   });
 
-  it("offers terminal and interrupted retained runs cleanup without continue", () => {
+  it("offers Resume for retained runs without a live actor, while keeping completed Restart separate", () => {
     expect(runMenuActions("failed", true)).toEqual([
       "Details",
       "Clean up",
@@ -74,6 +74,13 @@ describe("/implement command", () => {
     ]);
     expect(runMenuActions("failed", false)).toEqual([
       "Details",
+      "Resume",
+      "Clean up",
+      "Back",
+    ]);
+    expect(runMenuActions("completed", false)).toEqual([
+      "Details",
+      "Restart",
       "Clean up",
       "Back",
     ]);
@@ -84,11 +91,13 @@ describe("/implement command", () => {
     ]);
     expect(runMenuActions("running", false)).toEqual([
       "Details",
+      "Resume",
       "Clean up",
       "Back",
     ]);
     expect(runMenuActions("stopping", false)).toEqual([
       "Details",
+      "Resume",
       "Clean up",
       "Back",
     ]);

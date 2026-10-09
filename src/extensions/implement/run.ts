@@ -4,6 +4,7 @@ import type {
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import { buildMaterialStore } from "./material-store.js";
+import type { PreparedResume } from "./resume.js";
 import { parsePlan } from "./plan.js";
 import {
   buildStrictExecutionPlannerPrompt,
@@ -29,6 +30,7 @@ import { WriteAheadPublisher } from "./write-ahead-publication.js";
 import {
   assertNoFailedRuns,
   assertProspectiveRunPreflight,
+  terminalizeInterruptedRun,
 } from "./controls.js";
 import { sha256 } from "./source-integrity.js";
 import {
@@ -163,6 +165,52 @@ export async function startRun(args: {
   }
 }
 
+export async function startPreparedResume(args: {
+  prepared: PreparedResume;
+  pi: ExtensionAPI;
+  ctx: ExtensionCommandContext;
+  roles: ImplementRoles;
+  onTransition?: SchedulerActorOptions["onTransition"];
+  onCompleted?: (run: CompletedRunResources) => void;
+}): Promise<{ kind: "started"; active: ActiveRun }> {
+  const { prepared } = args;
+  const state = prepared.store.read();
+  let actor: SchedulerActor | undefined;
+  try {
+    actor = createRuntime({
+      ...prepared,
+      pi: args.pi,
+      ctx: args.ctx,
+      roles: args.roles,
+      checkoutIdentity: state.run.checkout.gitDir,
+      baseSha: state.executionTarget,
+      onTransition: (next, event) => {
+        try {
+          args.onTransition?.(next, event);
+        } finally {
+          if (event.kind === "run_completed") {
+            args.onCompleted?.(prepared);
+          }
+        }
+      },
+    });
+    await actor.start();
+    return { kind: "started", active: { ...prepared, actor } };
+  } catch (error) {
+    try {
+      const reason = `Resume actor startup failed: ${error instanceof Error ? error.message : String(error)}`;
+      if (actor) {
+        await actor.stop(reason, "interrupted");
+      } else {
+        await terminalizeInterruptedRun(prepared.store, reason);
+      }
+    } finally {
+      await prepared.lease.release();
+    }
+    throw error;
+  }
+}
+
 async function captureTargetBoundary(
   state: RunState,
   git: ExecGitClient,
@@ -282,8 +330,8 @@ export function createRuntime(args: {
   store: RunStore;
   lease: CheckoutLeaseCapability;
   roles: ImplementRoles;
-  plan: ReturnType<typeof parsePlan>;
-  materialStore: ReturnType<typeof buildMaterialStore>;
+  plan?: ReturnType<typeof parsePlan>;
+  materialStore?: ReturnType<typeof buildMaterialStore>;
   checkoutIdentity: string;
   baseSha: string;
   subagents?: SubagentClient;
@@ -844,6 +892,11 @@ export function createRuntime(args: {
       );
       if (retained) {
         return retained;
+      }
+      if (!args.plan || !args.materialStore) {
+        throw new Error(
+          "Resume requires retained compiled planning inputs; it cannot invoke a planner.",
+        );
       }
       const client = subagents;
       const result = await planExecution({

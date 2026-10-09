@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import { writeAtomicFile } from "./atomic-file.js";
 import { normalizeCheckboxMarker, sha256 } from "./source-integrity.js";
@@ -61,7 +61,7 @@ export function createCheckboxProjectionIntent(args: {
   };
 }
 
-export function settleCheckboxProjection(
+export function inspectCheckboxProjection(
   checkoutRoot: string,
   intent: CheckboxProjectionIntent,
 ): ProjectionOutcome {
@@ -95,6 +95,18 @@ export function settleCheckboxProjection(
       reason: "Projection source content matches neither durable intent side.",
     };
   }
+  return { kind: "written", protectedHash: intent.expectedNewHash };
+}
+
+export function settleCheckboxProjection(
+  checkoutRoot: string,
+  intent: CheckboxProjectionIntent,
+): ProjectionOutcome {
+  const observation = inspectCheckboxProjection(checkoutRoot, intent);
+  if (observation.kind !== "written") {
+    return observation;
+  }
+  const path = intent.canonicalPath;
   try {
     atomicReplace(path, intent.expectedNewContent);
     const written = readFileSync(path, "utf-8");
@@ -137,9 +149,12 @@ function applyCheckboxes(
 }
 
 function canonicalSourcePath(checkoutRoot: string, path: string): string {
-  const root = resolve(checkoutRoot);
-  const destination = resolve(path);
-  const inside = relative(root, destination);
+  const root = realpathSync(checkoutRoot);
+  const lexical = relative(resolve(checkoutRoot), resolve(path));
+  const inside = lexical.startsWith("..")
+    ? relative(root, resolve(path))
+    : lexical;
+  const destination = resolve(root, inside);
   if (!inside || inside.startsWith("..")) {
     throw new Error("Projection source is outside the invoking checkout.");
   }

@@ -14,6 +14,7 @@ import { parseCommand, usage, type ParsedCommand } from "./parser.js";
 import {
   stopRun,
   startRun,
+  startPreparedResume,
   type ActiveRun,
   type CompletedRunResources,
 } from "./run.js";
@@ -29,8 +30,18 @@ import {
 } from "./controls.js";
 import { createImplementActivity } from "./activity.js";
 import { createTerminalHandoffPublisher } from "./terminal-handoff-publisher.js";
-import { CheckoutLeaseBusyError, type RunState } from "./store.js";
+import {
+  checkoutRunHasLiveOwner,
+  CheckoutLeaseBusyError,
+  type RunState,
+} from "./store.js";
 import { showImplementRunSurface } from "./run-surface.js";
+import { openResume, formatResumePreview } from "./resume.js";
+
+type ResumeCommand = { kind: "resume"; runId: string };
+type ExecutionCommand =
+  | Extract<ParsedCommand, { kind: "execution" }>
+  | ResumeCommand;
 
 type ImplementActivity = ReturnType<typeof createImplementActivity>;
 
@@ -341,9 +352,10 @@ export function registerImplementCommand(
     run: CompletedRunResources,
     ctx: ExtensionCommandContext,
   ): Promise<void> {
-    if (active?.runId !== run.runId) {
+    if (active?.store !== run.store) {
       return;
     }
+    await active.actor.settle();
     await withCleanupStatus(ctx, async () => {
       const failures = await resourceReleaseFailures(run);
       cancelSessionNaming(run.runId);
@@ -358,10 +370,23 @@ export function registerImplementCommand(
   }
 
   async function handleExecution(
-    parsed: Extract<ParsedCommand, { kind: "execution" }>,
+    parsed: ExecutionCommand,
     ctx: ExtensionCommandContext,
   ): Promise<void> {
     const executionGeneration = sessionGeneration;
+    if (
+      parsed.kind === "resume" &&
+      active?.runId === parsed.runId &&
+      active.actor.isSettled
+    ) {
+      const previous = active;
+      await previous.actor.settle();
+      await previous.lease.release();
+      cancelSessionNaming(previous.runId);
+      activity?.clear();
+      activity = undefined;
+      active = undefined;
+    }
     if (active) {
       ctx.ui.notify(
         "Implement already has an active run in this session.",
@@ -393,6 +418,9 @@ export function registerImplementCommand(
         NonNullable<Parameters<typeof startRun>[0]["onTransition"]>
       >[1],
     ) => {
+      if (activity && activity !== nextActivity) {
+        return;
+      }
       if (terminalRunState(state)) {
         cancelSessionNaming(state.run.id);
       }
@@ -408,7 +436,7 @@ export function registerImplementCommand(
       }
     };
     try {
-      if (parsed.restart) {
+      if (parsed.kind === "execution" && parsed.restart) {
         const checkoutRoot = await resolveCheckoutRoot(ctx.cwd);
         await withCleanupStatus(ctx, () =>
           cleanupCompletedRun({
@@ -418,17 +446,70 @@ export function registerImplementCommand(
           }),
         );
       }
-      const result = await startRun({
-        pi,
-        ctx,
-        planPath: parsed.planPath,
-        roles,
-        workerConcurrency: config.config.implement.workerConcurrency,
-        onTransition,
-        onCompleted: (run) => {
-          void runLifecycle(() => finalizeCompletedRun(run, ctx));
-        },
-      });
+      const onCompleted = (run: CompletedRunResources) => {
+        void runLifecycle(() => finalizeCompletedRun(run, ctx));
+      };
+      const result =
+        parsed.kind === "resume"
+          ? await (async () => {
+              if (!ctx.hasUI) {
+                throw new Error(
+                  "Resume requires interactive destructive confirmation.",
+                );
+              }
+              const resume = await openResume({
+                checkoutRoot: await resolveCheckoutRoot(ctx.cwd),
+                runId: parsed.runId,
+              });
+              let transferred = false;
+              try {
+                if (
+                  !(await ctx.ui.confirm(
+                    "Resume",
+                    formatResumePreview(resume.preview),
+                  )) ||
+                  executionGeneration !== sessionGeneration
+                ) {
+                  return { kind: "cancelled" as const };
+                }
+                const prepared = await withCleanupStatus(
+                  ctx,
+                  () => resume.confirm((state) => nextActivity.update(state)),
+                  "preparing",
+                );
+                if (executionGeneration !== sessionGeneration) {
+                  return { kind: "cancelled" as const };
+                }
+                const started = await startPreparedResume({
+                  prepared,
+                  pi,
+                  ctx,
+                  roles,
+                  onTransition,
+                  onCompleted,
+                });
+                transferred = true;
+                return started;
+              } finally {
+                if (!transferred) {
+                  await resume.release();
+                }
+              }
+            })()
+          : await startRun({
+              pi,
+              ctx,
+              planPath: parsed.planPath,
+              roles,
+              workerConcurrency: config.config.implement.workerConcurrency,
+              onTransition,
+              onCompleted,
+            });
+      if (result.kind === "cancelled") {
+        nextActivity.clear();
+        activity = undefined;
+        return;
+      }
       if (result.kind === "no-op") {
         nextActivity.clear();
         activity = undefined;
@@ -442,13 +523,20 @@ export function registerImplementCommand(
       nextActivity.update(active.store.read());
       claimImplementNaming(pi.events);
       beginSessionNaming(
-        parsed.planPath,
+        parsed.kind === "execution"
+          ? parsed.planPath
+          : active.store.read().run.source.entry.path,
         ctx,
         executionGeneration,
         active.runId,
         nextActivity,
       );
-      ctx.ui.notify(`Implement started run ${active.runId}.`, "info");
+      ctx.ui.notify(
+        parsed.kind === "resume"
+          ? `Implement resumed run ${active.runId} · generation ${active.store.read().generation}.`
+          : `Implement started run ${active.runId}.`,
+        "info",
+      );
     } catch (error) {
       nextActivity.clear();
       activity = undefined;
@@ -537,11 +625,12 @@ const IMPLEMENT_CLEANUP_STATUS = {
 async function withCleanupStatus<T>(
   ctx: ExtensionCommandContext,
   operation: () => Promise<T>,
+  text: "cleaning" | "preparing" = "cleaning",
 ): Promise<T> {
   let visible = false;
   if (ctx.mode === "tui") {
     try {
-      setPipkinStatus(ctx.ui, IMPLEMENT_CLEANUP_STATUS);
+      setPipkinStatus(ctx.ui, { ...IMPLEMENT_CLEANUP_STATUS, text });
       visible = true;
     } catch {
       // Footer presentation must not block resource settlement.
@@ -619,7 +708,7 @@ function notifyResourceReleaseFailures(
 async function showImplementMenu(
   ctx: ExtensionCommandContext,
   active: ActiveRun | undefined,
-): Promise<ParsedCommand | undefined> {
+): Promise<ParsedCommand | ResumeCommand | undefined> {
   if (ctx.mode !== "tui") {
     return { kind: "error", message: usage() };
   }
@@ -663,7 +752,17 @@ async function showImplementMenu(
       );
       continue;
     }
-    const action = await showRunMenu(ctx, run, active?.runId === run.runId);
+    const live =
+      active?.runId === run.runId
+        ? !active.actor.isSettled
+        : !terminalRunState(run.state) &&
+          checkoutRunHasLiveOwner(root, run.runId);
+    const action = await showRunMenu(
+      ctx,
+      run,
+      active?.runId === run.runId && live,
+      live,
+    );
     if (action === "back") {
       continue;
     }
@@ -675,8 +774,9 @@ async function showRunMenu(
   ctx: ExtensionCommandContext,
   run: Extract<RunListing, { kind: "run" }>,
   current: boolean,
-): Promise<ParsedCommand | "back" | undefined> {
-  const actions = runMenuActions(run.state.phase, current);
+  live: boolean,
+): Promise<ParsedCommand | ResumeCommand | "back" | undefined> {
+  const actions = runMenuActions(run.state.phase, current, live);
 
   const action = await ctx.ui.select(
     `${run.runId} · ${run.state.phase.replaceAll("_", " ")}`,
@@ -697,6 +797,9 @@ async function showRunMenu(
   if (action === "Clean up") {
     return { kind: "control", name: "cleanup", runId: run.runId };
   }
+  if (action === "Resume") {
+    return { kind: "resume", runId: run.runId };
+  }
   const planPath = await ctx.ui.input("Plan path", "path/to/plan.md");
   if (!planPath?.trim()) {
     return;
@@ -716,13 +819,14 @@ export function implementMenuActions(runs: RunListing[]): string[] {
 export function runMenuActions(
   phase: RunState["phase"],
   current: boolean,
+  live = current,
 ): string[] {
   const actions = ["Details"];
   if (current && !["completed", "incomplete", "failed"].includes(phase)) {
     actions.push("Stop");
   }
-  if (!current && phase === "completed") {
-    actions.push("Restart");
+  if (!live) {
+    actions.push(phase === "completed" ? "Restart" : "Resume");
   }
   actions.push("Clean up");
   return [...actions, "Back"];

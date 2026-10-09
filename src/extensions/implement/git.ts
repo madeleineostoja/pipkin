@@ -61,6 +61,7 @@ export async function changedPathsBetween(
 export type GitClient = {
   root(): Promise<string>;
   checkoutIdentity(): Promise<string>;
+  commonIdentity?(): Promise<string>;
   currentBranch(): Promise<string>;
   activeOperation(): Promise<string | undefined>;
   head(): Promise<string>;
@@ -71,11 +72,13 @@ export type GitClient = {
   isAncestor(ancestor: string, descendant: string): Promise<boolean>;
   isClean(): Promise<boolean>;
   isCleanExcept(paths: string[]): Promise<boolean>;
+  isCleanAt?(commit: string, paths: string[]): Promise<boolean>;
   statusEntriesExcept(paths: string[]): Promise<GitStatusEntry[]>;
   hasStagedChanges(): Promise<boolean>;
   hasStagedChangesInPaths(paths: string[]): Promise<boolean>;
   stagedNameStatus(): Promise<string>;
   stagedDiff(): Promise<string>;
+  indexEntries(): Promise<string>;
   nonignoredUntracked(): Promise<string[]>;
   abortActiveOperation(): Promise<void>;
   stagedFingerprint(): Promise<string>;
@@ -123,6 +126,17 @@ export class ExecGitClient implements GitClient {
       await this.run(["rev-parse", "--path-format=absolute", "--git-dir"])
     ).stdout.trim();
     return realpathSync(gitDir);
+  }
+
+  async commonIdentity(): Promise<string> {
+    const commonDir = (
+      await this.run([
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+      ])
+    ).stdout.trim();
+    return realpathSync(commonDir);
   }
 
   async currentBranch(): Promise<string> {
@@ -259,6 +273,11 @@ export class ExecGitClient implements GitClient {
     return (await this.run(["diff", "--cached", "--binary", "HEAD"])).stdout;
   }
 
+  /** Retain exact index stages, including an unresolved replay, without writing a tree. */
+  async indexEntries(): Promise<string> {
+    return (await this.run(["ls-files", "--stage", "-z"])).stdout;
+  }
+
   async nonignoredUntracked(): Promise<string[]> {
     return (
       await this.run(["ls-files", "--others", "--exclude-standard", "-z"])
@@ -289,7 +308,7 @@ export class ExecGitClient implements GitClient {
       "--",
       ...pathspecs,
     ]);
-    const diff = await this.run(["diff", "--", ...pathspecs]);
+    const diff = await this.run(["diff", "--binary", "--", ...pathspecs]);
     return createHash("sha256")
       .update(status.stdout)
       .update("\0")
@@ -347,6 +366,25 @@ export class ExecGitClient implements GitClient {
 
   async resetHard(commitSha: string): Promise<void> {
     await this.run(["reset", "--hard", commitSha]);
+  }
+
+  async isCleanAt(commit: string, paths: string[]): Promise<boolean> {
+    const pathspecs = await this.protectedPathspecs(paths);
+    const [index, worktree, untracked] = await Promise.all([
+      this.run(
+        ["diff", "--cached", "--quiet", commit, "--", ...pathspecs],
+        true,
+      ),
+      this.run(["diff", "--quiet", "--", ...pathspecs], true),
+      this.run([
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "--",
+        ...pathspecs,
+      ]),
+    ]);
+    return index.exitCode === 0 && worktree.exitCode === 0 && !untracked.stdout;
   }
 
   async synchronizeWorktree(commitSha: string): Promise<void> {

@@ -118,6 +118,73 @@ describe("terminal handoff publisher", () => {
     expect(publisher.hasPending()).toBe(false);
   });
 
+  it("retains distinct failed generation handoffs without overwriting pending delivery or duplicating a generation", () => {
+    const entries: string[] = [];
+    const publisher = createTerminalHandoffPublisher(
+      {
+        appendEntry(_type, data) {
+          entries.push((data as { text: string }).text);
+        },
+      },
+      (state) => `generation:${state.generation}`,
+    );
+    const busy = { isIdle: () => false };
+    const idle = { isIdle: () => true };
+    for (const generation of [0, 1, 0, 1]) {
+      publisher.capture(
+        {
+          ...terminalState("failed"),
+          generation,
+          executionStartedAt: "started",
+        },
+        terminalEvent("run_failed"),
+        busy,
+      );
+    }
+    publisher.flush(idle);
+    publisher.capture(
+      {
+        ...terminalState("failed"),
+        generation: 1,
+        executionStartedAt: "started",
+      },
+      terminalEvent("run_incomplete"),
+      idle,
+    );
+    publisher.flush(idle);
+    expect(entries).toEqual(["generation:0", "generation:1"]);
+    expect(publisher.hasPending()).toBe(false);
+  });
+
+  it("does not publish recoverable unlaunched startup as the generation outcome", () => {
+    const entries: unknown[] = [];
+    const publisher = createTerminalHandoffPublisher(
+      {
+        appendEntry(_type, data) {
+          entries.push(data);
+        },
+      },
+      () => "execution settled",
+    );
+    const idle = { isIdle: () => true };
+    publisher.capture(
+      { ...terminalState("failed"), generation: 1 },
+      terminalEvent("run_failed"),
+      idle,
+    );
+    expect(entries).toEqual([]);
+    publisher.capture(
+      {
+        ...terminalState("completed"),
+        generation: 1,
+        executionStartedAt: "started",
+      },
+      terminalEvent("run_completed"),
+      idle,
+    );
+    expect(entries).toHaveLength(1);
+  });
+
   it("clears pending delivery and makes late callbacks inert after disposal", () => {
     const entries: AppendedEntry[] = [];
     const publisher = createTerminalHandoffPublisher(

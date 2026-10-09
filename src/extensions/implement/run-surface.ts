@@ -120,7 +120,10 @@ export function runMarkdown(
     (finding) => finding.status === "open",
   );
   const openRevisions = Object.values(state.revisionAssignments).filter(
-    (revision) => revision.status === "open",
+    (revision) =>
+      revision.status === "open" &&
+      !state.restartPreparation &&
+      !["completed", "failed", "incomplete"].includes(state.phase),
   );
   const receipts = Object.keys(state.publication.receipts).length;
   const intents = Object.keys(state.publication.intents).length;
@@ -138,7 +141,7 @@ export function runMarkdown(
     `- **Generation:** ${state.generation} · target ${state.executionTarget}`,
     ...(state.restartPreparation
       ? [
-          `- **Restart preparation:** generation ${state.restartPreparation.generation} · ${state.restartPreparation.blockers.join("; ") || "pending prerequisites"}`,
+          `- **Resume preparation:** generation ${state.restartPreparation.generation} · ${state.restartPreparation.blockers.join("; ") || "pending prerequisites"}`,
         ]
       : []),
     `- **Tasks:** ${taskProgress(state)}`,
@@ -459,7 +462,7 @@ export function projectRunSurface(
           {
             kind: "restart_preparation",
             text: bounded(
-              `Generation ${state.restartPreparation.generation}: ${state.restartPreparation.blockers.join("; ") || "pending prerequisites"}`,
+              `Generation ${state.restartPreparation.generation}: ${state.restartPreparation.blockers.join("; ") || "preparing"} · ${state.restartPreparation.resources.filter((resource) => resource.status === "pending").length} resources pending · transactions ${state.restartPreparation.progress.transactionsSettled ? "settled" : "pending"} · projection ${state.restartPreparation.progress.projectionSettled ? "settled" : "pending"}`,
             ),
           },
         ]

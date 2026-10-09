@@ -104,7 +104,8 @@ export class WriteAheadPublisher {
     return this.finishPublished(intent);
   }
 
-  async recover(
+  /** Classify exact transaction sides without synchronizing or restoring files. */
+  async inspectRecovery(
     intent: WriteAheadPublicationIntent,
   ): Promise<PublicationOutcome> {
     const identity = await this.identityError(intent);
@@ -121,29 +122,80 @@ export class WriteAheadPublisher {
         reason: `Target checkout has an active ${operation} operation.`,
       };
     }
-    if (head === intent.targetBaseSha) {
-      if (!(await this.isCleanForSynchronization())) {
+    if (
+      (await this.options.git.treeAt(intent.preparedCommitSha)) !==
+        intent.preparedTreeSha ||
+      (intent.preparedCommitSha !== intent.targetBaseSha &&
+        (await this.options.git.parent(intent.preparedCommitSha)) !==
+          intent.targetBaseSha) ||
+      JSON.stringify(hashes(intent.protectedArtifactSnapshots)) !==
+        JSON.stringify(intent.protectedArtifactHashes)
+    ) {
+      return {
+        kind: "safety_paused",
+        reason: "Durable prepared publication identity is invalid.",
+      };
+    }
+    if (head === intent.targetBaseSha || head === intent.preparedCommitSha) {
+      const paths = this.options.protectedPaths;
+      if (!this.options.git.isCleanAt) {
+        return {
+          kind: "safety_paused",
+          reason:
+            "Git client cannot observe exact publication worktree/index sides.",
+        };
+      }
+      const clean =
+        (await this.options.git.isCleanAt(head, paths)) ||
+        (head === intent.preparedCommitSha &&
+          (await this.options.git.isCleanAt(intent.targetBaseSha, paths)));
+      if (!clean || (await this.options.git.hasStagedChangesInPaths(paths))) {
         return {
           kind: "safety_paused",
           reason:
             "Target checkout is dirty outside sanctioned artifacts during recovery.",
         };
       }
-      try {
-        await this.synchronize(intent.targetBaseSha);
-        this.restoreProtectedArtifacts(intent);
-        return { kind: "retry_from_base" };
-      } catch (error) {
-        return { kind: "safety_paused", reason: message(error) };
-      }
-    }
-    if (head === intent.preparedCommitSha) {
-      return this.finishPublished(intent);
+      return head === intent.targetBaseSha
+        ? { kind: "retry_from_base" }
+        : { kind: "published", receipt: this.receipt(intent) };
     }
     return {
       kind: "safety_paused",
       reason:
         "Target ref matches neither side of the durable publication intent.",
+    };
+  }
+
+  async recover(
+    intent: WriteAheadPublicationIntent,
+  ): Promise<PublicationOutcome> {
+    const outcome = await this.inspectRecovery(intent);
+    if (outcome.kind === "published") {
+      return this.finishPublished(intent);
+    }
+    if (outcome.kind !== "retry_from_base") {
+      return outcome;
+    }
+    try {
+      await this.synchronize(intent.targetBaseSha);
+      this.restoreProtectedArtifacts(intent);
+      return outcome;
+    } catch (error) {
+      return { kind: "safety_paused", reason: message(error) };
+    }
+  }
+
+  private receipt(intent: WriteAheadPublicationIntent): PublicationReceipt {
+    return {
+      intentId: intent.id,
+      candidateId: intent.candidateId,
+      targetBaseSha: intent.targetBaseSha,
+      publishedCommitSha: intent.preparedCommitSha,
+      publishedTreeSha: intent.preparedTreeSha,
+      targetRef: intent.targetRef,
+      protectedArtifactHashes: intent.protectedArtifactHashes,
+      publishedAt: new Date().toISOString(),
     };
   }
 
@@ -236,16 +288,7 @@ export class WriteAheadPublisher {
       }
       return {
         kind: "published",
-        receipt: {
-          intentId: intent.id,
-          candidateId: intent.candidateId,
-          targetBaseSha: intent.targetBaseSha,
-          publishedCommitSha: intent.preparedCommitSha,
-          publishedTreeSha: intent.preparedTreeSha,
-          targetRef: intent.targetRef,
-          protectedArtifactHashes: intent.protectedArtifactHashes,
-          publishedAt: new Date().toISOString(),
-        },
+        receipt: this.receipt(intent),
       };
     } catch (error) {
       return { kind: "safety_paused", reason: message(error) };
@@ -332,17 +375,6 @@ export class WriteAheadPublisher {
       };
     }
     return undefined;
-  }
-
-  private async isCleanForSynchronization(): Promise<boolean> {
-    const [clean, protectedIndexDirty] = await Promise.all([
-      this.options.git.isCleanExcept([
-        ...this.options.protectedPaths,
-        join(pipkinProjectDirectory(this.options.checkoutRoot), "implement"),
-      ]),
-      this.options.git.hasStagedChangesInPaths(this.options.protectedPaths),
-    ]);
-    return clean && !protectedIndexDirty;
   }
 
   private async identityError(

@@ -39,7 +39,7 @@ function renderCompleted(state: RunState): string {
   const receipt = [
     "## Delivery receipt",
     "",
-    `- Run: ${code(state.run.id)}`,
+    `- Run: ${code(state.run.id)} · generation ${state.generation}`,
     `- Published: ${code(lastProvenPublishedHead(state))} → ${code(state.run.checkout.branchRef)}`,
     `- Delivered workstreams: ${formatNames(deliveries.map((delivery) => delivery.workstreamId))}`,
     `- Residual findings: ${finalFindings.length === 0 ? "None." : `${finalFindings.length} material ${plural(finalFindings.length, "finding")} retained.`}`,
@@ -91,7 +91,7 @@ function renderRetained(state: RunState): string {
   const retained = [
     "## Retained state and cleanup",
     "",
-    "This run cannot be resumed. Detailed evidence and owned resources remain retained for inspection and cleanup.",
+    "Select this run in `/implement` and choose Resume for a leased preview and explicit confirmation. Unsafe or incomplete retained evidence blocks recovery. Detailed evidence and owned resources remain retained for inspection and cleanup.",
     "",
     ...(verificationCount > 0
       ? [`- Retained verification records: ${verificationCount}`]
@@ -101,7 +101,7 @@ function renderRetained(state: RunState): string {
     "",
     "## Delivery receipt",
     "",
-    `- Run: ${code(state.run.id)}`,
+    `- Run: ${code(state.run.id)} · generation ${state.generation}`,
     `- Branch: ${code(state.run.checkout.branchRef)}`,
     `- Last proven published head: ${code(lastProvenPublishedHead(state))}`,
   ].join("\n");

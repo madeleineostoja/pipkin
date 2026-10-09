@@ -152,7 +152,7 @@ export function formatStatus(state: RunState): string {
       `Generation: ${state.generation} · target ${state.executionTarget}`,
       ...(state.restartPreparation
         ? [
-            `Restart preparation: generation ${state.restartPreparation.generation} · ${state.restartPreparation.blockers.join("; ") || "pending prerequisites"}`,
+            `Resume preparation: generation ${state.restartPreparation.generation} · ${state.restartPreparation.blockers.join("; ") || "pending prerequisites"}`,
           ]
         : []),
       ...state.generationHistory.map(
@@ -441,13 +441,14 @@ export async function cleanupRun(args: {
 
 export async function terminalizeInterruptedRun(
   store: RunStore,
+  reason?: string,
 ): Promise<void> {
   let state = store.read();
   if (["planning", "running", "whole_plan_review"].includes(state.phase)) {
     const transition = reduceRunEvent(state, {
       kind: "failure_requested",
       category: "interrupted",
-      reason: "Run was retained after its actor ended.",
+      reason: reason ?? "Run was retained after its actor ended.",
       now: new Date().toISOString(),
     });
     if (!transition.accepted) {

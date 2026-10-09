@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import {
   publicationIntentId,
   publicationPreparationId,
@@ -8,7 +8,10 @@ import { sha256 } from "./source-integrity.js";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TargetPreconditionError } from "./workstream-candidate.js";
-import { settlePublicationTransactions } from "./transaction-settlement.js";
+import {
+  settleProjectionTransactions,
+  settlePublicationTransactions,
+} from "./transaction-settlement.js";
 import { WriteAheadPublisher } from "./write-ahead-publication.js";
 import { projectRunSurface, runMarkdown } from "./run-surface.js";
 import { expectedTargetHead } from "./run.js";
@@ -66,7 +69,12 @@ function targetGit(state: RunState, target = state.executionTarget): GitClient {
     currentBranch: async () => "main",
     head: async () => target,
     treeAt: async () => "target-tree",
+    parent: async () =>
+      state.publication.intents[Object.keys(state.publication.intents).at(-1)!]
+        ?.targetBaseSha ?? state.executionTarget,
     isCleanExcept: async () => true,
+    isCleanAt: async () => true,
+    isAncestor: async () => true,
     hasStagedChangesInPaths: async () => false,
     activeOperation: async () => undefined,
   } as unknown as GitClient;
@@ -294,7 +302,12 @@ async function preparedPublication(store: RunStore, baseSha = "base-sha") {
     preparedCommitSha: preparation.preparedCommitSha,
     preparedTreeSha: preparation.preparedTreeSha,
     targetRef: state.run.checkout.branchRef,
-    protectedArtifactSnapshots: {},
+    protectedArtifactSnapshots: Object.fromEntries(
+      Object.keys(state.protectedArtifactHashes).map((path) => [
+        path,
+        readFileSync(path, "utf-8"),
+      ]),
+    ),
     protectedArtifactHashes: state.protectedArtifactHashes,
   };
   await apply(store, {
@@ -900,13 +913,7 @@ describe("validated generation restart", () => {
     expect(recover).toHaveBeenCalledWith(intent);
     expect(store.read().publication.receipts[intent.id]).toEqual(receipt);
     expect(store.read().workstreams.source[first.id]?.phase).toBe("completed");
-    const planPath = store.read().run.source.entry.path;
-    const projected = readFileSync(planPath, "utf8").replace("- [ ]", "- [x]");
-    writeFileSync(planPath, projected);
-    await store.recordProjection(store.read().revision, ["first"], {
-      ...store.read().protectedArtifactHashes,
-      [planPath]: sha256(projected),
-    });
+    await settleProjectionTransactions({ store });
     const receipts = store.read().publication.receipts;
     await store.recordRestartProgress(store.read().revision, {
       ...store.read().restartPreparation!,
@@ -1141,6 +1148,50 @@ describe("validated generation restart", () => {
     expect(recovered.startupRecoveries[0]?.failure?.reason).toBe(
       "Invalid whole-plan startup boundary",
     );
+  });
+
+  it("settles unlaunched stopping whole-plan execution before same-generation startup recovery", async () => {
+    const store = await createSchedulerStore();
+    await deliverSatisfied(store, first.id, "first");
+    await deliverSatisfied(store, second.id, "second");
+    await stop(store);
+    const activated = await restart(store);
+    await apply(store, {
+      kind: "failure_requested",
+      category: "runtime",
+      reason: "Whole-plan startup interrupted",
+      now,
+    });
+    const stopping = store.read();
+    expect(stopping.phase).toBe("stopping");
+    expect(stopping.processLeases).toEqual({});
+    expect(stopping.executionStartedAt).toBeUndefined();
+    const before = readFileSync(store.path, "utf-8");
+    await preflightRestart(store, targetGit(stopping));
+    expect(readFileSync(store.path, "utf-8")).toBe(before);
+    const recovered = await restart(store);
+    expect(recovered.generation).toBe(activated.generation);
+    expect(recovered.phase).toBe("whole_plan_review");
+    expect(recovered.activatedRestart).toEqual(activated.activatedRestart);
+    expect(recovered.workstreams).toEqual(activated.workstreams);
+    expect(recovered.startupRecoveries[0]?.failure).toEqual(stopping.failure);
+    const executeEffect = vi.fn(
+      async ({ effect, dispatch, markExecutionStarted }) => {
+        expect(effect.kind).toBe("run_whole_plan_review");
+        await markExecutionStarted();
+        await dispatch({
+          kind: "failure_requested",
+          category: "runtime",
+          reason: "Fresh whole-plan review began",
+          now,
+        });
+      },
+    );
+    const actor = new SchedulerActor({ store, executeEffect });
+    await actor.start();
+    await actor.settle();
+    expect(executeEffect).toHaveBeenCalledTimes(1);
+    expect(store.read().executionStartedAt).toBeDefined();
   });
 
   it("refuses moved or dirty targets observationally without reserving a successor", async () => {

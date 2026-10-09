@@ -126,6 +126,9 @@ function publishActivity(
   ) {
     accepted.add(runId);
   }
+  if (state.restartPreparation) {
+    return accepted;
+  }
   const taskTitles = new Map(
     plan?.tasks.map((task) => [task.id, sanitize(task.title)]),
   );
@@ -189,6 +192,9 @@ function publishActivity(
 
 function publishedIds(state: RunState): Set<string> {
   const result = new Set<string>([activityId("run", state.run.id)]);
+  if (state.restartPreparation) {
+    return result;
+  }
   for (const workstream of Object.values(state.workstreams.source)) {
     if (!terminalWorkstream(workstream.phase)) {
       result.add(activityId("source", workstream.id));
@@ -211,7 +217,10 @@ function activityId(kind: "run" | "source" | "repair", value: string): string {
 }
 
 function terminalRun(state: RunState): boolean {
-  return ["completed", "failed", "incomplete"].includes(state.phase);
+  return (
+    !state.restartPreparation &&
+    ["completed", "failed", "incomplete"].includes(state.phase)
+  );
 }
 
 function terminalWorkstream(phase: string): boolean {
@@ -261,6 +270,9 @@ function timestamp(value: string | undefined): number | undefined {
 }
 
 function runState(state: RunState): ActivityState {
+  if (state.restartPreparation) {
+    return "waiting";
+  }
   if (state.phase === "planning") {
     return "queued";
   }
@@ -356,6 +368,11 @@ function notifyAttentionTransition(
 }
 
 function runPhase(state: RunState): string {
+  if (state.restartPreparation) {
+    return state.restartPreparation.blockers.length
+      ? "Resume preparation blocked"
+      : "Preparing Resume";
+  }
   if (state.phase === "whole_plan_review") {
     return state.wholePlanReview.status === "repairing"
       ? "whole-plan repair"

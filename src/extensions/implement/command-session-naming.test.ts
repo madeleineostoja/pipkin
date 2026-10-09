@@ -134,6 +134,8 @@ function activeRun(
   } as RunState;
   return {
     runId,
+    actor: { settle: async () => undefined },
+    lease: { release: async () => undefined },
     store: { read: () => state },
   } as ActiveRun;
 }
@@ -224,14 +226,14 @@ describe("/implement session naming", () => {
     const plan = planFixture();
     const fixtureState = fixture({ cwd: plan.cwd });
     const starts: any[] = [];
+    const activeRuns: ActiveRun[] = [];
     const firstName = deferred<{ outcome: "success"; title: string }>();
     const secondName = deferred<{ outcome: "success"; title: string }>();
     mocks.startRun.mockImplementation(async (options) => {
       starts.push(options);
-      return {
-        kind: "started",
-        active: activeRun(`run-${starts.length}`),
-      };
+      const active = activeRun(`run-${starts.length}`);
+      activeRuns.push(active);
+      return { kind: "started", active };
     });
     mocks.generateSessionName
       .mockReturnValueOnce(firstName.promise)
@@ -244,7 +246,8 @@ describe("/implement session naming", () => {
     starts[0]!.onTransition?.(activeRun("run-1", "failed").store.read(), {
       kind: "planner_bound",
     });
-    starts[0]!.onCompleted?.(activeRun("run-1", "failed") as never);
+    activeRuns[0]!.store.read().phase = "failed";
+    starts[0]!.onCompleted?.(activeRuns[0]);
     await flushPromises();
 
     await fixtureState.command.handler(plan.planPath, fixtureState.ctx);
