@@ -213,8 +213,8 @@ describe("Implement Activity projector", () => {
     activity.update(running);
     expect(details()).toEqual(
       expect.arrayContaining([
-        { label: "Workstream 2", detail: "Waiting for: Workstream 1" },
-        { label: "Workstream 4", detail: "Waiting for: Workstreams 2, 3" },
+        { label: "Workstream 2", detail: "Waiting for workstream 1" },
+        { label: "Workstream 4", detail: "Waiting for workstreams 2, 3" },
       ]),
     );
     expect(
@@ -227,7 +227,7 @@ describe("Implement Activity projector", () => {
     expect(details()).toEqual(
       expect.arrayContaining([
         { label: "Workstream 2", detail: "Queued" },
-        { label: "Workstream 4", detail: "Waiting for: Workstream 2" },
+        { label: "Workstream 4", detail: "Waiting for workstream 2" },
       ]),
     );
     expect(details().map(({ label }) => label)).toEqual([
@@ -274,7 +274,7 @@ describe("Implement Activity projector", () => {
     expect(publisher.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         label: "Workstream 6",
-        detail: "Waiting for: Workstreams 1, 2, 3 +2 more",
+        detail: "Waiting for workstreams 1, 2, 3 +2 more",
       }),
     );
   });

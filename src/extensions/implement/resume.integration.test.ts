@@ -494,6 +494,10 @@ function menu(root: string, choices: string[], confirmed: boolean) {
   const handoffs: Array<{ text: string }> = [];
   const input = vi.fn();
   const confirm = vi.fn(async (_title: string, _message: string) => confirmed);
+  const prompt = vi.fn(async () => ({
+    kind: "selected",
+    value: confirmed ? "resume" : "cancel",
+  }));
   const pi = {
     events: { emit() {} },
     setSessionName() {},
@@ -516,6 +520,7 @@ function menu(root: string, choices: string[], confirmed: boolean) {
     ui: {
       input,
       confirm,
+      custom: prompt,
       notify(message: string) {
         notices.push(message);
       },
@@ -545,7 +550,7 @@ function menu(root: string, choices: string[], confirmed: boolean) {
     notices,
     handoffs,
     input,
-    confirm,
+    prompt,
     events,
     ctx,
   };
@@ -1331,10 +1336,7 @@ describe("recoverable Resume", () => {
     expect(inspect).not.toHaveBeenCalled();
     const declined = menu(setup.root, ["run-1 · failed", "Resume"], false);
     await declined.invoke();
-    expect(declined.confirm).toHaveBeenCalledWith(
-      "Resume",
-      expect.stringContaining("Confirm disposal of unfinished changes"),
-    );
+    expect(declined.prompt).toHaveBeenCalledOnce();
     expect(declined.input).not.toHaveBeenCalled();
     expect(readFileSync(setup.store.path, "utf-8")).toBe(before);
     const next = await select(setup);
@@ -1454,9 +1456,6 @@ describe("recoverable Resume", () => {
     expect(surface.handoffs).toEqual([]);
     choices.push("run-1 · failed", "Resume");
     await surface.invoke();
-    expect(surface.confirm.mock.calls.at(-1)?.[1]).toContain(
-      "startup recovery",
-    );
     const owned = start.mock.calls.at(-1)![0].prepared;
     expect(owned.store.read().generation).toBe(1);
     expect(owned.store.read().generationHistory).toHaveLength(1);
@@ -1518,7 +1517,7 @@ describe("recoverable Resume", () => {
     const live = menu(setup.root, ["run-1 · running", "Back", "Close"], false);
     await live.invoke();
     expect(live.menus[1]).toEqual(["Details", "Clean up", "Back"]);
-    expect(live.confirm).not.toHaveBeenCalled();
+    expect(live.prompt).not.toHaveBeenCalled();
     const deadPid = Number(
       execFileSync(process.execPath, ["-e", "console.log(process.pid)"], {
         encoding: "utf-8",
@@ -1531,7 +1530,7 @@ describe("recoverable Resume", () => {
     const crashed = menu(setup.root, ["run-1 · running", "Resume"], false);
     await crashed.invoke();
     expect(crashed.menus[1]).toContain("Resume");
-    expect(crashed.confirm).toHaveBeenCalled();
+    expect(crashed.prompt).toHaveBeenCalled();
     expect(crashed.input).not.toHaveBeenCalled();
     expect(readFileSync(setup.store.path, "utf-8")).toBe(before);
     const retry = await select(setup);

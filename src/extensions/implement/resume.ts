@@ -118,18 +118,6 @@ async function preview(
   };
 }
 
-export function formatResumePreview(value: ResumePreview): string {
-  return [
-    `Resume ${value.runId} · generation ${value.generation}${value.startupRecovery ? " (startup recovery)" : ""}`,
-    `Preserve delivered lanes: ${value.preservedSourceIds.join(", ") || "none"}`,
-    `Discard unpublished execution: ${value.discardedSourceIds.join(", ") || "none"}`,
-    "Retain the original complete plan, findings and durable evidence. Fresh whole-plan review remains required.",
-    "Remaining preparation:",
-    ...value.remainingSteps.map((step) => `- ${step}`),
-    "Confirm disposal of unfinished changes inside these proven owned workspaces? No unpublished candidate will be salvaged.",
-  ].join("\n");
-}
-
 /** Holds exclusive ownership across observation, user confirmation, preparation and actor handoff. */
 export async function openResume(args: {
   checkoutRoot: string;

@@ -36,7 +36,8 @@ import {
   type RunState,
 } from "./store.js";
 import { showImplementRunSurface } from "./run-surface.js";
-import { openResume, formatResumePreview } from "./resume.js";
+import { openResume } from "./resume.js";
+import { confirmResume } from "./resume-prompt.js";
 
 type ResumeCommand = { kind: "resume"; runId: string };
 type ExecutionCommand =
@@ -464,10 +465,7 @@ export function registerImplementCommand(
               let transferred = false;
               try {
                 if (
-                  !(await ctx.ui.confirm(
-                    "Resume",
-                    formatResumePreview(resume.preview),
-                  )) ||
+                  !(await confirmResume(ctx.ui, resume.preview)) ||
                   executionGeneration !== sessionGeneration
                 ) {
                   return { kind: "cancelled" as const };

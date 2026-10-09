@@ -403,7 +403,7 @@ function sourceWorkstreamDetail(
     if (pending.length > 0) {
       const shown = pending.slice(0, 3).join(", ");
       const remaining = pending.length - 3;
-      return `Waiting for: ${pending.length === 1 ? "Workstream" : "Workstreams"} ${shown}${remaining > 0 ? ` +${remaining} more` : ""}`;
+      return `Waiting for ${pending.length === 1 ? "workstream" : "workstreams"} ${shown}${remaining > 0 ? ` +${remaining} more` : ""}`;
     }
   }
   return workstreamPhase(
