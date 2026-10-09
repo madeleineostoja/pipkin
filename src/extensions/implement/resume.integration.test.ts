@@ -1263,12 +1263,68 @@ describe("recoverable Resume", () => {
     expect(readFileSync(setup.store.path, "utf-8")).toBe(original);
   });
 
+  it("resumes owned execution without accessing or removing another run's unavailable registered workspace", async () => {
+    const setup = await fixture();
+    await apply(setup.store, {
+      kind: "workstreams_selected",
+      now,
+      baseShas: { [first.id]: setup.base, "second-stream": setup.base },
+    });
+    const ownedPath = join(
+      setup.lease.paths.worktrees,
+      "run-1",
+      "g0",
+      first.id,
+    );
+    const ownedBranch = `pipkin/implement/run-1/g0/${first.id}`;
+    await setup.client.createTaskBranch(ownedBranch, setup.base);
+    await setup.client.addWorktree(ownedPath, ownedBranch);
+    writeFileSync(join(ownedPath, "unfinished.txt"), "owned unfinished work");
+
+    const foreignRoot = realpathSync(
+      mkdtempSync(join(tmpdir(), "pipkin-other-run-")),
+    );
+    roots.push(foreignRoot);
+    const foreignPath = join(foreignRoot, "unavailable");
+    const hiddenPath = join(foreignRoot, "hidden");
+    const foreignBranch = "pipkin/implement/other-run/g0/retained";
+    await setup.client.createTaskBranch(foreignBranch, setup.base);
+    await setup.client.addWorktree(foreignPath, foreignBranch);
+    writeFileSync(
+      join(foreignPath, "retain.txt"),
+      "another run's unfinished work",
+    );
+    renameSync(foreignPath, hiddenPath);
+
+    await fail(setup.store);
+    await setup.lease.release();
+    const session = await select(setup);
+    expect(session.preview.resources.map((resource) => resource.path)).toEqual([
+      ownedPath,
+    ]);
+    const prepared = await session.confirm();
+    expect(prepared.store.read().generation).toBe(1);
+    expect(existsSync(ownedPath)).toBe(false);
+    expect(readFileSync(join(hiddenPath, "retain.txt"), "utf-8")).toBe(
+      "another run's unfinished work",
+    );
+    expect(await setup.client.branchTip(foreignBranch)).toBe(setup.base);
+    expect(await setup.client.listWorktreeRegistrations()).toContainEqual({
+      path: foreignPath,
+      branch: foreignBranch,
+    });
+    await prepared.lease.release();
+  });
+
   it("builds the menu without workspace preflight and cancellation leaves retained state unchanged without asking for a plan", async () => {
     const setup = await fixture();
     await fail(setup.store);
     await setup.lease.release();
     const before = readFileSync(setup.store.path, "utf-8");
-    const inspect = vi.spyOn(ExecGitClient.prototype, "listWorktrees");
+    const inspect = vi.spyOn(
+      ExecGitClient.prototype,
+      "listWorktreeRegistrations",
+    );
     const lazy = menu(setup.root, ["run-1 · failed", "Back", "Close"], false);
     await lazy.invoke();
     expect(lazy.menus[1]).toEqual(["Details", "Resume", "Clean up", "Back"]);

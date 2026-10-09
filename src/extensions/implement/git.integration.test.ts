@@ -431,21 +431,24 @@ describe("git helpers", () => {
       "implement",
       "worktrees",
       "r1",
-      "t001-wt-test",
+      "t001-wt-\ntrailing ",
     );
     const branchName = "pipkin/implement/r1/t001-wt-test";
 
     await client.createTaskBranch(branchName, baseSha);
     await client.addWorktree(worktreePath, branchName);
 
-    const wtList = git(cwd, "worktree", "list", "--porcelain");
-    expect(wtList).toContain(worktreePath);
+    const canonicalPath = realpathSync(worktreePath);
+    expect(await client.listWorktreeRegistrations()).toContainEqual({
+      path: canonicalPath,
+      branch: branchName,
+    });
+    expect(await client.listWorktrees()).toContain(canonicalPath);
 
     await client.removeWorktree(worktreePath);
     await client.deleteTaskBranch(branchName);
 
-    const wtListAfter = git(cwd, "worktree", "list", "--porcelain");
-    expect(wtListAfter).not.toContain(worktreePath);
+    expect(await client.listWorktrees()).not.toContain(canonicalPath);
     const branchesAfter = git(cwd, "branch", "--list");
     expect(branchesAfter).not.toContain(branchName);
   });

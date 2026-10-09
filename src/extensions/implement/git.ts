@@ -27,6 +27,11 @@ export type GitStatusEntry = {
   path: string;
 };
 
+export type WorktreeRegistration = {
+  path: string;
+  branch?: string;
+};
+
 export async function canonicalCommitSha(
   git: GitClient,
   revision: string,
@@ -102,6 +107,7 @@ export type GitClient = {
   listBranchesMatching(pattern: string): Promise<string[]>;
   branchTip?(branchName: string): Promise<string | undefined>;
   listWorktrees(): Promise<string[]>;
+  listWorktreeRegistrations(): Promise<WorktreeRegistration[]>;
   forWorktree(worktreePath: string, mainRepoRoot?: string): GitClient;
   withSignal?(signal?: AbortSignal): GitClient;
 };
@@ -480,14 +486,32 @@ export class ExecGitClient implements GitClient {
   }
 
   async listWorktrees(): Promise<string[]> {
-    const result = await this.run(["worktree", "list", "--porcelain"]);
-    const paths: string[] = [];
-    for (const line of result.stdout.split("\n")) {
-      if (line.startsWith("worktree ")) {
-        paths.push(line.slice("worktree ".length).trim());
-      }
-    }
-    return paths;
+    return (await this.listWorktreeRegistrations()).map((entry) => entry.path);
+  }
+
+  async listWorktreeRegistrations(): Promise<WorktreeRegistration[]> {
+    const result = await this.run(["worktree", "list", "--porcelain", "-z"]);
+    return result.stdout
+      .split("\0\0")
+      .filter(Boolean)
+      .map((record) => {
+        const fields = record.split("\0");
+        const path = fields.find((field) => field.startsWith("worktree "));
+        if (!path) {
+          throw new Error(
+            "Git reported a worktree registration without a path.",
+          );
+        }
+        const branch = fields.find((field) =>
+          field.startsWith("branch refs/heads/"),
+        );
+        return {
+          path: path.slice("worktree ".length),
+          ...(branch
+            ? { branch: branch.slice("branch refs/heads/".length) }
+            : {}),
+        };
+      });
   }
 
   withSignal(signal?: AbortSignal): GitClient {

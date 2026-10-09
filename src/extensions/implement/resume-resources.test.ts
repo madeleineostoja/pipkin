@@ -2,7 +2,10 @@ import { mkdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import type { GitClient } from "./git.js";
-import { inventoryResumeResources } from "./resume-resources.js";
+import {
+  inventoryResumeResources,
+  inspectResumeResource,
+} from "./resume-resources.js";
 import {
   cleanupSchedulerStores,
   createSchedulerStore,
@@ -45,7 +48,11 @@ it("protects all candidate versions of delivered source and landed repair worksp
   };
   const git = {
     commonIdentity: async () => "repository",
-    listWorktrees: async () => paths,
+    listWorktreeRegistrations: async () =>
+      paths.map((path) => ({
+        path,
+        branch: `pipkin/implement/${state.run.id}/g0/${basename(path)}`,
+      })),
     listBranchesMatching: async () =>
       paths.map(
         (path) => `pipkin/implement/${state.run.id}/g0/${basename(path)}`,
@@ -86,4 +93,26 @@ it("protects all candidate versions of delivered source and landed repair worksp
       deliveredCandidateIds: new Set(["first-delivered", "repair-landed"]),
     }),
   ).rejects.toThrow(/Conflicting Resume resource evidence/);
+});
+
+it("refuses an owned branch registered outside its inventoried workspace even when that path is unavailable", async () => {
+  const store = await createSchedulerStore();
+  const root = join(store.lease.paths.worktrees, store.read().run.id);
+  const resource = {
+    id: "workspace:g0:second-stream",
+    kind: "branch" as const,
+    path: join(root, "g0", "second-stream"),
+    branch: `pipkin/implement/${store.read().run.id}/g0/second-stream`,
+    ownershipEvidence: JSON.stringify({ head: "head" }),
+    status: "pending" as const,
+  };
+  const git = {
+    branchTip: async () => "head",
+    listWorktreeRegistrations: async () => [
+      { path: join(root, "..", "unavailable"), branch: resource.branch },
+    ],
+  } as unknown as GitClient;
+  await expect(inspectResumeResource(git, root, resource)).rejects.toThrow(
+    /checked out outside its inventoried workspace/,
+  );
 });

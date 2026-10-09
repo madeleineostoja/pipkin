@@ -16,6 +16,12 @@ import {
 } from "./store.js";
 import type { RestartResource } from "./restart.js";
 
+function samePath(left: string, right: string): boolean {
+  return existsSync(left) && existsSync(right)
+    ? realpathSync(left) === realpathSync(right)
+    : resolve(left) === resolve(right);
+}
+
 function isSymlink(path: string): boolean {
   try {
     return lstatSync(path).isSymbolicLink();
@@ -292,22 +298,32 @@ export async function inventoryResumeResources(args: {
       );
     }
   }
-  const registered = await git.listWorktrees();
-  for (const path of registered) {
-    const inside = relative(
-      existsSync(root) ? realpathSync(root) : resolve(root),
-      realpathSync(path),
-    );
-    if (
-      inside &&
-      !inside.startsWith("..") &&
-      ![...knownPaths.keys()].some(
-        (known) =>
-          existsSync(known) && realpathSync(known) === realpathSync(path),
-      )
-    ) {
+  const registered = await git.listWorktreeRegistrations();
+  const canonicalRoot = existsSync(root) ? realpathSync(root) : resolve(root);
+  for (const { path, branch } of registered) {
+    const lexicalInside = relative(resolve(root), resolve(path));
+    if (lexicalInside && !lexicalInside.startsWith("..")) {
+      assertOwnedPath(root, path);
+    }
+    // The shared registry may include worktrees unavailable in this container.
+    const canonicalPath = existsSync(path) ? realpathSync(path) : resolve(path);
+    const inside = relative(canonicalRoot, canonicalPath);
+    if (!inside || inside.startsWith("..")) {
+      if (branch?.startsWith(`pipkin/implement/${state.run.id}/`)) {
+        throw new Error(
+          `Resume branch is checked out outside its owned root: ${branch}`,
+        );
+      }
+      continue;
+    }
+    if (![...knownPaths.keys()].some((known) => samePath(known, path))) {
       throw new Error(
         `Resume cannot establish durable ownership of workspace: ${path}`,
+      );
+    }
+    if (!existsSync(path)) {
+      throw new Error(
+        `Resume workspace registration remains without its inventoried directory: ${path}`,
       );
     }
   }
@@ -352,13 +368,7 @@ export async function inventoryResumeResources(args: {
       resource.kind = "branch";
       resource.ownershipEvidence = JSON.stringify({ head: tip });
     } else {
-      if (
-        !registered.some(
-          (path) =>
-            resolve(realpathSync(path)) ===
-            resolve(realpathSync(resource.path)),
-        )
-      ) {
+      if (!registered.some(({ path }) => samePath(path, resource.path))) {
         throw new Error(`Resume workspace is not registered: ${resource.path}`);
       }
       resource.ownershipEvidence = await observe(git, resource);
@@ -385,10 +395,10 @@ export async function inspectResumeResource(
   if (resource.status === "retired" && (present || tip)) {
     throw new Error(`Retired Resume resource reappeared: ${resource.path}`);
   }
-  const registered = await git.listWorktrees();
+  const registered = await git.listWorktreeRegistrations();
   if (
     !present &&
-    registered.some((path) => resolve(path) === resolve(resource.path))
+    registered.some(({ path }) => samePath(path, resource.path))
   ) {
     throw new Error(
       `Resume workspace registration remains without its inventoried directory: ${resource.path}`,
@@ -406,9 +416,7 @@ export async function inspectResumeResource(
   if (present) {
     if (
       resource.kind === "branch" ||
-      !registered.some(
-        (path) => realpathSync(path) === realpathSync(resource.path),
-      ) ||
+      !registered.some(({ path }) => samePath(path, resource.path)) ||
       (await observe(git, resource)) !== resource.ownershipEvidence
     ) {
       throw new Error(
@@ -416,14 +424,15 @@ export async function inspectResumeResource(
       );
     }
   }
-  for (const path of registered.filter(
-    (path) => !present || realpathSync(path) !== realpathSync(resource.path),
-  )) {
-    if ((await git.forWorktree(path).currentBranch()) === resource.branch) {
-      throw new Error(
-        `Resume branch is checked out outside its inventoried workspace: ${resource.branch}`,
-      );
-    }
+  if (
+    registered.some(
+      ({ path, branch }) =>
+        branch === resource.branch && !samePath(path, resource.path),
+    )
+  ) {
+    throw new Error(
+      `Resume branch is checked out outside its inventoried workspace: ${resource.branch}`,
+    );
   }
   return { present, tip };
 }
