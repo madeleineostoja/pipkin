@@ -274,9 +274,17 @@ async function captureTargetBoundary(
 
 // Live execution can reconcile a proven pre-CAS target move; restart cannot adopt it.
 export function expectedTargetHead(
-  state: Pick<RunState, "run" | "publication" | "executionTarget">,
+  state: Pick<
+    RunState,
+    "publication" | "executionTarget" | "generationHistory"
+  >,
 ): string {
-  const intents = Object.values(state.publication.intents);
+  const historicalOperations = new Set(
+    state.generationHistory.flatMap((history) => history.operationIds),
+  );
+  const intents = Object.values(state.publication.intents).filter(
+    (intent) => !historicalOperations.has(intent.operationId),
+  );
   const pending = intents.filter(
     (intent) =>
       !state.publication.receipts[intent.id] &&

@@ -552,6 +552,65 @@ function menu(root: string, choices: string[], confirmed: boolean) {
 }
 
 describe("recoverable Resume", () => {
+  it("launches from the restored trusted target after retiring a historical pre-CAS supersession", async () => {
+    const setup = await fixture();
+    const pending = await publication(setup);
+    writeFileSync(join(setup.root, "manual.txt"), "external movement\n");
+    git(setup.root, "add", "manual.txt");
+    git(setup.root, "commit", "-qm", "feat: external movement");
+    const manualHead = await setup.client.head();
+    const lease = Object.values(setup.store.read().processLeases).find(
+      (entry) => entry.publicationIntentId === pending.intent.id,
+    )!;
+    await apply(setup.store, {
+      kind: "publication_target_moved",
+      workstream: first,
+      leaseId: lease.id,
+      candidateId: pending.intent.candidateId,
+      intentId: pending.intent.id,
+      expectedTargetSha: setup.base,
+      actualTargetSha: manualHead,
+    });
+    expect(runRuntime.expectedTargetHead(setup.store.read())).toBe(manualHead);
+    await fail(setup.store);
+    const supersessions = setup.store.read().publication.supersessions;
+    await setup.lease.release();
+    await expect(select(setup)).rejects.toThrow("exact trusted target");
+    git(setup.root, "reset", "--hard", setup.base);
+    const session = await select(setup);
+    const resumed = await session.confirm();
+    expect(resumed.store.read().executionTarget).toBe(setup.base);
+    const workers = new ScriptedSubagentClient(
+      Array.from({ length: 3 }, () => ({
+        status: "failed" as const,
+        error: "Provider unavailable after launch",
+      })),
+      [setup.root],
+    );
+    const spawn = workers.spawn.bind(workers);
+    vi.spyOn(workers, "spawn").mockImplementation((async (args) => {
+      expect(args.cwd).toContain("/g1/first-stream");
+      expect(git(args.cwd!, "rev-parse", "HEAD")).toBe(setup.base);
+      return spawn(args);
+    }) as typeof workers.spawn);
+    const actor = createRuntime({
+      ...resumed,
+      pi: {} as never,
+      ctx: { ui: { notify() {} } } as never,
+      roles,
+      checkoutIdentity: await setup.client.checkoutIdentity(),
+      baseSha: resumed.store.read().executionTarget,
+      subagents: workers,
+    });
+    await actor.start();
+    await actor.settle();
+    expect(workers.invocations.length).toBeGreaterThan(0);
+    expect(resumed.store.read().executionStartedAt).toBeDefined();
+    expect(resumed.store.read().publication.supersessions).toEqual(
+      supersessions,
+    );
+  });
+
   it("recovers retained pre-launch stopping after confirmation in the same activated generation", async () => {
     const setup = await fixture();
     await fail(setup.store);

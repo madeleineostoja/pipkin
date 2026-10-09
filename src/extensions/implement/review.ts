@@ -954,7 +954,7 @@ export function applyInitialWorkstreamReview(args: {
     ...args.completion.findings.map((finding, index) => ({
       scope,
       ...finding,
-      id: `${reviewKey(args.workstream).replace(":", "-")}${args.generation ? `-g${args.generation}` : ""}-r${index + 1}`,
+      id: `${reviewKey(args.workstream)}:g${args.generation ?? 0}:r${index + 1}`,
       candidateId: args.candidateId,
       workstream: args.workstream,
       origin: "initial" as const,

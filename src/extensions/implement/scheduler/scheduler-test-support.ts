@@ -44,6 +44,7 @@ export function planFor(
   directory: string,
   concurrency = 1,
   independent = false,
+  workstreamIds = ["first-stream", "second-stream"],
 ): ExecutionPlan {
   const planPath = join(directory, "plan.md");
   const content = "# Plan\n\n## Tasks\n\n- [ ] First task\n- [ ] Second task\n";
@@ -63,11 +64,11 @@ export function planFor(
       ],
       workstreams: [
         {
-          id: "first-stream",
+          id: workstreamIds[0]!,
           taskIds: ["first"],
         },
         {
-          id: "second-stream",
+          id: workstreamIds[1]!,
           taskIds: ["second"],
         },
       ],
@@ -126,10 +127,11 @@ export function fakeLease(directory: string): CheckoutLeaseCapability {
 export function createUnboundSchedulerRun(
   concurrency = 1,
   independent = false,
+  workstreamIds = ["first-stream", "second-stream"],
 ): { run: RunStore; plan: ExecutionPlan } {
   const directory = mkdtempSync(join(tmpdir(), "pipkin-implement-scheduler-"));
   temporaryDirectories.add(directory);
-  const plan = planFor(directory, concurrency, independent);
+  const plan = planFor(directory, concurrency, independent, workstreamIds);
   const run = createPlanningRun({
     lease: fakeLease(directory),
     runId: "run-1",

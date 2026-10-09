@@ -89,8 +89,8 @@ describe("revision policy", () => {
       comparisonBase: "first-sha",
       findingEpoch: 0,
       pendingCorrectionIds: [
-        "source-first-stream-r1",
-        "source-first-stream-r2",
+        "source:first-stream:g0:r1",
+        "source:first-stream:g0:r2",
       ],
     });
 
@@ -161,12 +161,12 @@ describe("revision policy", () => {
 
     expect(state.workstreams.source["first-stream"]?.phase).toBe("revising");
     expect(state.reviews["source:first-stream"]?.pendingCorrectionIds).toEqual([
-      "source-first-stream-r1",
+      "source:first-stream:g0:r1",
     ]);
     expect(Object.values(state.revisionAssignments)[0]).toMatchObject({
-      pendingCorrectionIds: ["source-first-stream-r1"],
+      pendingCorrectionIds: ["source:first-stream:g0:r1"],
     });
-    expect(state.findings["source-first-stream-r1"]).toMatchObject({
+    expect(state.findings["source:first-stream:g0:r1"]).toMatchObject({
       status: "open",
     });
   });
@@ -644,7 +644,7 @@ describe("revision policy", () => {
         completion: {
           assessments: [
             {
-              id: "source-first-stream-r1",
+              id: "source:first-stream:g0:r1",
               status: "unresolved",
               evidence: "A representative scenario remains uncovered.",
               summary: "Representative coverage",
@@ -663,7 +663,7 @@ describe("revision policy", () => {
     expect(
       assessed.state.reviews["source:first-stream"]?.pendingCorrectionIds,
     ).toEqual([]);
-    expect(assessed.state.findings["source-first-stream-r1"]).toMatchObject({
+    expect(assessed.state.findings["source:first-stream:g0:r1"]).toMatchObject({
       status: "open",
       summary: "Representative coverage",
     });
@@ -739,7 +739,7 @@ describe("revision policy", () => {
         completion: {
           assessments: [
             {
-              id: "source-first-stream-r1",
+              id: "source:first-stream:g0:r1",
               status: "unresolved",
               evidence: "The endpoint remains incomplete.",
               summary: "Missing behavior",
@@ -747,7 +747,7 @@ describe("revision policy", () => {
               acceptanceCriteria: ["The endpoint responds."],
             },
             {
-              id: "source-first-stream-r2",
+              id: "source:first-stream:g0:r2",
               status: "resolved",
               evidence: "Representative coverage exercises the endpoint.",
             },
@@ -765,14 +765,14 @@ describe("revision policy", () => {
         (assignment) => assignment.status === "open",
       ),
     ).toBe(false);
-    expect(reassessed.state.findings["source-first-stream-r2"]?.status).toBe(
+    expect(reassessed.state.findings["source:first-stream:g0:r2"]?.status).toBe(
       "resolved",
     );
   });
 
   it("rejects removed findings and invalid historical assignment snapshots", async () => {
     const state = await stateAtRevision();
-    const finding = state.findings["source-first-stream-r1"]!;
+    const finding = state.findings["source:first-stream:g0:r1"]!;
     const withAdditionalFinding = structuredClone(state);
     withAdditionalFinding.findings["source-first-stream-additional"] = {
       ...finding,
@@ -1159,7 +1159,7 @@ describe("revision policy", () => {
         completion: {
           assessments: [
             {
-              id: "source-first-stream-r1",
+              id: "source:first-stream:g0:r1",
               status: "unresolved",
               evidence: "The missing behavior remains.",
               summary: "missing behavior",
@@ -1182,7 +1182,7 @@ describe("revision policy", () => {
         evidence: "verification could not start",
       },
     });
-    expect(assessed.state.findings["source-first-stream-r1"]?.status).toBe(
+    expect(assessed.state.findings["source:first-stream:g0:r1"]?.status).toBe(
       "open",
     );
     expect(

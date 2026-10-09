@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import { expectedTargetHead } from "./run.js";
 import type { RunState } from "./store.js";
 
-type TargetState = Pick<RunState, "run" | "publication" | "executionTarget">;
+type TargetState = Pick<
+  RunState,
+  "publication" | "executionTarget" | "generationHistory"
+>;
 
 describe("expected target history", () => {
   it("uses a newer publication receipt after an older supersession", () => {
@@ -36,6 +39,33 @@ describe("expected target history", () => {
     expect(expectedTargetHead(state)).toBe("target-c");
   });
 
+  it("ignores historical externally based abandonments after activation", () => {
+    const state = targetState();
+    const historical = intent("historical", "manual-descendant");
+    state.publication.intents[historical.id] = historical;
+    state.publication.abandonments[historical.id] = {
+      intentId: historical.id,
+      publicationOperationId: "publication:historical",
+      preparationOperationId: historical.operationId,
+      workstream: historical.workstream,
+      candidateId: historical.candidateId,
+      preparationId: historical.preparationId,
+      targetRef: historical.targetRef,
+      targetBaseSha: historical.targetBaseSha,
+      evidence: "Abandoned unpublished execution",
+      abandonedAt: "2026-01-01T00:00:01.000Z",
+    };
+    state.generationHistory = [
+      {
+        operationIds: [historical.operationId],
+      } as RunState["generationHistory"][number],
+    ];
+
+    expect(expectedTargetHead(state)).toBe(state.executionTarget);
+    state.publication.intents["current"] = intent("current", "current-target");
+    expect(expectedTargetHead(state)).toBe("current-target");
+  });
+
   it("uses the target captured by the current unresolved intent", () => {
     const state = targetState();
     state.publication.intents["intent-1"] = intent("intent-1", "target-a");
@@ -59,9 +89,7 @@ describe("expected target history", () => {
 function targetState(): TargetState {
   return {
     executionTarget: "target-a",
-    run: {
-      checkout: { startHead: "target-a" },
-    } as RunState["run"],
+    generationHistory: [],
     publication: {
       preparations: {},
       intents: {},

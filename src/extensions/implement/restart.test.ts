@@ -28,6 +28,7 @@ import { SchedulerActor } from "./scheduler/scheduler-actor.js";
 import {
   cleanupSchedulerStores,
   createSchedulerStore,
+  createUnboundSchedulerRun,
 } from "./scheduler/scheduler-test-support.js";
 import { readExecutionPlan } from "./execution-plan.js";
 import {
@@ -347,6 +348,92 @@ async function preparedPublication(store: RunStore, baseSha = "base-sha") {
 }
 
 describe("validated generation restart", () => {
+  it("persists distinct findings across generation-like workstream IDs without replacing retained provenance", async () => {
+    const { run: store, plan } = createUnboundSchedulerRun(2, true, [
+      "api-g1",
+      "api",
+    ]);
+    await store.bindExecutionPlan(plan);
+    const reviewCandidate = async (id: string) => {
+      const workstream = { kind: "source" as const, id };
+      const operation = Object.values(store.read().processLeases).find(
+        (lease) =>
+          lease.kind === "implementation" &&
+          lease.workstream?.kind === "source" &&
+          lease.workstream.id === id,
+      )!;
+      const candidateId = `candidate:${id}:g${store.read().generation}`;
+      await apply(store, {
+        kind: "implementation_completed",
+        workstream,
+        leaseId: operation.id,
+        outcome: {
+          kind: "candidate_ready",
+          candidate: {
+            id: candidateId,
+            workstream,
+            baseSha: "base-sha",
+            commitSha: candidateId,
+            treeSha: `${candidateId}-tree`,
+          },
+          checkpoints: { [id === "api" ? "second" : "first"]: candidateId },
+          satisfied: {},
+        },
+      });
+      const [review] = await apply(store, {
+        kind: "review_requested",
+        workstream,
+        now,
+      });
+      if (review?.kind !== "run_review") {
+        throw new Error("No review");
+      }
+      await apply(store, {
+        kind: "review_completed",
+        workstream,
+        leaseId: review.leaseId,
+        outcome: {
+          kind: "initial",
+          candidateId,
+          completion: {
+            findings: [finding],
+            publicationCommitSubject: "feat: source behavior",
+          },
+          evidence: `Independent review of ${candidateId}`,
+        },
+      });
+    };
+    const select = () =>
+      apply(store, {
+        kind: "workstreams_selected",
+        now,
+        baseShas: { "api-g1": "base-sha", api: "base-sha" },
+      });
+    await select();
+    await reviewCandidate("api-g1");
+    const original = Object.values(store.read().findings)[0]!;
+    await stop(store);
+    await restart(store);
+    await select();
+    await reviewCandidate("api");
+
+    const persisted = RunStore.open(store.lease, store.path).read();
+    const introduced = Object.values(persisted.findings).find(
+      (entry) =>
+        entry.workstream.kind === "source" && entry.workstream.id === "api",
+    )!;
+    expect(introduced.id).not.toBe(original.id);
+    expect(persisted.findings[original.id]).toEqual(original);
+    expect(introduced).toMatchObject({
+      status: "open",
+      candidateId: "candidate:api:g1",
+      scope: { kind: "source", id: "api" },
+    });
+    expect(
+      persisted.generationHistory[0]?.reviews["source:api-g1"],
+    ).toBeDefined();
+  });
+
   it("requeues exhausted and dependency-skipped lanes once with fresh bounded attempts and rejects stale completions", async () => {
     const store = await createSchedulerStore();
     const oldActor = new SchedulerActor({ store });
@@ -688,8 +775,17 @@ describe("validated generation restart", () => {
         completion: {
           ...completionEvent.outcome.completion,
           assessments: [assessment],
+          findings: [finding],
         },
       },
+    });
+    const recurrence = Object.values(store.read().findings).find(
+      (entry) => entry.id !== obligation.id,
+    )!;
+    expect(recurrence).toMatchObject({
+      candidateId: "fresh-second-g1",
+      status: "open",
+      origin: "initial",
     });
     expect(store.read().findings[obligation.id]).toMatchObject({
       candidateId: obligation.candidateId,
@@ -991,6 +1087,10 @@ describe("validated generation restart", () => {
       preflightRestart(store, targetGit(store.read(), "manual-descendant")),
     ).rejects.toThrow("exact trusted target");
     expect(readFileSync(store.path, "utf8")).toBe(before);
+    const supersessions = store.read().publication.supersessions;
+    const resumed = await restart(store);
+    expect(resumed.publication.supersessions).toEqual(supersessions);
+    expect(expectedTargetHead(resumed)).toBe(resumed.executionTarget);
 
     const movedBaseStore = await createSchedulerStore();
     await preparedPublication(movedBaseStore, "manual-descendant");
