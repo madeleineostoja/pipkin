@@ -125,7 +125,19 @@ export type CandidateReplayOutcome =
       disposition: "overlap" | "conflict" | "changed_patch";
       staging: ReplayStaging;
       evidence: string;
-      hookMutated?: boolean;
+      hookMutated?: false;
+    }
+  | {
+      kind: "reconciliation_required";
+      disposition: "changed_patch";
+      staging: ReplayStaging & {
+        preparedCommitSha: string;
+        treeSha: string;
+        beforeHookTreeSha: string;
+        hookCommand: FailureCommandEvidence;
+      };
+      evidence: string;
+      hookMutated: true;
     }
   | {
       kind: "hook_rejected";
@@ -562,6 +574,8 @@ export class CandidateReplayEngine {
         "Publishable replay has no reviewer-authored commit subject.",
       );
     }
+    // Isolate hook changes from the replay onto the intervening target.
+    const beforeHookTreeSha = await stagingGit.tree();
     const commit = await stagingGit.checkpoint(publicationCommitSubject, false);
     const command = hookCommandEvidence(commit, staging.worktreePath);
     if (commit.exitCode !== 0) {
@@ -621,6 +635,7 @@ export class CandidateReplayEngine {
           ...staging,
           preparedCommitSha,
           treeSha,
+          beforeHookTreeSha,
           replayPatch: actualPatch,
           replayPatchHash: patchHash(actualPatch),
           replayPaths: actualPaths,

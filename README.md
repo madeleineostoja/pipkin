@@ -47,7 +47,7 @@ Give Implement a Markdown plan and it schedules coherent workstreams within the 
 
 **Plan → dependency graph → isolated parallel work → review and repair → protected publication**
 
-Implement coordinates trusted workers in disposable Git worktrees, publishes through one serialized integration lane, and retains generation-scoped execution and review evidence for inspection and cleanup. The target branch moves only after hooks, candidate verification, and compare-and-swap checks succeed. The `/implement` menu can Resume recoverable partial runs, preserving delivered work and rebuilding unfinished execution after explicit confirmation.
+Implement coordinates trusted workers in disposable Git worktrees, publishes through one serialized integration lane, and retains generation-scoped execution and review evidence for inspection and cleanup. The target branch moves only after hooks, candidate verification, and compare-and-swap checks succeed; successful hook-mutated replay requires reconciliation and fresh review. The `/implement` menu can Resume recoverable partial runs, preserving delivered work and rebuilding unfinished execution after explicit confirmation.
 
 [Implementation guide →](docs/features/implementation.md)
 

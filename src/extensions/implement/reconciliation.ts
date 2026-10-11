@@ -35,6 +35,7 @@ export type ReconciliationPacket = {
     relevantPaths: string[];
     evidence: string;
     hookEvidence?: string;
+    hookReplay?: RunState["reconciliationAssignments"][string]["hookReplay"];
   };
   priorEvidence: string[];
   semanticAttempt: "initial" | "escalated";
@@ -116,7 +117,18 @@ export function buildReconciliationPacket(args: {
       disposition: assignment.disposition,
       candidatePaths: [...assignment.paths.candidate],
       targetPaths: [...assignment.paths.target],
-      relevantPaths: [...assignment.paths.replay],
+      relevantPaths: assignment.hookReplay
+        ? [
+            ...new Set([
+              ...assignment.paths.candidate,
+              ...assignment.paths.target,
+              ...assignment.paths.replay,
+            ]),
+          ].sort()
+        : [...assignment.paths.replay],
+      ...(assignment.hookReplay
+        ? { hookReplay: { ...assignment.hookReplay } }
+        : {}),
       evidence: assignment.evidence,
       ...(assignment.hookEvidence
         ? { hookEvidence: assignment.hookEvidence }
@@ -177,6 +189,21 @@ export async function runReconciliation(args: {
       initial,
     );
   }
+  const hookReplay = packet.replay.hookReplay;
+  if (
+    hookReplay &&
+    ((await workspaceGit.treeAt(hookReplay.commitSha)) !== hookReplay.treeSha ||
+      (await workspaceGit.treeAt(hookReplay.beforeHookTreeSha)) !==
+        hookReplay.beforeHookTreeSha ||
+      (await workspaceGit.parent(hookReplay.commitSha)) !==
+        packet.failedTarget.commitSha)
+  ) {
+    throw new ReconciliationFailure(
+      "workspace_unsafe",
+      "Retained hook-mutated replay no longer matches its immutable identity.",
+      initial,
+    );
+  }
   const protectedPaths = Object.keys(args.state.protectedArtifactHashes);
   const targetSnapshot = await captureRestoreSnapshot(args.git, protectedPaths);
   let response:
@@ -220,6 +247,7 @@ export async function runReconciliation(args: {
       requiredAncestors: [
         packet.candidate.commitSha,
         packet.failedTarget.commitSha,
+        ...(hookReplay ? [hookReplay.commitSha] : []),
       ],
       comparisonBase: packet.failedTarget.commitSha,
       protectedPaths: candidateProtectedPaths,

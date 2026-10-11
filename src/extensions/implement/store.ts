@@ -405,6 +405,7 @@ const reconciliationContextSchema = z
     workstream: failureWorkstreamSchema,
     candidateTreeSha: nonEmpty,
     targetSha: nonEmpty,
+    hookReplayTreeSha: nonEmpty.optional(),
     disposition: z.enum(["overlap", "conflict", "changed_patch"]),
     relevantPaths: z.array(nonEmpty),
   })
@@ -419,6 +420,14 @@ const reconciliationAssignmentSchema = z
     candidateTreeSha: nonEmpty,
     targetSha: nonEmpty,
     targetTreeSha: nonEmpty,
+    hookReplay: z
+      .object({
+        commitSha: nonEmpty,
+        treeSha: nonEmpty,
+        beforeHookTreeSha: nonEmpty,
+      })
+      .strict()
+      .optional(),
     disposition: z.enum(["overlap", "conflict", "changed_patch"]),
     context: reconciliationContextSchema,
     paths: z
@@ -2724,6 +2733,11 @@ function invariantIssues(
       ) ||
       assignment.context.candidateTreeSha !== assignment.candidateTreeSha ||
       assignment.context.targetSha !== assignment.targetSha ||
+      assignment.context.hookReplayTreeSha !== assignment.hookReplay?.treeSha ||
+      (assignment.hookReplay !== undefined &&
+        (assignment.disposition !== "changed_patch" ||
+          assignment.hookReplay.beforeHookTreeSha ===
+            assignment.hookReplay.treeSha)) ||
       assignment.context.disposition !== assignment.disposition ||
       !samePaths(
         assignment.context.relevantPaths,
@@ -3496,6 +3510,9 @@ function reconciliationContextKey(
       workstream: workstreamIdentity(context.workstream),
       candidateTreeSha: context.candidateTreeSha,
       targetSha: context.targetSha,
+      ...(context.hookReplayTreeSha
+        ? { hookReplayTreeSha: context.hookReplayTreeSha }
+        : {}),
       disposition: context.disposition,
       relevantPaths: context.relevantPaths,
     }),

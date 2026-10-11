@@ -114,6 +114,11 @@ export function buildReconciliationPrompt(
   packet: ReconciliationPacket,
 ): string {
   const scopedPaths = packet.replay.relevantPaths.join(", ") || "none retained";
+  const hookReplay = packet.replay.hookReplay;
+  const mergeSha = hookReplay?.commitSha ?? packet.failedTarget.commitSha;
+  const hookInspection = hookReplay
+    ? `\n\nHook-mutated replay: ${hookReplay.commitSha}\nReplay tree: ${hookReplay.treeSha}\nBefore-hook tree: ${hookReplay.beforeHookTreeSha}\n\nThe staging commit succeeded, but hooks changed its tree. Inspect the exact hook delta with git diff --stat ${hookReplay.beforeHookTreeSha}..${hookReplay.treeSha} and git diff --name-status ${hookReplay.beforeHookTreeSha}..${hookReplay.treeSha}, then scoped per-file diffs for the retained paths. Reconcile this hook-mutated replay into the candidate; do not access the staging worktree or treat successful hook execution as review approval. The recovered candidate receives fresh independent review.`
+    : "";
   return `You are the Pipkin Implement semantic reconciliation worker for one exact failed replay. Work only in this assigned Git candidate worktree:
 
   ${packet.workspace.path}
@@ -131,9 +136,9 @@ Replay disposition: ${packet.replay.disposition}
 Semantic attempt: ${packet.semanticAttempt}
 Candidate paths: ${packet.replay.candidatePaths.join(", ") || "none"}
 Target paths: ${packet.replay.targetPaths.join(", ") || "none"}
-Exact relevant paths: ${scopedPaths}
+Exact relevant paths: ${scopedPaths}${hookInspection}
 
-First inspect only scoped immutable ranges: git diff --stat ${packet.priorIntegrationBase}..${packet.candidate.commitSha}, git diff --name-status ${packet.priorIntegrationBase}..${packet.candidate.commitSha}, git diff --stat ${packet.priorIntegrationBase}..${packet.failedTarget.commitSha}, and git diff --name-status ${packet.priorIntegrationBase}..${packet.failedTarget.commitSha}. Inspect per-file diffs only for the retained paths; do not dump full ranges into context. Then merge ${packet.failedTarget.commitSha} into the current candidate branch with a normal merge commit, preserving both the reviewed candidate behavior and the failed target behavior. Resolve textual conflicts and clean semantic overlaps deliberately. Run proportionate verification, inspect the target-relative result with git diff --stat ${packet.failedTarget.commitSha}..HEAD and scoped per-file diffs, commit through ordinary hooks, and leave the assigned worktree clean with no active Git operation.
+First inspect only scoped immutable ranges: git diff --stat ${packet.priorIntegrationBase}..${packet.candidate.commitSha}, git diff --name-status ${packet.priorIntegrationBase}..${packet.candidate.commitSha}, git diff --stat ${packet.priorIntegrationBase}..${packet.failedTarget.commitSha}, and git diff --name-status ${packet.priorIntegrationBase}..${packet.failedTarget.commitSha}. Inspect per-file diffs only for the retained paths; do not dump full ranges into context. Then merge ${mergeSha} into the current candidate branch with a normal merge commit, preserving the reviewed candidate behavior, the failed target behavior, and${hookReplay ? " the deliberately reconciled hook changes" : " their integrated result"}. Resolve textual conflicts and clean semantic overlaps deliberately. Run proportionate verification, inspect the target-relative result with git diff --stat ${packet.failedTarget.commitSha}..HEAD and scoped per-file diffs, commit through ordinary hooks, and leave the assigned worktree clean with no active Git operation.
 
 ## Failed replay evidence
 

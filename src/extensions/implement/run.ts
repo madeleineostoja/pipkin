@@ -586,13 +586,22 @@ export function createRuntime(args: {
             return;
           }
           const failedReplay =
-            replay.kind === "reconciliation_required" && !replay.hookMutated
+            replay.kind === "reconciliation_required"
               ? {
                   candidateCommitSha: replay.staging.candidateCommitSha,
                   candidateTreeSha: replay.staging.candidateTreeSha,
                   targetSha: replay.staging.targetBaseSha,
                   targetTreeSha: replay.staging.targetTreeSha,
                   disposition: replay.disposition,
+                  ...(replay.hookMutated
+                    ? {
+                        hookReplay: {
+                          commitSha: replay.staging.preparedCommitSha,
+                          treeSha: replay.staging.treeSha,
+                          beforeHookTreeSha: replay.staging.beforeHookTreeSha,
+                        },
+                      }
+                    : {}),
                   paths: {
                     candidate: [...replay.staging.candidatePaths],
                     target: [...replay.staging.targetPaths],
@@ -635,11 +644,7 @@ export function createRuntime(args: {
                 evidence,
                 ...(replay.kind === "hook_rejected"
                   ? { command: replay.command }
-                  : replay.kind === "reconciliation_required" &&
-                      replay.hookMutated &&
-                      replay.staging.hookCommand
-                    ? { command: replay.staging.hookCommand }
-                    : {}),
+                  : {}),
                 workspace,
               };
           await dispatch({

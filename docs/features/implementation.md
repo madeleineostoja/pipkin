@@ -69,6 +69,8 @@ The planner grounds prerequisites in task contracts and relevant repository sour
 
 Managed agents never run while integration or publication is active, and publication never runs while managed agents are active. The target checkout remains orchestrator-owned throughout.
 
+When a successful commit hook changes the replay, recovery retains its immutable commit/tree identities and before-hook tree. The worker inspects the exact hook delta from the candidate worktree and reconciles the replay; the result receives fresh independent review before publication. At most three hook-mutated replays per workstream in a generation receive recovery. Hooks that keep changing the reviewed replay leave the workstream blocked instead of looping indefinitely.
+
 ## Outcomes and recovery
 
 | Outcome              | Meaning                                                                                                                      | Next step                                                                  |

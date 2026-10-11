@@ -47,6 +47,11 @@ type FailedReplayContext = {
   candidateTreeSha: string;
   targetSha: string;
   targetTreeSha: string;
+  hookReplay?: {
+    commitSha: string;
+    treeSha: string;
+    beforeHookTreeSha: string;
+  };
   disposition: "overlap" | "conflict" | "changed_patch";
   paths: { candidate: string[]; target: string[]; replay: string[] };
   staging: {
@@ -2054,6 +2059,16 @@ export function reduceRunEvent(
           replay.candidateTreeSha !== state.candidates[candidateId]?.treeSha ||
           replay.staging.id !== event.outcome.workspace.id ||
           replay.staging.operationId !== lease.id ||
+          (replay.hookReplay !== undefined &&
+            (replay.disposition !== "changed_patch" ||
+              replay.hookReplay.commitSha !==
+                event.outcome.workspace.checkpoint ||
+              event.outcome.workspace.stagingComparison?.baseSha !==
+                replay.targetSha ||
+              replay.hookReplay.treeSha !==
+                event.outcome.workspace.stagingComparison?.treeSha ||
+              replay.hookReplay.beforeHookTreeSha ===
+                replay.hookReplay.treeSha)) ||
           !samePaths(
             event.outcome.workspace.changedPaths,
             replay.paths.replay,
@@ -2066,6 +2081,30 @@ export function reduceRunEvent(
             "failed replay does not retain an exact immutable reconciliation context",
           );
         }
+        if (
+          replay.hookReplay &&
+          Object.values(state.reconciliationAssignments).filter(
+            (assignment) =>
+              assignment.hookReplay &&
+              assignment.semanticAttempt === "initial" &&
+              sameWorkstream(assignment.workstream, event.workstream),
+          ).length >= MAX_DELIVERY_GATE_ATTEMPTS
+        ) {
+          recordFailure(state, {
+            category: "semantic_blocked",
+            assignment: "blocked",
+            workstream: event.workstream,
+            candidateId,
+            gate: "reconciliation_hook",
+            evidence:
+              "Hook-mutation recovery exhausted: repository hooks keep changing the reviewed replay.",
+            ...(replay.staging.hookCommand
+              ? { command: replay.staging.hookCommand }
+              : {}),
+          });
+          failWorkstream(state, event.workstream);
+          return accept();
+        }
         const paths = {
           candidate: [...replay.paths.candidate],
           target: [...replay.paths.target],
@@ -2075,6 +2114,9 @@ export function reduceRunEvent(
           workstream: event.workstream,
           candidateTreeSha: replay.candidateTreeSha,
           targetSha: replay.targetSha,
+          ...(replay.hookReplay
+            ? { hookReplayTreeSha: replay.hookReplay.treeSha }
+            : {}),
           disposition: replay.disposition,
           paths,
         });
@@ -2096,6 +2138,9 @@ export function reduceRunEvent(
           candidateTreeSha: replay.candidateTreeSha,
           targetSha: replay.targetSha,
           targetTreeSha: replay.targetTreeSha,
+          ...(replay.hookReplay
+            ? { hookReplay: { ...replay.hookReplay } }
+            : {}),
           disposition: replay.disposition,
           context,
           paths,
@@ -3052,6 +3097,7 @@ function reconciliationContext(args: {
   workstream: RuntimeWorkstream;
   candidateTreeSha: string;
   targetSha: string;
+  hookReplayTreeSha?: string;
   disposition: "overlap" | "conflict" | "changed_patch";
   paths: { candidate: string[]; target: string[]; replay: string[] };
 }): RunState["reconciliationAssignments"][string]["context"] {
@@ -3072,6 +3118,9 @@ function reconciliationContext(args: {
         workstream: workstreamId(args.workstream),
         candidateTreeSha: args.candidateTreeSha,
         targetSha: args.targetSha,
+        ...(args.hookReplayTreeSha
+          ? { hookReplayTreeSha: args.hookReplayTreeSha }
+          : {}),
         disposition: args.disposition,
         relevantPaths,
       }),
@@ -3079,6 +3128,9 @@ function reconciliationContext(args: {
     workstream,
     candidateTreeSha: args.candidateTreeSha,
     targetSha: args.targetSha,
+    ...(args.hookReplayTreeSha
+      ? { hookReplayTreeSha: args.hookReplayTreeSha }
+      : {}),
     disposition: args.disposition,
     relevantPaths,
   };
