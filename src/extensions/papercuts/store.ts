@@ -58,6 +58,7 @@ export type RecordOutcome =
   | { kind: "reopened"; record: PapercutRecord }
   | { kind: "rejected"; reason: string };
 export type PapercutStore = ReturnType<typeof createPapercutStore>;
+export class PapercutNotFoundError extends Error {}
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -465,7 +466,7 @@ export function createPapercutStore(root: string) {
           (record) => normalizeKey(record.key) === normalized,
         );
         if (!found) {
-          throw new Error("Papercut finding was not found.");
+          throw new PapercutNotFoundError("Papercut finding was not found.");
         }
         const record = { ...found, status: "closed" as const };
         return {

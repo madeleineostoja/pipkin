@@ -151,6 +151,20 @@ export const PapercutRecordResultSchema = Type.Union([
   ),
   error,
 ]);
+export const PapercutCloseResultSchema = Type.Union([
+  Type.Object(
+    {
+      ok: Type.Literal(true),
+      key: PapercutKeySchema,
+      title: PapercutObservationSchema.properties.title,
+      status: Type.Literal("closed"),
+      occurrences,
+    },
+    { additionalProperties: false },
+  ),
+  error,
+]);
+export type PapercutCloseResult = Static<typeof PapercutCloseResultSchema>;
 export type PapercutListResult = Static<typeof PapercutListResultSchema>;
 export type PapercutGetResult = Static<typeof PapercutGetResultSchema>;
 export type PapercutRecordResult = Static<typeof PapercutRecordResultSchema>;
@@ -196,7 +210,8 @@ export function papercutToolResult(
   structuredContent:
     | PapercutListResult
     | PapercutGetResult
-    | PapercutRecordResult,
+    | PapercutRecordResult
+    | PapercutCloseResult,
   summary: string,
 ) {
   return {

@@ -54,7 +54,7 @@ export const PapercutGetSchema = Type.Object(
 );
 
 const INSPECT_DESCRIPTION =
-  "Read recorded Papercut findings in the current repository. Inspect only when the user asks about a finding, or to check for an equivalent existing finding before recording newly encountered qualifying friction. Include closed findings when checking for duplicates. Do not proactively inspect to find work, and do not discuss or address existing findings merely because a deduplication check found them. Inspection does not authorize implementation or closing a finding. Discovery and codemode confer no additional authority.";
+  "Read recorded Papercut findings in the current repository. Inspect only when the user asks about a finding, or to check for an equivalent existing finding before recording newly encountered qualifying friction. Include closed findings when checking for duplicates. Do not proactively inspect to find work, and do not discuss or address existing findings merely because a deduplication check found them. Inspection does not authorize implementation or closing a finding. When the user authorizes closure, use papercut_close rather than editing the registry directly. Discovery and codemode confer no additional authority.";
 
 const renderer = toolResultRenderer({
   summary(result) {
@@ -74,7 +74,7 @@ const renderer = toolResultRenderer({
 const namespace = {
   name: "papercuts",
   description:
-    "Read or record incidental friction under the personal registry policy, never a proactive work queue.",
+    "Inspect, record, or explicitly close incidental friction under the personal registry policy, never a proactive work queue.",
 };
 
 export function registerInspectTools(pi: ExtensionAPI): void {

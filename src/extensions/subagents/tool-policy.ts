@@ -48,6 +48,7 @@ export function resolveChildToolNames(
   const parentActiveTools = input.parentActiveTools;
   const candidates = unique(input.tools ?? parentActiveTools ?? []);
   const excluded = new Set(input.callerExcludedTools);
+  excluded.add("papercut_close");
 
   for (const name of publicAgentTools) {
     excluded.add(name);

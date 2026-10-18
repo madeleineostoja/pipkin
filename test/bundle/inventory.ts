@@ -64,6 +64,7 @@ export const expectedTools = {
   papercut_list: "papercuts",
   papercut_get: "papercuts",
   papercut_record: "papercuts",
+  papercut_close: "papercuts",
 };
 export const expectedDirectTools = [
   "bash",

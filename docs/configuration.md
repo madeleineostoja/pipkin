@@ -162,4 +162,4 @@ Checkout-owned state lives under Pi's project configuration directory in `pipkin
 
 This tree shows the durable ownership layout; terminal cleanup may remove owned worktrees and trash entries.
 
-Implement state belongs to each checkout. Papercuts resolves the canonical primary worktree so linked worktrees share one registry. Its read-only `papercut_list` and `papercut_get` operations never initialize that registry; [Workflow tools](features/workflow-tools.md#papercuts) owns inspection authority and recording contracts. Both arrange local exclusion through the repository's common `.git/info/exclude`; neither changes committed `.gitignore`.
+Implement state belongs to each checkout. Papercuts resolves the canonical primary worktree so linked worktrees share one registry. Its read-only `papercut_list` and `papercut_get` operations never initialize that registry; [Workflow tools](features/workflow-tools.md#papercuts) owns inspection authority and recording/closure contracts. Both arrange local exclusion through the repository's common `.git/info/exclude`; neither changes committed `.gitignore`.

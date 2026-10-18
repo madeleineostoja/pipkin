@@ -1085,10 +1085,35 @@ describe("Pipkin bundle", () => {
       const results = await host.prompt([
         {
           name: "tool_search",
-          args: { query: "+papercut_list +papercut_get" },
+          args: { query: "+papercut_list +papercut_get +papercut_close" },
           id: "papercut-search",
         },
         { name: "papercut_list", args: {}, id: "papercut-list" },
+        {
+          name: "papercut_record",
+          args: {
+            key: "finding",
+            title: "Incidental friction",
+            task: "An unrelated task",
+            incident: "Needed a detour",
+            evidence: "Observed output",
+            workarounds: ["Inspected scripts"],
+            taskOutcome: "Continued safely",
+          },
+          id: "papercut-record",
+        },
+        {
+          name: "papercut_close",
+          args: { key: "finding" },
+          id: "papercut-close",
+        },
+        {
+          name: "codemode",
+          args: {
+            code: 'text(await tools.papercut_close({key:"finding"}));',
+          },
+          id: "papercut-close-nested",
+        },
         {
           name: "papercut_get",
           args: { key: "missing" },
@@ -1105,6 +1130,7 @@ describe("Pipkin bundle", () => {
       for (const [id, name] of [
         ["papercut-list", "papercut_list"],
         ["papercut-missing", "papercut_get"],
+        ["papercut-close", "papercut_close"],
       ]) {
         const result = results.find((value) => value.toolCallId === id)!;
         const definition = fixture.result.extensions
@@ -1120,6 +1146,20 @@ describe("Pipkin bundle", () => {
         ).toBe(true);
         expect(result.isError).toBe(id === "papercut-missing");
       }
+      const closed = results.find(
+        (result) => result.toolCallId === "papercut-close-nested",
+      )!;
+      expect(closed).toMatchObject({ isError: false });
+      expect(closed.content).toEqual(
+        expect.arrayContaining([
+          { type: "text", text: expect.stringContaining('"closed"') },
+        ]),
+      );
+      expect(
+        JSON.parse(
+          readFileSync(join(fixture.cwd, ".pi/pipkin/papercuts.json"), "utf8"),
+        ).records,
+      ).toMatchObject([{ key: "finding", status: "closed", occurrences: 1 }]);
       const nested = results.find(
         (result) => result.toolCallId === "papercut-nested",
       )!;

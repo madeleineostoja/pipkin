@@ -59,7 +59,7 @@ Selected nested calls add one identity in default grey, bounded to 120 character
 | Browser operations with a direct snapshot-ref target         | Snapshot ref, never form values or semantic locator text                    |
 | `browser_switch_tab`, `browser_close_tab`; `browser_history` | Tab ID; history action                                                      |
 | `implement_inspect`                                          | Retained run ID                                                             |
-| `papercut_get`, `papercut_record`                            | Finding key                                                                 |
+| `papercut_get`, `papercut_record`, `papercut_close`          | Finding key                                                                 |
 
 Details come from Pi's argument preview, which may be truncated before the relevant field. A complete leading string identity survives truncation of later payloads; missing or incomplete identities are omitted rather than guessed. Other calls, including parameterless list/status operations, remain name/status-only. Opaque retained-output handles, commands, prompts, other arguments, detailed errors, and returned output stay expanded-only.
 

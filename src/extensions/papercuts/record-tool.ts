@@ -21,7 +21,7 @@ Before recording, use papercut_list and, as needed, papercut_get to check equiva
 
 Do not record the task subject, review findings or unmet requirements, unresolved correctness or safety issues, inferred architecture, unused suggestions, expected proportionate guided steps, adequately documented proportionate procedures, one-off agent mistakes, typos, malformed commands, or transient service/provider failures. Qualifying examples include a flaky documented test handled with a narrower command, an undocumented validation convention discovered and used, avoidable manual worktree setup, context reconstruction, or ambiguous output followed by a concrete workaround.
 
-This tool writes personal registry metadata only, not source or Git changes. Findings are candidates for future guidance or fixes, not authorization to implement them. Qualification is trusted-agent policy, not runtime classification; discovery and codemode confer no additional authority or permission to automatically record arbitrary failures.`;
+This tool writes personal registry metadata only, not source or Git changes. Findings are candidates for future guidance or fixes, not authorization to implement them. Qualification is trusted-agent policy, not runtime classification; discovery and codemode confer no additional authority or permission to automatically record arbitrary failures. Closing an existing finding is a separate user-authorized action through papercut_close; never edit the registry directly.`;
 
 type PapercutStatusController = ReturnType<
   typeof createPapercutStatusController
@@ -37,7 +37,7 @@ export function registerRecordTool(
     namespace: {
       name: "papercuts",
       description:
-        "Read or record incidental friction under the personal registry policy, never a proactive work queue.",
+        "Inspect, record, or explicitly close incidental friction under the personal registry policy, never a proactive work queue.",
     },
     label: "papercut_record",
     description: TOOL_DESCRIPTION,
