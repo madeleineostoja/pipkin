@@ -458,10 +458,15 @@ export function registerImplementCommand(
                   "Resume requires interactive destructive confirmation.",
                 );
               }
-              const resume = await openResume({
-                checkoutRoot: await resolveCheckoutRoot(ctx.cwd),
-                runId: parsed.runId,
-              });
+              const resume = await withCleanupStatus(
+                ctx,
+                async () =>
+                  openResume({
+                    checkoutRoot: await resolveCheckoutRoot(ctx.cwd),
+                    runId: parsed.runId,
+                  }),
+                "resuming",
+              );
               let transferred = false;
               try {
                 if (
@@ -623,7 +628,7 @@ const IMPLEMENT_CLEANUP_STATUS = {
 async function withCleanupStatus<T>(
   ctx: ExtensionCommandContext,
   operation: () => Promise<T>,
-  text: "cleaning" | "preparing" = "cleaning",
+  text: "cleaning" | "preparing" | "resuming" = "cleaning",
 ): Promise<T> {
   let visible = false;
   if (ctx.mode === "tui") {

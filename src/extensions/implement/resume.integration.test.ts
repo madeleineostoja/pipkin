@@ -562,6 +562,8 @@ function menu(root: string, choices: string[], confirmed: boolean) {
       input,
       confirm,
       custom: prompt,
+      setStatus: vi.fn(),
+      theme: { fg: (_tone: string, text: string) => text },
       notify(message: string) {
         notices.push(message);
       },
@@ -1437,6 +1439,7 @@ describe("recoverable Resume", () => {
     await fail(setup.store);
     await setup.lease.release();
     const before = readFileSync(setup.store.path, "utf-8");
+    const registrations = ExecGitClient.prototype.listWorktreeRegistrations;
     const inspect = vi.spyOn(
       ExecGitClient.prototype,
       "listWorktreeRegistrations",
@@ -1446,7 +1449,24 @@ describe("recoverable Resume", () => {
     expect(lazy.menus[1]).toEqual(["Details", "Resume", "Clean up", "Back"]);
     expect(inspect).not.toHaveBeenCalled();
     const declined = menu(setup.root, ["run-1 · failed", "Resume"], false);
+    const statusKey = "pipkin:status:0400:implement-cleanup";
+    inspect.mockImplementationOnce(async function (this: ExecGitClient) {
+      expect(declined.ctx.ui.setStatus).toHaveBeenLastCalledWith(
+        statusKey,
+        expect.stringContaining("resuming"),
+      );
+      expect(declined.prompt).not.toHaveBeenCalled();
+      return registrations.call(this);
+    });
+    declined.prompt.mockImplementationOnce(async () => {
+      expect(declined.ctx.ui.setStatus).toHaveBeenLastCalledWith(
+        statusKey,
+        undefined,
+      );
+      return { kind: "selected", value: "cancel" };
+    });
     await declined.invoke();
+    expect(declined.ctx.ui.setStatus).toHaveBeenCalledTimes(2);
     expect(declined.prompt).toHaveBeenCalledOnce();
     expect(declined.input).not.toHaveBeenCalled();
     expect(readFileSync(setup.store.path, "utf-8")).toBe(before);

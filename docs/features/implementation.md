@@ -126,7 +126,7 @@ Resume constructs a fresh actor, never attaches to old conversations, and never 
 | `/implement cleanup <run-id>`                     | Settle terminal state and remove provably owned resources after confirmation                          |
 | `/implement stop`                                 | Settle owned processes and terminally stop the active run                                             |
 
-The menu also offers **Clean completed runs (N)** for retained completed history. It does not include failed, incomplete, or historical entries. The footer shows a short warning-yellow `cleaning` status while cleanup or automatic post-run resource release is pending, and `preparing` during confirmed Resume preparation.
+The menu also offers **Clean completed runs (N)** for retained completed history. It does not include failed, incomplete, or historical entries. The footer shows a short warning-yellow `cleaning` status while cleanup or automatic post-run resource release is pending, `resuming` during Resume preflight, and `preparing` during confirmed Resume preparation.
 
 ## Model-facing inspection
 
