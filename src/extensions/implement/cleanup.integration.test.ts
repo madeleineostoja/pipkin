@@ -71,6 +71,7 @@ describe("completed run resource release", () => {
       generation: 0,
       generationHistory: [],
       processLeases: {},
+      failures: {},
       run: { id: runId, checkout: { root, gitDir } },
       candidates: {
         candidate: {

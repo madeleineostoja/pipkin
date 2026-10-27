@@ -1,4 +1,5 @@
 import { ReconciliationFailure } from "../reconciliation.js";
+import { ReplaySafetyError } from "../candidate-replay.js";
 import { RevisionFailure } from "../revision.js";
 import { WorkerPacketError } from "../worker-invocation.js";
 import {
@@ -760,7 +761,8 @@ export class SchedulerActor {
       .catch(async (error) => {
         if (
           error instanceof TargetPreconditionError ||
-          error instanceof TargetBoundaryError
+          error instanceof TargetBoundaryError ||
+          error instanceof ReplaySafetyError
         ) {
           await this.fail("workspace_unsafe", error.message);
           return;

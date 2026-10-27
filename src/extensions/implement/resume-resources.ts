@@ -13,6 +13,7 @@ import { sha256 } from "./source-integrity.js";
 import {
   candidateGeneration,
   currentOperationSettlements,
+  failureGeneration,
   type RunState,
 } from "./store.js";
 import type { RestartResource } from "./restart.js";
@@ -298,6 +299,40 @@ export async function inventoryResumeResources(args: {
         execution.generation === state.generation && !preserved(lane),
       );
     }
+  }
+  for (const failure of Object.values(state.failures)) {
+    if (failure.gate !== "staging_environment_repair") {
+      continue;
+    }
+    const candidate = failure.candidateId
+      ? state.candidates[failure.candidateId]
+      : undefined;
+    if (!candidate || !failure.operationId || !failure.targetEvidence) {
+      throw new Error(
+        `Resume cannot establish staging repair ownership: ${failure.id}`,
+      );
+    }
+    const staging = stagingIdentity({
+      runId: state.run.id,
+      operationId: failure.operationId,
+      candidateId: candidate.id,
+      candidateCommitSha: candidate.commitSha,
+      candidateTreeSha: candidate.treeSha,
+      targetBaseSha: failure.targetEvidence,
+      targetRef: state.run.checkout.branchRef,
+    });
+    add(
+      {
+        id: staging.id,
+        kind: "staging",
+        path: join(root, staging.id),
+        branch: staging.branchName,
+        candidateId: candidate.id,
+        operationId: failure.operationId,
+      },
+      failureGeneration(state, failure.id) === state.generation &&
+        !preserved(candidate.workstream),
+    );
   }
   const registered = await git.listWorktreeRegistrations();
   const canonicalRoot = existsSync(root) ? realpathSync(root) : resolve(root);

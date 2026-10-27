@@ -13,6 +13,7 @@ import {
   overallReworkSchema,
   reconciliationCompletionSchema,
   revisionCompletionSchema,
+  stagingRepairCompletionSchema,
   strictExecutionPlanSchema,
   workstreamImplementerResultSchema,
 } from "./result-schemas.js";
@@ -102,6 +103,13 @@ export const completionContracts = {
     description:
       "Report semantic evidence for the assigned candidate reconciliation.",
     schema: reconciliationCompletionSchema,
+  },
+  "staging-repair": {
+    role: "implementer",
+    readOnly: false,
+    description:
+      "Report whether staging environment preparation justifies one ordinary commit retry without changing source or Git state.",
+    schema: stagingRepairCompletionSchema,
   },
   revision: {
     role: "implementer",

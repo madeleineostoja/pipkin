@@ -424,6 +424,37 @@ export const reconciliationCompletionSchema = repairCompletion(
   "Concise semantic account of the reconciled candidate.",
 );
 
+export const stagingRepairCompletionSchema = Type.Object(
+  {
+    outcome: Type.Union(
+      [
+        Type.Literal("retry", {
+          description:
+            "Environment preparation justifies one host-owned commit retry; source and Git state must remain unchanged.",
+        }),
+        Type.Literal("blocked", {
+          description:
+            "No safe environment repair was available; report source defects or unmet prerequisites without changing the replay.",
+        }),
+      ],
+      {
+        description:
+          "Whether an environment-only repair justifies one ordinary commit retry, or remains blocked.",
+      },
+    ),
+    summary: summary(
+      "Concrete environment repair performed, or the reason staging remains blocked.",
+    ),
+    verification: verification(),
+    uncertainty: uncertainty(),
+  },
+  { additionalProperties: false },
+);
+
+export type StagingRepairCompletion = PersistedCompletion<
+  Static<typeof stagingRepairCompletionSchema>
+>;
+
 export const revisionCompletionSchema = Type.Union([
   Type.Object(
     {

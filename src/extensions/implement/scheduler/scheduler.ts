@@ -28,6 +28,7 @@ import {
 import { sha256 } from "../source-integrity.js";
 import {
   currentOperationSettlements,
+  failureGeneration,
   preservedSourceLane,
   type RunState,
 } from "../store.js";
@@ -275,6 +276,13 @@ export type SchedulerEvent = (
               stagingComparison?: { baseSha: string; treeSha: string };
             };
           };
+    }
+  | {
+      kind: "staging_repair_started";
+      workstream: RuntimeWorkstream;
+      leaseId: string;
+      targetSha: string;
+      command: FailureCommandEvidence;
     }
   | {
       kind: "publication_preparation_recorded";
@@ -2185,6 +2193,66 @@ export function reduceRunEvent(
       );
     }
 
+    case "staging_repair_started": {
+      const lease = ownedLease(
+        state,
+        event.leaseId,
+        event.workstream,
+        "reconciliation",
+      );
+      const runtime = getWorkstream(state, event.workstream);
+      const candidate = runtime?.candidateId
+        ? state.candidates[runtime.candidateId]
+        : undefined;
+      if (
+        !lease ||
+        runtime?.phase !== "reconciling" ||
+        !candidate ||
+        Object.keys(state.processLeases).length !== 1 ||
+        event.command.exitCode === 0 ||
+        hasStagingRepairAttempt(state, candidate.id, event.targetSha)
+      ) {
+        return reject(
+          "staging repair requires one exact active reconciliation and an unused candidate/target attempt",
+        );
+      }
+      const staging = stagingIdentity({
+        runId: state.run.id,
+        operationId: lease.id,
+        candidateId: candidate.id,
+        candidateCommitSha: candidate.commitSha,
+        candidateTreeSha: candidate.treeSha,
+        targetBaseSha: event.targetSha,
+        targetRef: state.run.checkout.branchRef,
+      });
+      if (
+        event.command.cwd !==
+        join(
+          pipkinProjectDirectory(state.run.checkout.root),
+          "implement",
+          "worktrees",
+          state.run.id,
+          staging.id,
+        )
+      ) {
+        return reject(
+          "staging repair hook evidence does not match the owned staging workspace",
+        );
+      }
+      recordFailure(state, {
+        category: "hook_rejected",
+        assignment: "operational_retry",
+        workstream: event.workstream,
+        candidateId: candidate.id,
+        gate: "staging_environment_repair",
+        operationId: lease.id,
+        targetEvidence: event.targetSha,
+        evidence: `One staging environment repair reserved before worker launch. Artifact: artifacts/g${state.generation}/staging-repair-${staging.id}.json`,
+        command: event.command,
+      });
+      return accept();
+    }
+
     case "publication_preparation_recorded": {
       const lease = state.processLeases[event.operationId];
       const candidate = state.candidates[event.preparation.candidateId];
@@ -3330,6 +3398,20 @@ export function hasQuiescentApprovedCandidate(state: RunState): boolean {
   );
 }
 
+export function hasStagingRepairAttempt(
+  state: RunState,
+  candidateId: string,
+  targetSha: string,
+): boolean {
+  return Object.values(state.failures).some(
+    (failure) =>
+      failure.gate === "staging_environment_repair" &&
+      failure.candidateId === candidateId &&
+      failure.targetEvidence === targetSha &&
+      failureGeneration(state, failure.id) === state.generation,
+  );
+}
+
 export function hasIntegrationLease(state: RunState): boolean {
   return Object.values(state.processLeases).some(
     (lease) => lease.kind === "reconciliation" || lease.kind === "publication",
@@ -3379,6 +3461,7 @@ function recordFailure(
     evidence: string;
     command?: FailureCommandEvidence;
     targetEvidence?: string;
+    operationId?: string;
     observation?: WorkspaceObservation;
   },
 ): void {
@@ -3390,6 +3473,7 @@ function recordFailure(
     workstream: args.workstream,
     ...(args.candidateId ? { candidateId: args.candidateId } : {}),
     ...(args.gate ? { gate: args.gate } : {}),
+    ...(args.operationId ? { operationId: args.operationId } : {}),
     evidence: boundedFailureOutput(args.evidence),
     ...(args.command
       ? {

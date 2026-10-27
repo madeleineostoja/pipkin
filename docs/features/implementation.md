@@ -67,9 +67,13 @@ The planner grounds prerequisites in task contracts and relevant repository sour
 5. **Publish serially.** One integration lane replays reviewed contributions onto the current target, runs ordinary Git hooks, verifies the prepared commit, and advances the branch with compare-and-swap protection. Conflicting or semantically changed replay goes through bounded reconciliation and fresh review without giving the worker target-write authority.
 6. **Review the whole result.** After all source work is delivered, a final reviewer assesses the complete plan. One bounded whole-plan repair and final review may follow. Completed task checkboxes are projected only from durable scheduler state.
 
-Managed agents never run while integration or publication is active, and publication never runs while managed agents are active. The target checkout remains orchestrator-owned throughout.
+Ordinary managed workers never overlap integration or publication. A staging-environment repair worker is the sole exception: it runs inside the exclusively held integration lane, with no other managed work or publication concurrent. The target checkout remains orchestrator-owned throughout.
 
-A rejected publication hook can request a candidate correction. Changed candidates receive fresh review before another publication attempt. If the worker reports that no candidate change is justified, the affected workstream is blocked immediately, with the hook failure and worker evidence retained; Pipkin does not repeat the same correction or retry publication unchanged. Inspect repository setup and hook prerequisites before choosing Resume. Pipkin does not provision staging dependencies automatically.
+After a rejected staging commit hook, Pipkin can assign an agent to repair that staging worktree's environment before requesting candidate corrections. The failed hook must have left the approved replay intact. The worker follows repository guidance to prepare installed dependencies or other ignored runtime state; Pipkin does not choose a package manager or proactively install dependencies. Hooks remain enabled, and only the host retries the ordinary commit.
+
+One staging repair is allowed per candidate and target in each generation, reserved durably before worker launch. Its hook failure, worker result, and selected verification are retained even when recovery succeeds. The worker may not change source, index, branches, hooks, Git configuration, or the target checkout. A changed staging, target, effective Git configuration, or active hook-file boundary fails the run without publication. Stopping consumes the reservation and does not authorize a commit retry. A successful retry that changes the replay through ordinary hooks still requires reconciliation and fresh review.
+
+An unresolved or repeated hook rejection follows the candidate-correction path for source workstreams. Changed candidates receive fresh review before another publication attempt. If the worker reports that no candidate change is justified, the affected workstream is blocked immediately, with the hook failure and worker evidence retained; Pipkin does not repeat the same candidate correction or retry publication unchanged. Inspect repository setup and hook prerequisites before choosing Resume.
 
 When a successful commit hook changes the replay, recovery retains its immutable commit/tree identities and before-hook tree. The worker inspects the exact hook delta from the candidate worktree and reconciles the replay; the result receives fresh independent review before publication. At most three hook-mutated replays per workstream in a generation receive recovery. Hooks that keep changing the reviewed replay leave the workstream blocked instead of looping indefinitely.
 
@@ -139,10 +143,11 @@ The shared Activity view shows only active Implement work: the generated session
 
 Before and after managed work, Pipkin verifies target checkout and branch identity, absence of unexpected Git operations, cleanliness outside protected plan projection, and exact hashes of protected source material. An unattributable boundary change terminally fails the run and reports affected paths.
 
-| Worker role                                                     | Enabled macOS Sandbox mode           |
-| --------------------------------------------------------------- | ------------------------------------ |
-| Planner and all reviewers                                       | Repository read-only                 |
-| Implementation, revision, reconciliation, and whole-plan repair | Workspace write in an owned worktree |
+| Worker role                                                     | Enabled macOS Sandbox mode                    |
+| --------------------------------------------------------------- | --------------------------------------------- |
+| Planner and all reviewers                                       | Repository read-only                          |
+| Implementation, revision, reconciliation, and whole-plan repair | Workspace write in an owned worktree          |
+| Staging environment repair                                      | Workspace write in the owned staging worktree |
 
 `/sandbox off` affects later child snapshots only. Linux remains instruction-only, and this trusted-agent defense is not hostile-code isolation. Managed workers may record qualifying Papercuts; that shared personal-metadata write grants no source, Git, or orchestration authority.
 
@@ -183,7 +188,7 @@ Source and repair workspaces use `worktrees/<run-id>/g<generation>/`; generation
 
 ### Verification and execution artifacts
 
-Implementation, revision, reconciliation, and whole-plan repair completions require at least one verification record; reviewers retain their separate finding contracts, without a command requirement.
+Implementation, revision, reconciliation, whole-plan repair, and staging-environment repair completions require at least one verification record; reviewers retain their separate finding contracts, without a command requirement.
 
 | Kind         | Meaning                                                                                                                      |
 | ------------ | ---------------------------------------------------------------------------------------------------------------------------- |

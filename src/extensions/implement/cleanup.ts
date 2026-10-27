@@ -199,6 +199,29 @@ function ownedResources(state: RunState): Map<string, OwnedResource> {
     });
     add(staging.branchName, join(root, staging.id), assessment.targetSha);
   }
+  for (const failure of Object.values(state.failures)) {
+    if (failure.gate !== "staging_environment_repair") {
+      continue;
+    }
+    const candidate = failure.candidateId
+      ? state.candidates[failure.candidateId]
+      : undefined;
+    if (!candidate || !failure.operationId || !failure.targetEvidence) {
+      throw new Error(
+        `Cannot establish staging repair ownership: ${failure.id}`,
+      );
+    }
+    const staging = stagingIdentity({
+      runId: state.run.id,
+      operationId: failure.operationId,
+      candidateId: candidate.id,
+      candidateCommitSha: candidate.commitSha,
+      candidateTreeSha: candidate.treeSha,
+      targetBaseSha: failure.targetEvidence,
+      targetRef: state.run.checkout.branchRef,
+    });
+    add(staging.branchName, join(root, staging.id), failure.targetEvidence);
+  }
   return resources;
 }
 

@@ -7,7 +7,7 @@ import {
 import type { GitClient } from "../git.js";
 import type { RunState } from "../store.js";
 import { settlePublicationTransactions } from "../transaction-settlement.js";
-import { reduceRunEvent } from "./scheduler.js";
+import { hasStagingRepairAttempt, reduceRunEvent } from "./scheduler.js";
 import {
   cleanupSchedulerStores,
   createSchedulerStore,
@@ -200,6 +200,55 @@ describe("replay preparation policy", () => {
     expect(
       ready.store.read().publication.abandonments[ready.intent.id],
     ).toBeDefined();
+  });
+
+  it("durably reserves one staging repair for the exact candidate and target before worker launch", async () => {
+    const requested = await requestedReconciliation();
+    const candidate = requested.state.candidates[requested.candidateId]!;
+    const preparation = preparationFor(
+      requested.state,
+      requested.effect.leaseId,
+      candidate,
+    );
+    const event = {
+      kind: "staging_repair_started" as const,
+      workstream: requested.effect.workstream,
+      leaseId: requested.effect.leaseId,
+      targetSha: preparation.targetBaseSha,
+      command: {
+        command: "git commit",
+        cwd: preparation.stagingWorktree,
+        exitCode: 1,
+        timedOut: false,
+        output: "Missing hook dependency",
+      },
+    };
+    expect(
+      reduceRunEvent(requested.state, {
+        ...event,
+        command: { ...event.command, cwd: requested.state.run.checkout.root },
+      }).accepted,
+    ).toBe(false);
+    const reserved = reduceRunEvent(requested.state, event);
+    expect(reserved.accepted).toBe(true);
+    expect(reserved.effects).toEqual([]);
+    await requested.store.update(
+      requested.store.read().revision,
+      () => reserved.state,
+    );
+    const retained = requested.store.refresh();
+    expect(
+      hasStagingRepairAttempt(
+        retained,
+        candidate.id,
+        preparation.targetBaseSha,
+      ),
+    ).toBe(true);
+    expect(
+      hasStagingRepairAttempt(retained, candidate.id, "another-target"),
+    ).toBe(false);
+    expect(reduceRunEvent(retained, event).accepted).toBe(false);
+    expect(retained.processLeases[event.leaseId]).toBeDefined();
   });
 
   it("reviews a changed delivery-gate remediation before retrying publication", async () => {

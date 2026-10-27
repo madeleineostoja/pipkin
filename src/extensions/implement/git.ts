@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import {
   existsSync,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  statSync,
   mkdtempSync,
   realpathSync,
   rmSync,
@@ -87,6 +92,7 @@ export type GitClient = {
   nonignoredUntracked(): Promise<string[]>;
   abortActiveOperation(): Promise<void>;
   stagedFingerprint(): Promise<string>;
+  commitAuthorityFingerprint(): Promise<string>;
   worktreeFingerprintExcept(paths: string[]): Promise<string>;
   restoreWorktreeFromIndexExcept(paths: string[]): Promise<void>;
   checkpoint(message: string, amend: boolean): Promise<CommandResult>;
@@ -304,6 +310,46 @@ export class ExecGitClient implements GitClient {
       .update("\0")
       .update(diff)
       .digest("hex");
+  }
+
+  async commitAuthorityFingerprint(): Promise<string> {
+    const config = await this.run([
+      "config",
+      "--null",
+      "--show-origin",
+      "--show-scope",
+      "--list",
+    ]);
+    const directory = (
+      await this.run([
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-path",
+        "hooks",
+      ])
+    ).stdout.trim();
+    const hash = createHash("sha256")
+      .update(config.stdout)
+      .update("\0")
+      .update(directory);
+    if (existsSync(directory) && statSync(directory).isDirectory()) {
+      for (const name of readdirSync(directory).sort()) {
+        const path = join(directory, name);
+        const link = lstatSync(path);
+        hash.update(
+          JSON.stringify([
+            name,
+            link.mode,
+            link.isSymbolicLink() ? readlinkSync(path) : null,
+          ]),
+        );
+        const stat = statSync(path);
+        if (stat.isFile()) {
+          hash.update(String(stat.mode)).update(readFileSync(path));
+        }
+      }
+    }
+    return hash.digest("hex");
   }
 
   async worktreeFingerprintExcept(paths: string[]): Promise<string> {

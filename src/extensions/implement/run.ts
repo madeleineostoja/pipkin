@@ -40,6 +40,8 @@ import {
 import { runOverallRepair } from "./overall-repair.js";
 import { runWorkstreamReview } from "./review.js";
 import { runReconciliation } from "./reconciliation.js";
+import { runStagingRepair } from "./staging-repair.js";
+import { hasStagingRepairAttempt } from "./scheduler/scheduler.js";
 import { recreateWorkspace, runRevision } from "./revision.js";
 import {
   SchedulerActor,
@@ -539,6 +541,36 @@ export function createRuntime(args: {
           operationId: effect.leaseId,
           protectedPaths: Object.keys(state.protectedArtifactHashes),
           protectedArtifactsMatch: () => protectedArtifactsMatch(state),
+          repairHook: async ({ staging, command }, repairSignal) => {
+            if (
+              hasStagingRepairAttempt(
+                args.store.read(),
+                candidate.id,
+                staging.targetBaseSha,
+              )
+            ) {
+              return {
+                retry: false,
+                evidence:
+                  "The staging environment repair attempt for this candidate and target is already consumed.",
+              };
+            }
+            await dispatch({
+              kind: "staging_repair_started",
+              workstream: effect.workstream,
+              leaseId: effect.leaseId,
+              targetSha: staging.targetBaseSha,
+              command,
+            });
+            return runStagingRepair({
+              staging,
+              command,
+              subagents: executionSubagents,
+              roles: args.roles,
+              artifactsPath,
+              signal: repairSignal,
+            });
+          },
         }).prepare(
           candidate,
           review?.publicationCommitSubject,

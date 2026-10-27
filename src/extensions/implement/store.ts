@@ -320,6 +320,7 @@ const failureRecordSchema = z
     workstream: failureWorkstreamSchema,
     candidateId: nonEmpty.optional(),
     gate: nonEmpty.optional(),
+    operationId: nonEmpty.optional(),
     evidence: nonEmpty,
     command: commandEvidenceSchema.optional(),
     targetEvidence: nonEmpty.optional(),
@@ -2647,6 +2648,25 @@ function invariantIssues(
     }
   }
   for (const [key, failure] of Object.entries(state.failures)) {
+    if (failure.gate === "staging_environment_repair") {
+      const operation = failure.operationId
+        ? (state.processLeases[failure.operationId] ??
+          state.operationSettlements[failure.operationId])
+        : undefined;
+      if (
+        !operation ||
+        operation.kind !== "reconciliation" ||
+        operation.candidateId !== failure.candidateId ||
+        !failure.targetEvidence ||
+        !failure.command ||
+        !operation.workstream ||
+        !sameWorkstreamIdentity(operation.workstream, failure.workstream)
+      ) {
+        issues.push(
+          `staging repair failure ${key} has no exact reconciliation provenance`,
+        );
+      }
+    }
     const candidate = failure.candidateId
       ? state.candidates[failure.candidateId]
       : undefined;

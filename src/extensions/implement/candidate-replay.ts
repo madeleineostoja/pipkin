@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { captureRestoreSnapshot, snapshotChanged } from "./candidate.js";
 import { TaskWorkspaceManager } from "./candidate-worker.js";
 import { sha256 } from "./source-integrity.js";
 import {
@@ -214,7 +215,13 @@ export type CandidateReplayOptions = {
   operationId: string;
   protectedPaths?: string[];
   protectedArtifactsMatch?: () => boolean | Promise<boolean>;
+  repairHook?: (
+    failure: { staging: ReplayStaging; command: FailureCommandEvidence },
+    signal?: AbortSignal,
+  ) => Promise<{ retry: boolean; evidence: string }>;
 };
+
+export class ReplaySafetyError extends Error {}
 
 export class CandidateReplayEngine {
   private readonly workspaces: TaskWorkspaceManager;
@@ -305,6 +312,7 @@ export class CandidateReplayEngine {
           replayBaseSha,
           target,
           publicationCommitSubject,
+          signal,
         );
         return committed.kind === "prepared"
           ? {
@@ -384,6 +392,7 @@ export class CandidateReplayEngine {
         replayBaseSha,
         target,
         publicationCommitSubject,
+        signal,
       );
       if (committed.kind !== "prepared") {
         return committed;
@@ -394,6 +403,9 @@ export class CandidateReplayEngine {
         staging: committed.staging,
       };
     } catch (error) {
+      if (error instanceof ReplaySafetyError) {
+        throw error;
+      }
       return {
         kind: "infrastructure_failure",
         evidence: error instanceof Error ? error.message : String(error),
@@ -543,7 +555,9 @@ export class CandidateReplayEngine {
     replayBaseSha: string,
     target: Awaited<ReturnType<typeof targetSnapshot>>,
     publicationCommitSubject?: string,
+    signal?: AbortSignal,
   ): Promise<
+    | Extract<CandidateReplayOutcome, { kind: "cancelled" }>
     | {
         kind: "prepared";
         staging: ReplayStaging & { preparedCommitSha: string; treeSha: string };
@@ -576,8 +590,55 @@ export class CandidateReplayEngine {
     }
     // Isolate hook changes from the replay onto the intervening target.
     const beforeHookTreeSha = await stagingGit.tree();
-    const commit = await stagingGit.checkpoint(publicationCommitSubject, false);
-    const command = hookCommandEvidence(commit, staging.worktreePath);
+    let commit = await stagingGit.checkpoint(publicationCommitSubject, false);
+    let command = hookCommandEvidence(commit, staging.worktreePath);
+    let repairEvidence = "";
+    if (commit.exitCode !== 0 && this.options.repairHook && !signal?.aborted) {
+      await assertTargetUnchanged(this.options.git, target, this.options);
+      const beforeRepair = await captureRestoreSnapshot(stagingGit, []);
+      const status = await stagingGit.statusEntriesExcept([]);
+      // A failing hook must leave the approved replay intact before environment-only repair.
+      if (
+        beforeRepair.head === staging.targetBaseSha &&
+        !beforeRepair.activeOperation &&
+        (await stagingGit.currentBranch()) === staging.branchName &&
+        (await stagingGit.tree()) === beforeHookTreeSha &&
+        status.every((entry) => entry.status[1] === " ")
+      ) {
+        const authority = await stagingGit.commitAuthorityFingerprint();
+        const repaired = await this.options.repairHook(
+          { staging, command },
+          signal,
+        );
+        repairEvidence = repaired.evidence;
+        try {
+          await assertTargetUnchanged(this.options.git, target, this.options);
+          if (
+            (await stagingGit.currentBranch()) !== staging.branchName ||
+            (await stagingGit.commitAuthorityFingerprint()) !== authority ||
+            (await snapshotChanged(stagingGit, beforeRepair, []))
+          ) {
+            throw new Error(
+              "Staging repair changed source, Git configuration, hooks, or Git state; publication requires a separately reviewed candidate correction.",
+            );
+          }
+        } catch (error) {
+          throw new ReplaySafetyError(
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+        if (signal?.aborted) {
+          return { kind: "cancelled", staging };
+        }
+        if (repaired.retry) {
+          commit = await stagingGit.checkpoint(publicationCommitSubject, false);
+          command = hookCommandEvidence(commit, staging.worktreePath);
+        }
+      }
+    }
+    if (signal?.aborted) {
+      return { kind: "cancelled", staging };
+    }
     if (commit.exitCode !== 0) {
       const [replayPatch, replayPaths, treeSha] = await Promise.all([
         stagingGit.stagedDiff(),
@@ -600,7 +661,12 @@ export class CandidateReplayEngine {
           replayPaths,
           treeSha,
         },
-        evidence: command.output || "The ordinary staging commit was rejected.",
+        evidence: [
+          command.output || "The ordinary staging commit was rejected.",
+          repairEvidence,
+        ]
+          .filter(Boolean)
+          .join("\n"),
         command,
       };
     }
