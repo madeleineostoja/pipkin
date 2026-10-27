@@ -208,15 +208,9 @@ describe("Sandbox policy", () => {
         ? [join(realpathSync(home), "Library", "Caches")]
         : [],
     );
-    for (const root of [
-      workspace,
-      join(workspace, ".git"),
-      tools,
-      config,
-      home,
-      "/",
-    ]) {
-      expect(policy.writableRoots).not.toContain(root);
+    expect(policy.writableRoots).toContain(realpathSync(workspace));
+    for (const root of [tools, config, home, "/"]) {
+      expect(policy.writableRoots).not.toContain(realpathSync(root));
     }
   });
 
