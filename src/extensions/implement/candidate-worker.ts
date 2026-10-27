@@ -9,6 +9,14 @@ export type TaskWorkspace = {
   baseSha: string;
 };
 
+export function workstreamBranchName(
+  runId: string,
+  generation: number,
+  workstreamId: string,
+): string {
+  return `pipkin/implement/${runId}/g${generation}/${workstreamId}`;
+}
+
 export class TaskWorkspaceManager {
   constructor(
     private readonly git: GitClient,

@@ -1,5 +1,6 @@
 import { pipkinProjectDirectory } from "#lib/project-path";
 import { join } from "node:path";
+import { workstreamBranchName } from "../candidate-worker.js";
 import {
   publicationIntentId,
   publicationPreparationId,
@@ -738,7 +739,6 @@ export function reduceRunEvent(
             "queued",
             event.evidence,
           );
-          workstream.phase = "recreating_workspace";
           return accept();
         }
         return failRun(
@@ -807,7 +807,6 @@ export function reduceRunEvent(
             event.effect === "review" ? "candidate_ready" : "approved",
             event.evidence,
           );
-          workstream.phase = "recreating_workspace";
           return accept();
         }
         return failRun(
@@ -1389,32 +1388,17 @@ export function reduceRunEvent(
       if (event.outcome.kind === "unchanged") {
         if (assignment.authority.kind === "delivery_gate") {
           settleLease(state, lease, event.kind, event);
-          if (assignment.authority.attempt >= MAX_DELIVERY_GATE_ATTEMPTS) {
-            assignment.status = "blocked";
-            recordFailure(state, {
-              category: assignment.authority.category,
-              assignment: "blocked",
-              workstream: event.workstream,
-              candidateId: previousCandidate.id,
-              gate: assignment.authority.gate,
-              evidence: event.outcome.evidence,
-            });
-            failWorkstream(state, event.workstream);
-            return accept();
-          }
-          assignment.status = "completed";
-          return createRevisionAssignment(
-            state,
-            event.workstream,
-            previousCandidate.id,
-            [],
-            {
-              ...assignment.authority,
-              attempt: assignment.authority.attempt + 1,
-            },
-            [...assignment.evidence, event.outcome.evidence],
-            reject,
-          );
+          assignment.status = "blocked";
+          recordFailure(state, {
+            category: assignment.authority.category,
+            assignment: "blocked",
+            workstream: event.workstream,
+            candidateId: previousCandidate.id,
+            gate: assignment.authority.gate,
+            evidence: event.outcome.evidence,
+          });
+          failWorkstream(state, event.workstream);
+          return accept();
         }
         try {
           state.reviews[reviewKey(event.workstream)] = retargetAnchoredReview({
@@ -1529,7 +1513,6 @@ export function reduceRunEvent(
             "revising",
             event.evidence,
           );
-          workstream.phase = "recreating_workspace";
           return accept();
         }
         assignment.status = "blocked";
@@ -1883,7 +1866,6 @@ export function reduceRunEvent(
             "reconciliation_required",
             event.evidence,
           );
-          workstream.phase = "recreating_workspace";
           return accept();
         }
         assignment.status = "blocked";
@@ -3324,7 +3306,8 @@ function isKnownOwnedDirtyWorkspace(
     observation !== undefined &&
     !observation.clean &&
     observation.activeOperation === undefined &&
-    observation.branch === `pipkin/implement/${state.run.id}/${id}`
+    observation.branch ===
+      workstreamBranchName(state.run.id, state.generation, id)
   );
 }
 
@@ -3545,6 +3528,8 @@ function createRevisionAssignment(
   return { state, effects: [], accepted: true };
 }
 
+const MAX_WORKSPACE_RECREATIONS = 3;
+
 function createWorkspaceRecreation(
   state: RunState,
   workstream: RuntimeWorkstream,
@@ -3569,6 +3554,27 @@ function createWorkspaceRecreation(
       "workspace recreation requires an exact admitted candidate or workstream base",
     );
   }
+  const attempts = currentOperationSettlements(state).filter((operation) => {
+    const recreation = operation.workspaceRecreationId
+      ? state.workspaceRecreations[operation.workspaceRecreationId]
+      : undefined;
+    return (
+      recreation?.checkpoint === checkpoint &&
+      sameWorkstream(recreation.workstream, workstream)
+    );
+  }).length;
+  if (attempts >= MAX_WORKSPACE_RECREATIONS) {
+    recordFailure(state, {
+      category: "workspace_unsafe",
+      assignment: "blocked",
+      workstream,
+      ...(candidateId ? { candidateId } : {}),
+      gate: "workspace_recreation",
+      evidence: `Workspace recreation exhausted after ${attempts} attempts at ${checkpoint}. ${evidence}`,
+    });
+    failWorkstream(state, workstream);
+    return;
+  }
   const id = `workspace:g${state.generation}:${workstreamId(workstream)}:${checkpoint}:${Object.keys(state.workspaceRecreations).length + 1}`;
   state.workspaceRecreations[id] = {
     id,
@@ -3579,6 +3585,7 @@ function createWorkspaceRecreation(
     status: "pending",
     evidence: [boundedFailureOutput(evidence)],
   };
+  runtime.phase = "recreating_workspace";
 }
 
 function failWorkstream(state: RunState, workstream: RuntimeWorkstream): void {

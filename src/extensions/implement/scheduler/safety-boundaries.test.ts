@@ -164,7 +164,12 @@ describe("global safety boundaries", () => {
     });
   });
 
-  it("aborts independent workers when owned candidate identity is invalid", async () => {
+  it.each([
+    "unexpected-branch",
+    "pipkin/implement/run-1/first-stream",
+    "pipkin/implement/run-1/g1/first-stream",
+    "pipkin/implement/another-run/g0/first-stream",
+  ])("aborts independent workers for an unowned branch %s", async (branch) => {
     const store = await createSchedulerStore(2, true);
     let independentSignal: AbortSignal | undefined;
     const actor = new SchedulerActor({
@@ -182,7 +187,7 @@ describe("global safety boundaries", () => {
             "workspace_unsafe",
             undefined,
             {
-              branch: "unexpected-branch",
+              branch,
               head: "base-sha",
               tree: "base-tree",
               clean: false,

@@ -9,6 +9,7 @@ import {
 import { captureRestoreSnapshot, snapshotChanged } from "./candidate.js";
 import {
   TaskWorkspaceManager,
+  workstreamBranchName,
   type TaskWorkspace,
 } from "./candidate-worker.js";
 import type { ExecutionPlan } from "./execution-plan.js";
@@ -56,7 +57,7 @@ export function overallRepairWorkspace(
   );
   return {
     taskId: repairId,
-    branchName: `pipkin/implement/${state.run.id}/g${state.generation}/${repairId}`,
+    branchName: workstreamBranchName(state.run.id, state.generation, repairId),
     worktreePath: join(root, `g${state.generation}`, repairId),
     baseSha,
   };

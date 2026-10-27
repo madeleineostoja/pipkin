@@ -8,6 +8,7 @@ import {
 import { pipkinProjectDirectory } from "#lib/project-path";
 import { basename, join, relative, resolve } from "node:path";
 import { stagingIdentity } from "./candidate-replay.js";
+import { workstreamBranchName } from "./candidate-worker.js";
 import type { GitClient } from "./git.js";
 import {
   candidateGeneration,
@@ -170,7 +171,7 @@ function ownedResources(state: RunState): Map<string, OwnedResource> {
         : candidate.workstream.repairId;
     const generation = candidateGeneration(state, candidate.id);
     add(
-      `pipkin/implement/${state.run.id}/g${generation}/${id}`,
+      workstreamBranchName(state.run.id, generation, id),
       join(root, `g${generation}`, id),
       candidate.commitSha,
     );

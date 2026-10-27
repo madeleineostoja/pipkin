@@ -2,6 +2,8 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { reduceRunEvent } from "./scheduler.js";
 import { validateRunState } from "../store.js";
+import { workstreamWorkspace } from "../workstream-candidate.js";
+import { overallRepairWorkspace } from "../overall-repair.js";
 import {
   publicationIntentId,
   publicationPreparationId,
@@ -1245,60 +1247,143 @@ describe("revision policy", () => {
     );
   });
 
-  it("uses an exact scheduler-owned workspace recreation operation", async () => {
-    const state = await stateAtRevision();
-    const requested = reduceRunEvent(state, {
-      kind: "revision_requested",
-      workstream: { kind: "source", id: "first-stream" },
-      now: "2026-01-01T00:02:00.000Z",
-    });
-    const revision = requested.effects[0]!;
-    if (revision.kind !== "run_revision") {
-      throw new Error("expected revision");
+  it.each(["source", "overall"] as const)(
+    "recreates the current-generation %s workspace after a dirty implementation failure",
+    async (kind) => {
+      const state =
+        kind === "source"
+          ? (await createSchedulerStore()).read()
+          : (await wholePlanRepairResult()).state;
+      if (kind === "overall") {
+        for (const source of Object.values(state.workstreams.source)) {
+          source.phase = "completed";
+        }
+      }
+      const selected = reduceRunEvent(state, {
+        kind: "workstreams_selected",
+        now: "2026-01-01T00:00:00.000Z",
+        baseShas: { "first-stream": "base-sha" },
+      });
+      const implementation = selected.effects[0]!;
+      if (implementation.kind !== "run_implementation") {
+        throw new Error("expected implementation");
+      }
+      const workspace =
+        kind === "source"
+          ? workstreamWorkspace(selected.state, "first-stream")
+          : overallRepairWorkspace(selected.state, "repair-1", "target-sha");
+      const failed = reduceRunEvent(selected.state, {
+        kind: "implementation_failed",
+        workstream: implementation.workstream,
+        leaseId: implementation.leaseId,
+        category: "workspace_unsafe",
+        evidence: "Workstream implementer failed: fetch failed",
+        observation: {
+          branch: workspace.branchName,
+          head: workspace.baseSha,
+          clean: false,
+          status: [{ status: " M", path: "src/endpoint.ts" }],
+        },
+      });
+
+      expect(failed.accepted).toBe(true);
+      expect(failed.state.phase).toBe(state.phase);
+      expect(Object.values(failed.state.workspaceRecreations)).toEqual([
+        expect.objectContaining({
+          workstream: implementation.workstream,
+          checkpoint: workspace.baseSha,
+          resumePhase: "queued",
+          status: "pending",
+        }),
+      ]);
+      expect(Object.values(failed.state.failures)).toContainEqual(
+        expect.objectContaining({ assignment: "workspace_recreation" }),
+      );
+    },
+  );
+
+  it("bounds scheduler-owned workspace recreation at the admitted checkpoint", async () => {
+    let state = await stateAtRevision();
+    const before = {
+      branch: workstreamWorkspace(state, "first-stream").branchName,
+      head: "first-sha",
+      tree: "first-tree",
+      clean: false,
+      status: [{ status: " M", path: "src/endpoint.ts" }],
+    };
+    const after = { ...before, clean: true, status: [] };
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      const requested = reduceRunEvent(state, {
+        kind: "revision_requested",
+        workstream: { kind: "source", id: "first-stream" },
+        now: "2026-01-01T00:02:00.000Z",
+      });
+      const revision = requested.effects[0]!;
+      if (revision.kind !== "run_revision") {
+        throw new Error("expected revision");
+      }
+      const quarantined = reduceRunEvent(requested.state, {
+        kind: "revision_failed",
+        workstream: revision.workstream,
+        leaseId: revision.leaseId,
+        assignmentId: revision.assignmentId,
+        category: "workspace_unsafe",
+        evidence: "worker left an uncommitted file",
+        observation: before,
+      });
+      expect(quarantined.accepted).toBe(true);
+      if (attempt === 4) {
+        expect(
+          quarantined.state.workstreams.source["first-stream"]?.phase,
+        ).toBe("failed");
+        expect(
+          Object.values(quarantined.state.workspaceRecreations),
+        ).toHaveLength(3);
+        expect(Object.values(quarantined.state.failures)).toContainEqual(
+          expect.objectContaining({
+            assignment: "blocked",
+            gate: "workspace_recreation",
+          }),
+        );
+        expect(() => validate(quarantined.state)).not.toThrow();
+        break;
+      }
+      const recreation = Object.values(
+        quarantined.state.workspaceRecreations,
+      ).at(-1)!;
+      expect(recreation).toMatchObject({
+        candidateId: "candidate:first",
+        checkpoint: "first-sha",
+        resumePhase: "revising",
+        status: "pending",
+      });
+      const started = reduceRunEvent(quarantined.state, {
+        kind: "workspace_recreation_requested",
+        id: recreation.id,
+        now: "2026-01-01T00:03:00.000Z",
+      });
+      const effect = started.effects[0]!;
+      if (effect.kind !== "recreate_workspace") {
+        throw new Error("expected workspace recreation");
+      }
+      const restored = reduceRunEvent(started.state, {
+        kind: "workspace_recreation_completed",
+        id: recreation.id,
+        leaseId: effect.leaseId,
+        before,
+        after,
+        outcome: "restored",
+      });
+      expect(restored.state.workstreams.source["first-stream"]?.phase).toBe(
+        "revising",
+      );
+      expect(restored.state.workspaceRecreations[recreation.id]).toMatchObject({
+        status: "restored",
+        before,
+        after,
+      });
+      state = restored.state;
     }
-    const quarantined = reduceRunEvent(requested.state, {
-      kind: "revision_failed",
-      workstream: revision.workstream,
-      leaseId: revision.leaseId,
-      assignmentId: revision.assignmentId,
-      category: "workspace_unsafe",
-      evidence: "worker left an uncommitted file",
-      observation: observation(false),
-    });
-    const recreation = Object.values(
-      quarantined.state.workspaceRecreations,
-    )[0]!;
-    expect(recreation).toMatchObject({
-      candidateId: "candidate:first",
-      checkpoint: "first-sha",
-      resumePhase: "revising",
-      status: "pending",
-    });
-    const started = reduceRunEvent(quarantined.state, {
-      kind: "workspace_recreation_requested",
-      id: recreation.id,
-      now: "2026-01-01T00:03:00.000Z",
-    });
-    const effect = started.effects[0]!;
-    if (effect.kind !== "recreate_workspace") {
-      throw new Error("expected workspace recreation");
-    }
-    const restored = reduceRunEvent(started.state, {
-      kind: "workspace_recreation_completed",
-      id: recreation.id,
-      leaseId: effect.leaseId,
-      before: observation(false),
-      after: observation(true),
-      outcome: "restored",
-    });
-    expect(restored.state.workstreams.source["first-stream"]?.phase).toBe(
-      "revising",
-    );
-    expect(restored.state.workspaceRecreations[recreation.id]).toMatchObject({
-      status: "restored",
-      before: observation(false),
-      after: observation(true),
-    });
   });
 });
 
@@ -1452,16 +1537,6 @@ function requestAndLeaveUnchanged(
     assignmentId: revision.assignmentId,
     outcome: { kind: "unchanged", evidence },
   }).state;
-}
-
-function observation(clean: boolean) {
-  return {
-    branch: "pipkin/implement/run-1/first-stream",
-    head: "first-sha",
-    tree: "first-tree",
-    clean,
-    status: clean ? [] : [{ status: " M", path: "src/endpoint.ts" }],
-  };
 }
 
 function candidate(

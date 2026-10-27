@@ -69,6 +69,8 @@ The planner grounds prerequisites in task contracts and relevant repository sour
 
 Managed agents never run while integration or publication is active, and publication never runs while managed agents are active. The target checkout remains orchestrator-owned throughout.
 
+A rejected publication hook can request a candidate correction. Changed candidates receive fresh review before another publication attempt. If the worker reports that no candidate change is justified, the affected workstream is blocked immediately, with the hook failure and worker evidence retained; Pipkin does not repeat the same correction or retry publication unchanged. Inspect repository setup and hook prerequisites before choosing Resume. Pipkin does not provision staging dependencies automatically.
+
 When a successful commit hook changes the replay, recovery retains its immutable commit/tree identities and before-hook tree. The worker inspects the exact hook delta from the candidate worktree and reconciles the replay; the result receives fresh independent review before publication. At most three hook-mutated replays per workstream in a generation receive recovery. Hooks that keep changing the reviewed replay leave the workstream blocked instead of looping indefinitely.
 
 ## Outcomes and recovery
@@ -81,6 +83,8 @@ When a successful commit hook changes the replay, recovery retains its immutable
 | `dependency_skipped` | A workstream could not run because a direct dependency was unavailable                                                       | Diagnose the causal failed workstream rather than the derivative skip      |
 
 Each settled execution generation captures one concise durable handoff; recoverable preparation or pre-launch startup failure does not consume that generation’s execution outcome. It summarizes delivered state, verification, residual findings, and exact inspection or cleanup commands without dumping forensic details into the transcript.
+
+A worker failure that leaves uncommitted changes in its proven owned, current-generation workspace can trigger recreation from the last admitted candidate or assigned base. Recreation discards unpublished workspace changes. At most three recreations per workstream and checkpoint are allowed in a generation; another failure at that checkpoint blocks the workstream. A foreign or wrong-generation branch, or an active Git operation, cannot authorize this recovery.
 
 Pipkin does not roll back published commits, auto-resume a terminal run, or automatically publish retained candidates. Independent successful lanes may remain published when another lane fails. Failed or interrupted workspaces are retained when needed for diagnosis.
 

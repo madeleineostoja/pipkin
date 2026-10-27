@@ -9,6 +9,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { writeAtomicJson } from "./atomic-json.js";
 import {
   TaskWorkspaceManager,
+  workstreamBranchName,
   type TaskWorkspace,
 } from "./candidate-worker.js";
 import { captureRestoreSnapshot, snapshotChanged } from "./candidate.js";
@@ -417,7 +418,11 @@ export function workstreamWorkspace(
   }
   return {
     taskId: workstreamId,
-    branchName: `pipkin/implement/${state.run.id}/g${state.generation}/${workstreamId}`,
+    branchName: workstreamBranchName(
+      state.run.id,
+      state.generation,
+      workstreamId,
+    ),
     worktreePath: join(
       worktreesRunRoot(state),
       `g${state.generation}`,

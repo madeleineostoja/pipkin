@@ -7,6 +7,7 @@ import {
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { stagingIdentity } from "./candidate-replay.js";
+import { workstreamBranchName } from "./candidate-worker.js";
 import type { GitClient } from "./git.js";
 import { sha256 } from "./source-integrity.js";
 import {
@@ -168,7 +169,7 @@ export async function inventoryResumeResources(args: {
         id: `workspace:g${state.generation}:${id}`,
         kind: "worktree",
         path: join(root, `g${state.generation}`, id),
-        branch: `pipkin/implement/${state.run.id}/g${state.generation}/${id}`,
+        branch: workstreamBranchName(state.run.id, state.generation, id),
         operationId: operation.operationId,
       },
       !preserved(lane),
@@ -187,7 +188,7 @@ export async function inventoryResumeResources(args: {
         id: `workspace:g${generation}:${id}`,
         kind: "worktree",
         path: join(root, `g${generation}`, id),
-        branch: `pipkin/implement/${state.run.id}/g${generation}/${id}`,
+        branch: workstreamBranchName(state.run.id, generation, id),
         candidateId: candidate.id,
       },
       disposable,

@@ -312,59 +312,65 @@ describe("replay preparation policy", () => {
     ).toMatchObject({ kind: "delivery_gate", attempt: 2 });
   });
 
-  it("retries unchanged delivery remediation without retrying publication", async () => {
+  it("blocks an unchanged delivery remediation without repeating correction or publication", async () => {
     const requested = await requestedReconciliation();
-    let state = rejectReconciliationHook(
+    const rejected = rejectReconciliationHook(
       requested.state,
       requested.effect,
-      "src/endpoint.ts: lint failed",
-    ).state;
-
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      const revisionRequested = reduceRunEvent(state, {
-        kind: "revision_requested",
-        workstream: requested.effect.workstream,
-        now: `2026-01-01T00:0${attempt + 2}:00.000Z`,
-      });
-      const revision = revisionRequested.effects[0]!;
-      if (revision.kind !== "run_revision") {
-        throw new Error("expected delivery-gate remediation");
-      }
-      const unchanged = reduceRunEvent(revisionRequested.state, {
-        kind: "revision_completed",
-        workstream: revision.workstream,
-        leaseId: revision.leaseId,
-        assignmentId: revision.assignmentId,
-        outcome: {
-          kind: "unchanged",
-          evidence: `remediation ${attempt} could not fix lint`,
-        },
-      });
-      expect(unchanged.effects).toEqual([]);
-      state = unchanged.state;
-      if (attempt < 3) {
-        expect(state.workstreams.source["first-stream"]?.phase).toBe(
-          "revising",
-        );
-        expect(
-          Object.values(state.revisionAssignments).find(
-            (assignment) => assignment.status === "open",
-          )?.authority,
-        ).toMatchObject({ kind: "delivery_gate", attempt: attempt + 1 });
-      }
-    }
-
-    expect(state.workstreams.source["first-stream"]?.phase).toBe("failed");
-    expect(Object.values(state.revisionAssignments).at(-1)).toMatchObject({
-      authority: { kind: "delivery_gate", attempt: 3 },
-      status: "blocked",
+      "Cannot find package 'hook-dependency' in staging",
+    );
+    const revisionRequested = reduceRunEvent(rejected.state, {
+      kind: "revision_requested",
+      workstream: requested.effect.workstream,
+      now: "2026-01-01T00:03:00.000Z",
     });
-    expect(Object.values(state.failures)).toContainEqual(
+    const revision = revisionRequested.effects[0]!;
+    if (revision.kind !== "run_revision") {
+      throw new Error("expected delivery-gate remediation");
+    }
+    const evidence =
+      "Dependency is declared and resolves in the candidate; no source correction justified.";
+    const unchanged = reduceRunEvent(revisionRequested.state, {
+      kind: "revision_completed",
+      workstream: revision.workstream,
+      leaseId: revision.leaseId,
+      assignmentId: revision.assignmentId,
+      outcome: { kind: "unchanged", evidence },
+    });
+
+    expect(unchanged.accepted).toBe(true);
+    expect(unchanged.effects).toEqual([]);
+    expect(unchanged.state.workstreams.source["first-stream"]?.phase).toBe(
+      "failed",
+    );
+    expect(unchanged.state.workstreams.source["second-stream"]?.phase).toBe(
+      "dependency_skipped",
+    );
+    expect(Object.values(unchanged.state.revisionAssignments)).toMatchObject([
+      {
+        authority: { kind: "delivery_gate", attempt: 1 },
+        status: "blocked",
+      },
+    ]);
+    expect(unchanged.state.processLeases[revision.leaseId]).toBeUndefined();
+    expect(Object.values(unchanged.state.failures)).toContainEqual(
       expect.objectContaining({
         category: "hook_rejected",
         assignment: "blocked",
         gate: "reconciliation_hook",
+        evidence,
       }),
+    );
+    expect(
+      reduceRunEvent(unchanged.state, {
+        kind: "revision_requested",
+        workstream: revision.workstream,
+        now: "2026-01-01T00:04:00.000Z",
+      }).accepted,
+    ).toBe(false);
+    await requested.store.update(
+      requested.store.read().revision,
+      () => unchanged.state,
     );
   });
 

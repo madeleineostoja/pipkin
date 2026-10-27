@@ -348,6 +348,48 @@ async function preparedPublication(store: RunStore, baseSha = "base-sha") {
 }
 
 describe("validated generation restart", () => {
+  it("recovers dirty current-generation workspaces but refuses stale generation branches", async () => {
+    const store = await createSchedulerStore();
+    await stop(store);
+    await restart(store);
+    const [implementation] = await apply(store, {
+      kind: "workstreams_selected",
+      now,
+      baseShas: { [first.id]: "base-sha" },
+    });
+    if (implementation?.kind !== "run_implementation") {
+      throw new Error("No implementation");
+    }
+    const state = store.read();
+    const workspace = workstreamWorkspace(state, first.id);
+    expect(workspace.branchName).toBe(
+      `pipkin/implement/${state.run.id}/g1/${first.id}`,
+    );
+    for (const generation of [0, 1]) {
+      const failed = reduceRunEvent(state, {
+        generation: state.generation,
+        kind: "implementation_failed",
+        workstream: first,
+        leaseId: implementation.leaseId,
+        category: "workspace_unsafe",
+        evidence: "Worker left uncommitted changes",
+        observation: {
+          branch: `pipkin/implement/${state.run.id}/g${generation}/${first.id}`,
+          head: workspace.baseSha,
+          clean: false,
+          status: [{ status: " M", path: "src/endpoint.ts" }],
+        },
+      });
+      expect(failed.accepted).toBe(true);
+      expect(Object.values(failed.state.workspaceRecreations)).toHaveLength(
+        generation === 1 ? 1 : 0,
+      );
+      expect(failed.state.phase).toBe(
+        generation === 1 ? "running" : "stopping",
+      );
+    }
+  });
+
   it("persists distinct findings across generation-like workstream IDs without replacing retained provenance", async () => {
     const { run: store, plan } = createUnboundSchedulerRun(2, true, [
       "api-g1",
