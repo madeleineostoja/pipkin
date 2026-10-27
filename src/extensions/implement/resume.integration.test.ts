@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import {
   existsSync,
+  chmodSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -321,7 +322,11 @@ async function publication(
   });
   return { publisher, intent, workspace };
 }
-async function failedReplayFixture() {
+async function failedReplayFixture(
+  outcome:
+    | "reconciliation_required"
+    | "hook_rejected" = "reconciliation_required",
+) {
   const setup = await fixture({ parallel: true });
   const { store, client, base } = setup;
   const second = { kind: "source" as const, id: "second-stream" };
@@ -337,8 +342,9 @@ async function failedReplayFixture() {
     const branch = `pipkin/implement/run-1/g0/${second.id}`;
     await client.createTaskBranch(branch, base);
     await client.addWorktree(workspace, branch);
-    writeFileSync(join(workspace, "app.txt"), "second unpublished\n");
-    git(workspace, "add", "app.txt");
+    const path = outcome === "hook_rejected" ? "second.txt" : "app.txt";
+    writeFileSync(join(workspace, path), "second unpublished\n");
+    git(workspace, "add", path);
     git(workspace, "commit", "-qm", "feat: second candidate");
     candidate = {
       id: "second-candidate",
@@ -425,6 +431,14 @@ async function failedReplayFixture() {
   if (reconciliation?.kind !== "run_reconciliation") {
     throw new Error("No replay");
   }
+  const hook = join(setup.root, ".git", "hooks", "pre-commit");
+  if (outcome === "hook_rejected") {
+    writeFileSync(
+      hook,
+      "#!/bin/sh\necho missing-hook-dependency >&2\nexit 1\n",
+    );
+    chmodSync(hook, 0o755);
+  }
   const replay = await new CandidateReplayEngine({
     git: client,
     worktreesRoot: join(store.lease.paths.worktrees, "run-1"),
@@ -433,6 +447,33 @@ async function failedReplayFixture() {
     protectedPaths: Object.keys(store.read().protectedArtifactHashes),
     protectedArtifactsMatch: () => protectedArtifactsMatch(store.read()),
   }).prepare(candidate, "feat: second");
+  if (outcome === "hook_rejected" && replay.kind === "hook_rejected") {
+    const staging = replay.staging;
+    await apply(store, {
+      kind: "reconciliation_completed",
+      workstream: second,
+      leaseId: reconciliation.leaseId,
+      outcome: {
+        kind: "hook_rejected",
+        evidence: replay.evidence,
+        command: replay.command,
+        workspace: {
+          id: staging.id,
+          changedPaths: staging.replayPaths ?? [],
+          stateEvidence: replay.evidence,
+          targetSha: staging.targetBaseSha,
+          stagingComparison: {
+            baseSha: staging.targetBaseSha,
+            treeSha: staging.treeSha!,
+          },
+        },
+      },
+    });
+    rmSync(hook);
+    await fail(store);
+    await setup.lease.release();
+    return { ...setup, pending, staging, workspace };
+  }
   if (replay.kind !== "reconciliation_required" || replay.hookMutated) {
     throw new Error(`Expected failed replay: ${JSON.stringify(replay)}`);
   }
@@ -668,148 +709,218 @@ describe("recoverable Resume", () => {
     expect(recovered.store.read().executionStartedAt).toBeDefined();
   });
 
-  it("retires recorded failed-replay staging across interrupted preparation and rebuilds only unfinished work from the trusted target", async () => {
-    const setup = await failedReplayFixture();
-    const before = readFileSync(setup.store.path, "utf-8");
-    const stagingStatus = git(
-      setup.staging.worktreePath,
-      "status",
-      "--porcelain",
-    );
-    const stagingContent = readFileSync(
-      join(setup.staging.worktreePath, "app.txt"),
-      "utf-8",
-    );
-    const stagingIndex = git(setup.staging.worktreePath, "ls-files", "--stage");
-    const cancelled = await select(setup);
-    expect(cancelled.preview.preservedSourceIds).toEqual([first.id]);
-    expect(cancelled.preview.resources).toContainEqual(
-      expect.objectContaining({
-        id: setup.staging.id,
-        path: setup.staging.worktreePath,
-        branch: setup.staging.branchName,
-        candidateId: "second-candidate",
-      }),
-    );
-    await cancelled.release();
-    expect(readFileSync(setup.store.path, "utf-8")).toBe(before);
-    expect(git(setup.staging.worktreePath, "status", "--porcelain")).toBe(
-      stagingStatus,
-    );
-    expect(
-      readFileSync(join(setup.staging.worktreePath, "app.txt"), "utf-8"),
-    ).toBe(stagingContent);
-    expect(git(setup.staging.worktreePath, "ls-files", "--stage")).toBe(
-      stagingIndex,
-    );
-    const session = await select(setup);
-    const deleteTaskBranch = ExecGitClient.prototype.deleteTaskBranch;
-    const removeBranch = vi
-      .spyOn(ExecGitClient.prototype, "deleteTaskBranch")
-      .mockImplementation(async function (this: ExecGitClient, branch) {
-        if (branch === setup.staging.branchName) {
-          throw new Error("staging retirement interrupted");
+  it.each(["reconciliation_required", "hook_rejected"] as const)(
+    "retires %s staging across interrupted preparation and rebuilds only unfinished work from the trusted target",
+    async (outcome) => {
+      const setup = await failedReplayFixture(outcome);
+      if (outcome === "hook_rejected") {
+        expect(setup.store.read().reconciliationAssignments).toEqual({});
+        expect(
+          Object.values(setup.store.read().failures).some(
+            (failure) => failure.gate === "staging_environment_repair",
+          ),
+        ).toBe(false);
+      }
+      const before = readFileSync(setup.store.path, "utf-8");
+      const stagingStatus = git(
+        setup.staging.worktreePath,
+        "status",
+        "--porcelain",
+      );
+      const stagingContent = readFileSync(
+        join(setup.staging.worktreePath, "app.txt"),
+        "utf-8",
+      );
+      const stagingIndex = git(
+        setup.staging.worktreePath,
+        "ls-files",
+        "--stage",
+      );
+      const cancelled = await select(setup);
+      expect(cancelled.preview.preservedSourceIds).toEqual([first.id]);
+      expect(cancelled.preview.resources).toContainEqual(
+        expect.objectContaining({
+          id: setup.staging.id,
+          path: setup.staging.worktreePath,
+          branch: setup.staging.branchName,
+          candidateId: "second-candidate",
+        }),
+      );
+      await cancelled.release();
+      expect(readFileSync(setup.store.path, "utf-8")).toBe(before);
+      expect(git(setup.staging.worktreePath, "status", "--porcelain")).toBe(
+        stagingStatus,
+      );
+      expect(
+        readFileSync(join(setup.staging.worktreePath, "app.txt"), "utf-8"),
+      ).toBe(stagingContent);
+      expect(git(setup.staging.worktreePath, "ls-files", "--stage")).toBe(
+        stagingIndex,
+      );
+      const session = await select(setup);
+      const deleteTaskBranch = ExecGitClient.prototype.deleteTaskBranch;
+      const removeBranch = vi
+        .spyOn(ExecGitClient.prototype, "deleteTaskBranch")
+        .mockImplementation(async function (this: ExecGitClient, branch) {
+          if (branch === setup.staging.branchName) {
+            throw new Error("staging retirement interrupted");
+          }
+          await deleteTaskBranch.call(this, branch);
+        });
+      await expect(session.confirm()).rejects.toThrow(
+        "staging retirement interrupted",
+      );
+      const blocked = loadRunState(setup.store.path);
+      expect(blocked.restartPreparation?.generation).toBe(1);
+      expect(blocked.tasks.first?.phase).toBe("published");
+      expect(existsSync(setup.staging.worktreePath)).toBe(false);
+      expect(
+        await setup.client.branchTip(setup.staging.branchName),
+      ).toBeDefined();
+      await session.release();
+      removeBranch.mockRestore();
+      const retry = await select(setup);
+      expect(retry.preview.generation).toBe(1);
+      const resumed = await retry.confirm();
+      expect(resumed.store.read().generationHistory).toHaveLength(1);
+      expect(
+        await setup.client.branchTip(setup.staging.branchName),
+      ).toBeUndefined();
+      expect(resumed.store.read().executionTarget).toBe(
+        setup.pending.intent.preparedCommitSha,
+      );
+      expect(existsSync(setup.pending.workspace)).toBe(true);
+      expect(
+        resumed.store.read().generationHistory[0]?.reconciliationAssignments,
+      ).toEqual(blocked.reconciliationAssignments);
+      const workers = new ScriptedSubagentClient(
+        [
+          {
+            status: "completed",
+            result: {
+              outcome: "changed",
+              summary: "Second delivered",
+              verification: [
+                {
+                  kind: "inspection",
+                  label: "Second behavior",
+                  evidence: "Implemented",
+                },
+              ],
+            },
+          },
+          {
+            status: "completed",
+            result: { findings: [], publicationCommitSubject: "feat: second" },
+          },
+          {
+            status: "completed",
+            result: {
+              findings: [],
+              assessments: [],
+              handoffDraft: "Both lanes reviewed",
+            },
+          },
+        ],
+        [setup.root],
+      );
+      const spawn = workers.spawn.bind(workers);
+      vi.spyOn(workers, "spawn").mockImplementation((async (args) => {
+        if (args.role === "implementer") {
+          expect(args.cwd).toContain("/g1/second-stream");
+          expect(git(args.cwd!, "rev-parse", "HEAD")).toBe(
+            setup.pending.intent.preparedCommitSha,
+          );
+          writeFileSync(join(args.cwd!, "second.txt"), "second delivered\n");
+          git(args.cwd!, "add", "second.txt");
+          git(args.cwd!, "commit", "-qm", "feat: second");
         }
-        await deleteTaskBranch.call(this, branch);
+        return spawn(args);
+      }) as typeof workers.spawn);
+      const actor = createRuntime({
+        ...resumed,
+        pi: {} as never,
+        ctx: { ui: { notify() {} } } as never,
+        roles,
+        checkoutIdentity: await setup.client.checkoutIdentity(),
+        baseSha: resumed.store.read().executionTarget,
+        subagents: workers,
       });
-    await expect(session.confirm()).rejects.toThrow(
-      "staging retirement interrupted",
-    );
-    const blocked = loadRunState(setup.store.path);
-    expect(blocked.restartPreparation?.generation).toBe(1);
-    expect(blocked.tasks.first?.phase).toBe("published");
-    expect(existsSync(setup.staging.worktreePath)).toBe(false);
-    expect(
-      await setup.client.branchTip(setup.staging.branchName),
-    ).toBeDefined();
-    await session.release();
-    removeBranch.mockRestore();
-    const retry = await select(setup);
-    expect(retry.preview.generation).toBe(1);
-    const resumed = await retry.confirm();
-    expect(resumed.store.read().generationHistory).toHaveLength(1);
-    expect(
-      await setup.client.branchTip(setup.staging.branchName),
-    ).toBeUndefined();
-    expect(resumed.store.read().executionTarget).toBe(
+      await actor.start();
+      await actor.settle();
+      expect(
+        resumed.store.read().phase,
+        resumed.store.read().failure?.reason,
+      ).toBe("completed");
+      expect(
+        workers.invocations
+          .filter((worker) => worker.role === "implementer")
+          .map((worker) => worker.taskId),
+      ).toEqual(["second-stream"]);
+      expect(
+        Object.keys(resumed.store.read().publication.receipts),
+      ).toHaveLength(2);
+      expect(readFileSync(join(setup.root, "app.txt"), "utf-8")).toBe(
+        "first delivered\n",
+      );
+      expect(workers.invocations.at(-1)?.prompt).toContain("First task");
+    },
+    30_000,
+  );
+
+  it("refuses malformed or mismatched failed-hook settlements without changing retained work", async () => {
+    const setup = await failedReplayFixture("hook_rejected");
+    const state = setup.store.read();
+    const operation = Object.values(state.operationSettlements).find(
+      (operation) =>
+        operation.kind === "reconciliation" &&
+        operation.candidateId === "second-candidate",
+    )!;
+    const event = JSON.parse(operation.eventFingerprint);
+    const fingerprints = [
+      "{",
+      JSON.stringify({ ...event, leaseId: "foreign-operation" }),
+      JSON.stringify({ ...event, generation: state.generation + 1 }),
+      JSON.stringify({ ...event, workstream: first }),
+      JSON.stringify({
+        ...event,
+        outcome: {
+          ...event.outcome,
+          workspace: { ...event.outcome.workspace, id: "staging-foreign" },
+        },
+      }),
+      JSON.stringify({
+        ...event,
+        outcome: {
+          ...event.outcome,
+          command: { ...event.outcome.command, cwd: setup.root },
+        },
+      }),
+    ];
+    const before = readFileSync(setup.store.path, "utf-8");
+    const index = git(setup.staging.worktreePath, "ls-files", "--stage");
+    for (const eventFingerprint of fingerprints) {
+      const conflicting = structuredClone(state);
+      conflicting.operationSettlements[
+        operation.operationId
+      ]!.eventFingerprint = eventFingerprint;
+      await expect(
+        inventoryResumeResources({
+          state: conflicting,
+          git: setup.client,
+          root: join(setup.store.lease.paths.worktrees, state.run.id),
+          preservedSourceIds: [first.id],
+          deliveredCandidateIds: new Set(["first-candidate"]),
+        }),
+      ).rejects.toThrow(/failed-hook staging ownership|durable ownership/);
+    }
+    expect(readFileSync(setup.store.path, "utf-8")).toBe(before);
+    expect(git(setup.staging.worktreePath, "ls-files", "--stage")).toBe(index);
+    expect(existsSync(setup.pending.workspace)).toBe(true);
+    expect(await setup.client.head()).toBe(
       setup.pending.intent.preparedCommitSha,
     );
-    expect(existsSync(setup.pending.workspace)).toBe(true);
-    expect(
-      resumed.store.read().generationHistory[0]?.reconciliationAssignments,
-    ).toEqual(blocked.reconciliationAssignments);
-    const workers = new ScriptedSubagentClient(
-      [
-        {
-          status: "completed",
-          result: {
-            outcome: "changed",
-            summary: "Second delivered",
-            verification: [
-              {
-                kind: "inspection",
-                label: "Second behavior",
-                evidence: "Implemented",
-              },
-            ],
-          },
-        },
-        {
-          status: "completed",
-          result: { findings: [], publicationCommitSubject: "feat: second" },
-        },
-        {
-          status: "completed",
-          result: {
-            findings: [],
-            assessments: [],
-            handoffDraft: "Both lanes reviewed",
-          },
-        },
-      ],
-      [setup.root],
-    );
-    const spawn = workers.spawn.bind(workers);
-    vi.spyOn(workers, "spawn").mockImplementation((async (args) => {
-      if (args.role === "implementer") {
-        expect(args.cwd).toContain("/g1/second-stream");
-        expect(git(args.cwd!, "rev-parse", "HEAD")).toBe(
-          setup.pending.intent.preparedCommitSha,
-        );
-        writeFileSync(join(args.cwd!, "second.txt"), "second delivered\n");
-        git(args.cwd!, "add", "second.txt");
-        git(args.cwd!, "commit", "-qm", "feat: second");
-      }
-      return spawn(args);
-    }) as typeof workers.spawn);
-    const actor = createRuntime({
-      ...resumed,
-      pi: {} as never,
-      ctx: { ui: { notify() {} } } as never,
-      roles,
-      checkoutIdentity: await setup.client.checkoutIdentity(),
-      baseSha: resumed.store.read().executionTarget,
-      subagents: workers,
-    });
-    await actor.start();
-    await actor.settle();
-    expect(
-      resumed.store.read().phase,
-      resumed.store.read().failure?.reason,
-    ).toBe("completed");
-    expect(
-      workers.invocations
-        .filter((worker) => worker.role === "implementer")
-        .map((worker) => worker.taskId),
-    ).toEqual(["second-stream"]);
-    expect(Object.keys(resumed.store.read().publication.receipts)).toHaveLength(
-      2,
-    );
-    expect(readFileSync(join(setup.root, "app.txt"), "utf-8")).toBe(
-      "first delivered\n",
-    );
-    expect(workers.invocations.at(-1)?.prompt).toContain("First task");
-  }, 30_000);
+  });
 
   it("refuses missing or conflicting failed-replay ownership, lookalikes and staging symlink escapes without deleting delivery", async () => {
     const setup = await failedReplayFixture();

@@ -5,7 +5,8 @@ import {
   readlinkSync,
   realpathSync,
 } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { z } from "zod";
 import { stagingIdentity } from "./candidate-replay.js";
 import { workstreamBranchName } from "./candidate-worker.js";
 import type { GitClient } from "./git.js";
@@ -17,6 +18,45 @@ import {
   type RunState,
 } from "./store.js";
 import type { RestartResource } from "./restart.js";
+
+const rejectedHookSettlementSchema = z.object({
+  generation: z.number().int().nonnegative(),
+  kind: z.literal("reconciliation_completed"),
+  leaseId: z.string().min(1),
+  workstream: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("source"), id: z.string().min(1) }),
+    z.object({ kind: z.literal("overall"), repairId: z.string().min(1) }),
+  ]),
+  outcome: z.object({
+    kind: z.literal("hook_rejected"),
+    command: z.object({
+      cwd: z.string().refine(isAbsolute),
+      exitCode: z
+        .number()
+        .int()
+        .refine((code) => code !== 0),
+    }),
+    workspace: z.object({
+      id: z.string().min(1),
+      targetSha: z.string().min(1),
+      stagingComparison: z.object({
+        baseSha: z.string().min(1),
+        treeSha: z.string().min(1),
+      }),
+    }),
+  }),
+});
+
+function sameWorkstream(
+  left: RunState["candidates"][string]["workstream"] | undefined,
+  right: RunState["candidates"][string]["workstream"],
+): boolean {
+  return left?.kind === "source"
+    ? right.kind === "source" && left.id === right.id
+    : left?.kind === "overall" &&
+        right.kind === "overall" &&
+        left.repairId === right.repairId;
+}
 
 function samePath(left: string, right: string): boolean {
   return existsSync(left) && existsSync(right)
@@ -299,6 +339,72 @@ export async function inventoryResumeResources(args: {
         execution.generation === state.generation && !preserved(lane),
       );
     }
+  }
+  for (const operation of Object.values(state.operationSettlements)) {
+    if (
+      operation.kind !== "reconciliation" ||
+      operation.outcome !== "reconciliation_completed"
+    ) {
+      continue;
+    }
+    let event: z.infer<typeof rejectedHookSettlementSchema>;
+    try {
+      event = rejectedHookSettlementSchema.parse(
+        JSON.parse(operation.eventFingerprint),
+      );
+    } catch {
+      continue;
+    }
+    const candidate = operation.candidateId
+      ? state.candidates[operation.candidateId]
+      : undefined;
+    const generation =
+      state.generationHistory.find((history) =>
+        history.operationIds.includes(operation.operationId),
+      )?.generation ?? state.generation;
+    if (
+      !candidate ||
+      event.leaseId !== operation.operationId ||
+      event.generation !== generation ||
+      candidateGeneration(state, candidate.id) !== generation ||
+      !sameWorkstream(operation.workstream, candidate.workstream) ||
+      !sameWorkstream(event.workstream, candidate.workstream)
+    ) {
+      throw new Error(
+        `Resume cannot establish exact failed-hook staging ownership: ${operation.operationId}`,
+      );
+    }
+    const { workspace, command } = event.outcome;
+    const staging = stagingIdentity({
+      runId: state.run.id,
+      operationId: operation.operationId,
+      candidateId: candidate.id,
+      candidateCommitSha: candidate.commitSha,
+      candidateTreeSha: candidate.treeSha,
+      targetBaseSha: workspace.targetSha,
+      targetRef: state.run.checkout.branchRef,
+    });
+    const path = join(root, staging.id);
+    if (
+      workspace.id !== staging.id ||
+      workspace.stagingComparison.baseSha !== workspace.targetSha ||
+      !samePath(command.cwd, path)
+    ) {
+      throw new Error(
+        `Resume cannot establish exact failed-hook staging ownership: ${operation.operationId}`,
+      );
+    }
+    add(
+      {
+        id: staging.id,
+        kind: "staging",
+        path,
+        branch: staging.branchName,
+        candidateId: candidate.id,
+        operationId: operation.operationId,
+      },
+      generation === state.generation && !preserved(candidate.workstream),
+    );
   }
   for (const failure of Object.values(state.failures)) {
     if (failure.gate !== "staging_environment_repair") {
