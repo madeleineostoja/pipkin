@@ -256,6 +256,9 @@ type RuntimeRecord = Omit<RuntimeSnapshot, "timestamps"> &
       definition: ManagedCompletion;
       accepted: boolean;
       payload?: unknown;
+      submissionTurn?: boolean;
+      stopReason?: string;
+      callStatus?: "seen" | "rejected" | "truncated";
     };
     callerExcludedTools: string[];
     selectedToolNames?: string[];
@@ -1808,7 +1811,7 @@ export class SubagentRuntime {
       if (record.completion && !record.completion.accepted) {
         this.fail(
           record.id,
-          "Managed agent settled without invoking required completion tool.",
+          `Managed agent settled without accepted ${MANAGED_COMPLETION_TOOL_NAME} (stopReason=${record.completion.stopReason ?? "unknown"}, call=${record.completion.callStatus ?? "missing"}).`,
         );
         return record.finalization ?? projectSnapshot(record);
       }
@@ -2026,16 +2029,54 @@ export class SubagentRuntime {
       const isFinalResult =
         !hasToolCalls && context.message.stopReason === "stop";
       const inheritedDecision = await inheritedBoundary?.(context, signal);
-      if (!isFinalResult) {
+      const completion = record.completion;
+      if (completion) {
+        completion.stopReason = context.message.stopReason;
+        if (
+          context.message.content.some(
+            (block) =>
+              block.type === "toolCall" &&
+              block.name === MANAGED_COMPLETION_TOOL_NAME,
+          )
+        ) {
+          completion.callStatus =
+            context.message.stopReason === "length"
+              ? "truncated"
+              : context.toolResults.some(
+                    (result) =>
+                      result.toolName === MANAGED_COMPLETION_TOOL_NAME &&
+                      result.isError,
+                  )
+                ? "rejected"
+                : "seen";
+        }
+      }
+      if (!isFinalResult && !completion?.submissionTurn) {
         return inheritedDecision || undefined;
       }
 
-      // A completed tool-free assistant turn is the subagent's committed result.
       // Close ingress and drain accepted sends before clearing Pi's queue so
       // guidance cannot arrive between the clear and Pi's post-run queue check.
       record.canSteer = false;
       await record.steeringDraining;
       this.#clearSessionQueue(session);
+      if (
+        isFinalResult &&
+        completion &&
+        !completion.accepted &&
+        !completion.submissionTurn &&
+        !signal?.aborted &&
+        this.#isCurrentRecord(record) &&
+        !isTerminal(record.status)
+      ) {
+        completion.submissionTurn = true;
+        session.agent.steer({
+          role: "user",
+          content: `Submit the result you already prepared by calling ${MANAGED_COMPLETION_TOOL_NAME} now. Do not repeat the work or respond in prose.`,
+          timestamp: Date.now(),
+        });
+        return { action: "continue" };
+      }
       return { action: "end" };
     };
   }

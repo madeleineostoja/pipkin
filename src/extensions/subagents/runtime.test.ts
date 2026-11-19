@@ -1734,28 +1734,68 @@ describe("SubagentRuntime", () => {
     expect(faux.state.callCount).toBe(1);
   });
 
-  it("fails managed completion runs that settle without the completion tool", async () => {
-    const { pi } = fakePi();
-    const runtime = new SubagentRuntime(pi as never, {
-      createSession: vi.fn(async () => ({ session: makeSession("prose") })),
-    });
-
-    await expect(
-      runtime.runManagedAgent({
+  it.each([
+    [
+      "accepted",
+      fauxAssistantMessage(
+        fauxToolCall(MANAGED_COMPLETION_TOOL_NAME, { result: "submitted" }),
+      ),
+    ],
+    ["missing", fauxAssistantMessage("still prose")],
+    [
+      "rejected",
+      fauxAssistantMessage(fauxToolCall(MANAGED_COMPLETION_TOOL_NAME, {})),
+    ],
+    [
+      "truncated",
+      fauxAssistantMessage(fauxToolCall(MANAGED_COMPLETION_TOOL_NAME, {}), {
+        stopReason: "length",
+      }),
+    ],
+  ] as const)(
+    "gives a prose-only managed result one submission turn: %s",
+    async (outcome, response) => {
+      const { pi } = fakePi();
+      const { createSession, faux, model, modelRegistry, sessions } =
+        await createRealSessionHarness([
+          fauxAssistantMessage("review already written"),
+          response,
+        ]);
+      const runtime = new SubagentRuntime(pi as never, { createSession });
+      const final = await runtime.runManagedAgent({
         type: "general-purpose",
         prompt: "work",
-        cwd: "/workspace",
-        ctx: makeCtx() as never,
+        cwd: TEST_CWD,
+        ctx: realContext(model, modelRegistry),
         completion: {
           schema: Type.Object({ result: Type.String() }),
           description: "Return a result.",
         },
-      }),
-    ).resolves.toMatchObject({
-      status: "failed",
-      error: "Managed agent settled without invoking required completion tool.",
-    });
-  });
+      });
+      expect(sessions).toHaveLength(1);
+      expect(faux.state.callCount).toBe(2);
+      expect(sessions[0]?.messages).toContainEqual(
+        expect.objectContaining({
+          role: "user",
+          content: expect.stringContaining(MANAGED_COMPLETION_TOOL_NAME),
+        }),
+      );
+      if (outcome === "accepted") {
+        expect(final).toMatchObject({
+          status: "completed",
+          result: { result: "submitted" },
+        });
+      } else {
+        expect(final).toMatchObject({
+          status: "failed",
+          error: expect.stringContaining(
+            `stopReason=${response.stopReason}, call=${outcome}`,
+          ),
+        });
+        expect(final.result).toBeUndefined();
+      }
+    },
+  );
 
   it("preserves accepted completion across live cancellation during cleanup", async () => {
     const { pi } = fakePi();
@@ -1971,6 +2011,7 @@ describe("SubagentRuntime", () => {
 
     const sessionHarness = await createRealSessionHarness([
       fauxAssistantMessage("settled prose"),
+      fauxAssistantMessage("still prose"),
     ]);
     const sessionRuntime = new SubagentRuntime(pi as never, {
       createSession: async (options) => {
