@@ -44,6 +44,15 @@ describe("Sandbox Seatbelt profile", () => {
     expect(SANDBOX_PROFILE).not.toContain("(allow ipc-posix-shm)\n");
   });
 
+  it("allows PostgreSQL's System V IPC only in workspace-write mode", () => {
+    expect(sandboxProfile(policy)).toMatch(
+      /^\(allow ipc-sysv-shm ipc-sysv-sem\)$/m,
+    );
+    expect(
+      sandboxProfile(policy, undefined, "repository-read-only"),
+    ).not.toMatch(/ipc-sysv-(shm|sem)/);
+  });
+
   it("generates parameterized recursive and exact creation authority", () => {
     const profile = sandboxProfile(policy);
     expect(profile).toContain('(literal (param "root0"))');

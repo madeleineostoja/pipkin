@@ -343,7 +343,12 @@ export function sandboxProfile(
           .join("\n")}`
       : ""
   }`;
-  return `${SANDBOX_PROFILE.replace("(deny default)", markedDenyDefault(marker))}${allow}${denies ? `\n${denies}` : ""}`;
+  // Local PostgreSQL needs System V IPC even with mmap for its main region.
+  const systemV =
+    writeMode === "workspace-write"
+      ? "\n(allow ipc-sysv-shm ipc-sysv-sem)"
+      : "";
+  return `${SANDBOX_PROFILE.replace("(deny default)", markedDenyDefault(marker))}${systemV}${allow}${denies ? `\n${denies}` : ""}`;
 }
 
 export function sandboxArguments(
