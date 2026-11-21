@@ -21,6 +21,7 @@ import { parseModelRef } from "#lib/model-ref";
 import {
   CodexAdapterError,
   NATIVE_COMPACTION_MARKER,
+  checkpointInputItems,
   createCodexOAuthAdapter,
   type CaptureInput,
 } from "./codex-oauth-adapter.ts";
@@ -436,7 +437,7 @@ export class CompactionCoordinator {
       ctx,
       signal,
     );
-    return payload.input as Json[];
+    return checkpointInputItems(payload);
   }
 
   private capture(

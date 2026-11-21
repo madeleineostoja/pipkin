@@ -119,7 +119,7 @@ export class ProcessesSurface implements Component {
     this.tui.requestRender();
   }
 
-  render(width: number): string[] {
+  render(width: number): readonly string[] {
     if (this.#mode !== "roster" && !this.#selectedSnapshot()) {
       this.#loseSelection();
     }

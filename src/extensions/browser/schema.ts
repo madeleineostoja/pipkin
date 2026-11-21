@@ -1,4 +1,3 @@
-import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static, type TSchema } from "typebox";
 import { Check } from "typebox/value";
 import { BrowserError } from "./errors.js";
@@ -51,7 +50,8 @@ const target = Type.Union(
     ),
     Type.Object(
       {
-        kind: StringEnum(["text", "label", "placeholder"] as const, {
+        kind: Type.Enum(["text", "label", "placeholder"], {
+          type: "string",
           description:
             "Resolve by visible text, associated form label, or placeholder.",
         }),
@@ -101,7 +101,8 @@ const waitCondition = Type.Union(
             "Bounded URL text to match literally; no regex/glob interpretation.",
         }),
         match: Type.Optional(
-          StringEnum(["contains", "exact"] as const, {
+          Type.Enum(["contains", "exact"], {
+            type: "string",
             description: "URL matching mode; defaults to contains.",
           }),
         ),
@@ -132,10 +133,10 @@ const waitCondition = Type.Union(
           description: "Wait for a strict target state.",
         }),
         target,
-        state: StringEnum(
-          ["attached", "visible", "hidden", "detached"] as const,
-          { description: "Required target state." },
-        ),
+        state: Type.Enum(["attached", "visible", "hidden", "detached"], {
+          type: "string",
+          description: "Required target state.",
+        }),
       },
       { additionalProperties: false },
     ),
@@ -144,7 +145,8 @@ const waitCondition = Type.Union(
         kind: Type.Literal("load_state", {
           description: "Wait for a page load state.",
         }),
-        state: StringEnum(["domcontentloaded", "load"] as const, {
+        state: Type.Enum(["domcontentloaded", "load"], {
+          type: "string",
           description: "Required page load state; networkidle is unsupported.",
         }),
       },
@@ -240,10 +242,10 @@ export const observationParameters = {
   diagnostics: object({
     categories: Type.Optional(
       Type.Array(
-        StringEnum(
-          ["console", "page_error", "request_failed", "http_error"] as const,
-          { description: "Diagnostic category to return." },
-        ),
+        Type.Enum(["console", "page_error", "request_failed", "http_error"], {
+          type: "string",
+          description: "Diagnostic category to return.",
+        }),
         {
           minItems: 1,
           maxItems: 4,
@@ -259,7 +261,8 @@ export const observationParameters = {
 export const actionParameters = {
   navigate: object({ url }),
   history: object({
-    action: StringEnum(["back", "forward", "reload"] as const, {
+    action: Type.Enum(["back", "forward", "reload"], {
+      type: "string",
       description:
         "Navigate history or reload; wait for domcontentloaded without an implicit snapshot.",
     }),

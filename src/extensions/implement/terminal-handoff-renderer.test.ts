@@ -12,7 +12,7 @@ const theme = {
 function render(data: unknown, expanded = false): string | undefined {
   return renderTerminalHandoffEntry(
     { data } as never,
-    { expanded },
+    { expanded, keyText: () => "", keyHint: () => "" },
     theme as never,
   )
     ?.render(100)

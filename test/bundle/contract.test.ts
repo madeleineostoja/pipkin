@@ -616,7 +616,7 @@ describe("Pipkin bundle", () => {
         fg: (_color: string, value: string) => value,
         bold: (value: string) => value,
       } as Theme;
-      const context = {
+      const context: Parameters<NonNullable<ToolRenderers["renderCall"]>>[2] = {
         toolCallId: "clock-call",
         lastComponent: undefined,
         cwd: fixture.cwd,
@@ -629,7 +629,11 @@ describe("Pipkin bundle", () => {
         isPartial: true,
         executionStarted: true,
         expanded: false,
-      } as Parameters<NonNullable<ToolRenderers["renderCall"]>>[2];
+        durationMs: undefined,
+        outputPad: 0,
+        keyText: () => "",
+        keyHint: () => "",
+      };
       const render = () =>
         renderer.renderCall!({}, theme, context)
           .render(200)
@@ -915,11 +919,10 @@ describe("Pipkin bundle", () => {
     for (const role of ["", EXPLORE_PROMPT, REVIEW_PROMPT]) {
       const base = `Pi base instructions\n\n${role}`;
       for (let attempt = 0; attempt < 2; attempt++) {
-        const result = await runner.emitBeforeAgentStart("task", undefined, {
-          customPrompt: base,
-          cwd: fixture.cwd,
-          selectedTools: ["read"],
-        });
+        const result = await runner.emitBeforeAgentStart(
+          { messageType: "user", prompt: "task" },
+          { customPrompt: base, cwd: fixture.cwd, selectedTools: ["read"] },
+        );
         expect(result.systemPromptOptions.forceSystemPrompt).toBeUndefined();
         expect(result.systemPromptOptions.customPrompt).toBe(base);
         const sections = result.systemPromptOptions.sections;

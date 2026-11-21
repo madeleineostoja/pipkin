@@ -149,7 +149,7 @@ export class AgentsSurface implements Component, Focusable {
     this.tui.requestRender();
   }
 
-  render(width: number): string[] {
+  render(width: number): readonly string[] {
     if (this.#mode !== "roster" && !this.#entry()) {
       this.#loseSelection();
     }

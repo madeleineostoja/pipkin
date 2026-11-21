@@ -33,6 +33,10 @@ function context(
     expanded: false,
     showImages: true,
     isError: false,
+    durationMs: undefined,
+    outputPad: 0,
+    keyText: () => "",
+    keyHint: () => "",
     ...overrides,
   };
 }

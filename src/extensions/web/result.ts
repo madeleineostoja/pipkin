@@ -1,4 +1,3 @@
-import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
 import { LIMITS } from "./constants.js";
 import { ARTIFACT_LIMITS } from "./artifacts.js";
@@ -18,7 +17,7 @@ const ArtifactDescriptor = Type.Object(
     mediaType: Type.String({ maxLength: LIMITS.metadataChars }),
     bytes: Type.Integer({ minimum: 0, maximum: ARTIFACT_LIMITS.binaryBytes }),
     lifetime: Type.Literal("temporary"),
-    kind: StringEnum(["raw-text", "binary"] as const),
+    kind: Type.Enum(["raw-text", "binary"], { type: "string" }),
   },
   { additionalProperties: false },
 );
@@ -35,7 +34,7 @@ export const WebFetchOutput = Type.Union([
   Type.Object(
     {
       ...SuccessFields,
-      format: StringEnum(["markdown", "json", "text"] as const),
+      format: Type.Enum(["markdown", "json", "text"], { type: "string" }),
       text: Type.String({ maxLength: LIMITS.resultBytes }),
     },
     { additionalProperties: false },
@@ -54,19 +53,22 @@ export const WebFetchOutput = Type.Union([
       ok: Type.Literal(false),
       error: Type.Object(
         {
-          code: StringEnum([
-            "target",
-            "dns",
-            "network",
-            "redirect",
-            "oversize",
-            "http",
-            "content",
-            "extract",
-            "artifact",
-            "timeout",
-            "cancelled",
-          ] as const),
+          code: Type.Enum(
+            [
+              "target",
+              "dns",
+              "network",
+              "redirect",
+              "oversize",
+              "http",
+              "content",
+              "extract",
+              "artifact",
+              "timeout",
+              "cancelled",
+            ],
+            { type: "string" },
+          ),
           message: Type.String({ maxLength: LIMITS.metadataChars }),
         },
         { additionalProperties: false },

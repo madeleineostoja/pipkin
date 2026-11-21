@@ -260,7 +260,7 @@ class DenialPage implements Component {
     this.options.requestRender();
   }
 
-  render(width: number): string[] {
+  render(width: number): readonly string[] {
     return this.#selected
       ? fieldsComponent(this.#detailFields(this.#selected)).render(width)
       : this.#list.render(width);
@@ -358,7 +358,7 @@ export class SandboxPanel implements Component {
     this.options.tui.requestRender();
   }
 
-  render(width: number): string[] {
+  render(width: number): readonly string[] {
     return this.#panel.render(width);
   }
 

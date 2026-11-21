@@ -161,7 +161,7 @@ export class BtwPanel implements Component {
     return truncateToWidth(action, width);
   }
 
-  render(width: number): string[] {
+  render(width: number): readonly string[] {
     return this.panel.render(width);
   }
 

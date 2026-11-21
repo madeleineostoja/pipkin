@@ -680,21 +680,29 @@ describe("CompactionCoordinator textual route", () => {
         },
       });
     const payload = await payloadFor(resumed);
+    const [prompt] = payload.input as unknown[];
+    expect(prompt).toEqual({
+      role: "developer",
+      content: contextFor(resumed).getSystemPrompt(),
+    });
     const replayed = (await coordinator.beforeProviderRequest(
       payload,
       contextFor(resumed),
     )) as typeof payload;
     expect(replayed.input).toEqual([
+      prompt,
       ...checkpoint.details.checkpoint.artifact,
       { role: "user", content: [{ type: "input_text", text: "later" }] },
     ]);
-    expect(replayed.instructions).toBe(payload.instructions);
     const forkPayload = await payloadFor(containingFork);
     const forkReplayed = (await coordinator.beforeProviderRequest(
       forkPayload,
       contextFor(containingFork),
     )) as typeof payload;
-    expect(forkReplayed.input).toEqual(checkpoint.details.checkpoint.artifact);
+    expect(forkReplayed.input).toEqual([
+      prompt,
+      ...checkpoint.details.checkpoint.artifact,
+    ]);
     await expect(
       coordinator.beforeProviderRequest(
         await payloadFor(forkBeforeCheckpoint),
@@ -748,6 +756,7 @@ describe("CompactionCoordinator textual route", () => {
     }
     const sent = JSON.parse(fetch.mock.calls[0]?.[1]?.body as string);
     expect(sent.input).toEqual([
+      prompt,
       ...checkpoint.details.checkpoint.artifact,
       { role: "user", content: [{ type: "input_text", text: "later" }] },
       { type: "compaction_trigger" },
@@ -764,6 +773,7 @@ describe("CompactionCoordinator textual route", () => {
       contextFor(resumed),
     )) as typeof payload;
     expect(nextReplayed.input).toEqual([
+      prompt,
       { role: "user", content: [{ type: "input_text", text: "later" }] },
       { type: "compaction", id: "cmp-next", encrypted_content: "next opaque" },
     ]);

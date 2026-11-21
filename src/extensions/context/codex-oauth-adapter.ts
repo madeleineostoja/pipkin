@@ -205,6 +205,33 @@ export function createNativeCheckpoint(input: {
   };
 }
 
+export function checkpointInputItems(payload: JsonObject): Json[] {
+  if (!Array.isArray(payload.input)) {
+    return [];
+  }
+  const start = payload.input.findIndex(isContinuationItem);
+  const marker = payload.input[start];
+  if (
+    !isContinuationItem(marker) ||
+    !Array.isArray(marker.content) ||
+    !marker.content.some(
+      (item) =>
+        isObject(item) &&
+        item.type === "input_text" &&
+        typeof item.text === "string" &&
+        item.text.includes(NATIVE_COMPACTION_MARKER),
+    )
+  ) {
+    return [];
+  }
+  // The leading prompt and tool declarations belong to the live request. So
+  // does the trailing reasoning configuration Pi adds to standalone captures.
+  const last = payload.input.at(-1);
+  const end =
+    isObject(last) && last.type === "configuration_update" ? -1 : undefined;
+  return payload.input.slice(start, end);
+}
+
 export function replaceCanonicalInputSegment(
   payload: JsonObject,
   expectedItems: Json[],
@@ -252,8 +279,7 @@ export function createCodexOAuthAdapter(
   dependencies: CodexAdapterDependencies = {},
 ) {
   const fetchFn = dependencies.fetch ?? globalThis.fetch;
-  // Use a host-mapped export: managed installs have no local Pi packages,
-  // and Pi 0.99's Jiti root alias also matches unlisted API subpaths.
+  // Use the host-mapped export; managed installs have no local Pi packages.
   const serializer =
     dependencies.serializer ?? openAICodexResponsesApi().streamSimple;
   const sleep = dependencies.sleep ?? wait;

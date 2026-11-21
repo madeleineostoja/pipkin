@@ -22,6 +22,8 @@ function toolTheme(): Theme & { backgrounds: string[]; foregrounds: string[] } {
 
 beforeAll(() => initTheme("dark", false));
 
+const renderOptions = { outputPad: 1, keyText: () => "", keyHint: () => "" };
+
 describe("BTW promotion", () => {
   it("keeps the complete exchange in model-facing content and only bounded display data in details", () => {
     const message = promotedBtwMessage({
@@ -50,12 +52,12 @@ describe("BTW promotion", () => {
     const theme = toolTheme();
     const collapsed = renderBtwMessage(
       transcript,
-      { expanded: false, outputPad: 1 },
+      { ...renderOptions, expanded: false },
       theme,
     );
     const expanded = renderBtwMessage(
       transcript,
-      { expanded: true, outputPad: 1 },
+      { ...renderOptions, expanded: true },
       theme,
     );
 
@@ -83,7 +85,7 @@ describe("BTW promotion", () => {
     const lines = (
       renderBtwMessage(
         transcript,
-        { expanded: true, outputPad: 1 },
+        { ...renderOptions, expanded: true },
         toolTheme(),
       )?.render(80) ?? []
     )

@@ -137,7 +137,7 @@ class ActionPromptComponent implements Component {
     this.list.setSelectedIndex(initialIndex);
   }
 
-  render(width: number): string[] {
+  render(width: number): readonly string[] {
     return this.panel.render(width);
   }
 

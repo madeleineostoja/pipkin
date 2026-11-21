@@ -188,7 +188,10 @@ describe("Codex OAuth adapter", () => {
       transport: "sse",
       headers,
     });
-    expect(payload.instructions).toContain(instructions);
+    expect((payload.input as unknown[])[0]).toMatchObject({
+      role: "developer",
+      content: expect.stringContaining(instructions),
+    });
     expect(payload.tools).toEqual([
       expect.objectContaining({ name: "inspect", description }),
     ]);
@@ -232,9 +235,11 @@ describe("Codex OAuth adapter", () => {
         ],
       },
     });
-    expect(payload.instructions).toContain("base prompt");
-    expect(payload.instructions).toContain("new mode");
-    expect(payload.instructions).not.toContain("old mode");
+    const [prompt] = payload.input as { role: string; content: string }[];
+    expect(prompt.role).toBe("developer");
+    expect(prompt.content).toContain("base prompt");
+    expect(prompt.content).toContain("new mode");
+    expect(prompt.content).not.toContain("old mode");
     expect(payload.tools).toEqual([
       expect.objectContaining({ name: "lookup" }),
     ]);
@@ -286,10 +291,10 @@ describe("Codex OAuth adapter", () => {
     const persisted = validateNativeCompactionDetails(
       JSON.parse(JSON.stringify(result.details)),
     )!;
-    expect(persisted.checkpoint.artifact).toEqual([
-      ...(payload.input as unknown[]),
-      artifact,
-    ]);
+    const [prompt, ...userTurns] = payload.input as unknown[];
+    expect(prompt).toMatchObject({ role: "developer" });
+    expect(userTurns).toHaveLength(20);
+    expect(persisted.checkpoint.artifact).toEqual([...userTurns, artifact]);
     expect(JSON.stringify(persisted)).not.toContain("discard output");
     expect(JSON.stringify(persisted)).not.toContain(token);
     expect(JSON.stringify(persisted)).not.toContain(account);
@@ -314,8 +319,6 @@ describe("Codex OAuth adapter", () => {
       ...(payload.input as unknown[]),
       { type: "compaction_trigger" },
     ]);
-    expect(payload.input).toHaveLength(20);
-
     const marker = { role: "user", content: "marker" };
     const tail = { role: "user", content: "later" };
     expect(

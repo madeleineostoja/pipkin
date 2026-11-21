@@ -10,7 +10,7 @@ const theme = {
 function render(data: unknown): string | undefined {
   return renderCompactionFailureEntry(
     { data } as never,
-    { expanded: false },
+    { expanded: false, keyText: () => "", keyHint: () => "" },
     theme as never,
   )
     ?.render(100)

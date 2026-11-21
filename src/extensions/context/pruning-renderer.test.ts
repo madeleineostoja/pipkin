@@ -10,7 +10,11 @@ const milestone = {
 };
 
 function render(data: unknown, expanded = false): string | undefined {
-  return renderPruningMilestone({ data } as never, { expanded }, theme as never)
+  return renderPruningMilestone(
+    { data } as never,
+    { expanded, keyText: () => "", keyHint: () => "" },
+    theme as never,
+  )
     ?.render(80)
     .map((line) => line.trimEnd())
     .join("\n");

@@ -121,7 +121,8 @@ function getBeforeAgentStartHandler(
   if (!handler) {
     throw new Error("before_agent_start handler was not registered");
   }
-  return handler;
+  return (event: { prompt: string }, ctx: ExtensionContext) =>
+    handler({ messageType: "user", ...event }, ctx);
 }
 
 function titlePromptForCall(index: number) {

@@ -92,7 +92,7 @@ class ImplementRunSurface implements Component {
     }
   }
 
-  render(width: number): string[] {
+  render(width: number): readonly string[] {
     return this.#panel.render(width);
   }
 

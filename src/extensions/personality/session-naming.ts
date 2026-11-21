@@ -60,11 +60,11 @@ export function registerSessionNaming(
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
-    if (ctx.mode === "print") {
+    if (ctx.mode === "print" || event.messageType !== "user") {
       return;
     }
 
-    const prompt = event.prompt?.trim();
+    const prompt = event.prompt.trim();
     if (ownershipClaimed || pi.getSessionName() || !prompt) {
       return;
     }

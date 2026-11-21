@@ -2,7 +2,6 @@ import type {
   ExtensionAPI,
   AgentToolResult,
 } from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
 import type { ModelPreset } from "#lib/config";
 import {
@@ -30,7 +29,8 @@ import {
 
 export const PublicAgentParameters = Type.Object(
   {
-    type: StringEnum(PUBLIC_BUILTIN_TYPES, {
+    type: Type.Enum(PUBLIC_BUILTIN_TYPES, {
+      type: "string",
       description:
         "Explore: bounded multi-step codebase discovery in separate context, not one targeted lookup or a couple of reads. Review: an independent assessment of a concrete code artifact, not routine small-edit overhead or open-ended discovery.",
     }),
@@ -52,13 +52,11 @@ export const PublicAgentParameters = Type.Object(
       }),
     ),
     thinking: Type.Optional(
-      StringEnum(
-        ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const,
-        {
-          description:
-            "Reasoning effort override for this invocation; omit to use the configured role preset.",
-        },
-      ),
+      Type.Enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"], {
+        type: "string",
+        description:
+          "Reasoning effort override for this invocation; omit to use the configured role preset.",
+      }),
     ),
   },
   { additionalProperties: false },
@@ -109,32 +107,31 @@ const Steer = Type.Object(
 const AgentSchema = Type.Object(
   {
     id: Type.String(),
-    type: StringEnum(PUBLIC_BUILTIN_TYPES),
+    type: Type.Enum(PUBLIC_BUILTIN_TYPES, { type: "string" }),
     description: Type.String(),
-    state: StringEnum([
-      "queued",
-      "running",
-      "stopping",
-      "completed",
-      "failed",
-      "stopped",
-    ]),
+    state: Type.Enum(
+      ["queued", "running", "stopping", "completed", "failed", "stopped"],
+      { type: "string" },
+    ),
     startedAt: Type.Optional(Type.String()),
     endedAt: Type.Optional(Type.String()),
-    cleanup: StringEnum(["pending", "complete"]),
+    cleanup: Type.Enum(["pending", "complete"], { type: "string" }),
   },
   { additionalProperties: false },
 );
 const AgentErrorSchema = Type.Object(
   {
-    code: StringEnum([
-      "not_found",
-      "invalid_arguments",
-      "unavailable",
-      "cancelled",
-      "agent_failed",
-      "stopped",
-    ] as const),
+    code: Type.Enum(
+      [
+        "not_found",
+        "invalid_arguments",
+        "unavailable",
+        "cancelled",
+        "agent_failed",
+        "stopped",
+      ],
+      { type: "string" },
+    ),
     message: Type.String(),
   },
   { additionalProperties: false },
@@ -157,9 +154,9 @@ const ResultFields = {
     ),
   ),
   waitOutcome: Type.Optional(
-    StringEnum(["terminal", "timed_out", "cancelled"]),
+    Type.Enum(["terminal", "timed_out", "cancelled"], { type: "string" }),
   ),
-  delivery: Type.Optional(StringEnum(["queued", "handled"] as const)),
+  delivery: Type.Optional(Type.Enum(["queued", "handled"], { type: "string" })),
 };
 const ResultSchema = Type.Union([
   Type.Object(

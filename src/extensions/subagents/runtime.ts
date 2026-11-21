@@ -17,7 +17,6 @@ import {
   SessionManager,
   truncateHead,
 } from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
 import {
   outputScope,
   prepareOutputChild,
@@ -757,7 +756,7 @@ export function boundedAgentProgress(progress: PublicProgress) {
 const ExploreResultSchema = Type.Object(
   {
     ok: Type.Boolean(),
-    status: StringEnum(["completed", "failed", "stopped"] as const),
+    status: Type.Enum(["completed", "failed", "stopped"], { type: "string" }),
     id: Type.Optional(Type.String()),
     text: Type.String(),
     truncated: Type.Boolean(),
@@ -1048,7 +1047,8 @@ export class SubagentRuntime {
             description: "Specific codebase exploration question to answer.",
           }),
           breadth: Type.Optional(
-            StringEnum(["quick", "medium", "very thorough"] as const, {
+            Type.Enum(["quick", "medium", "very thorough"], {
+              type: "string",
               description:
                 "Requested exploration depth; defaults to medium. Use quick for a narrow trace and very thorough for broad multi-step mapping.",
             }),
