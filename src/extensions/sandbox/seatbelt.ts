@@ -111,6 +111,9 @@ export const SANDBOX_PROFILE = String.raw`(version 1)
 
 const WORKSPACE_IPC_PROFILE = String.raw`; Local PostgreSQL needs System V IPC even with mmap for its main region.
 (allow ipc-sysv-shm ipc-sysv-sem)
+(allow ipc-posix-shm-read-data ipc-posix-shm-read-metadata
+  ipc-posix-shm-write-create ipc-posix-shm-write-data ipc-posix-shm-write-unlink
+  (ipc-posix-name-regex #"^/PostgreSQL\.[0-9]+$"))
 ; The browser registers a PID-suffixed service that its helpers look up.
 (allow mach-register mach-lookup
   (global-name-regex #"^(org\.chromium\.Chromium|com\.google\.Chrome|com\.google\.chrome\.for\.testing)\.MachPortRendezvousServer\.[0-9]+$"))`;
