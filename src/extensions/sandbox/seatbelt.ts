@@ -109,6 +109,12 @@ export const SANDBOX_PROFILE = String.raw`(version 1)
     (socket-protocol 2)))
 (allow network*)`;
 
+const WORKSPACE_IPC_PROFILE = String.raw`; Local PostgreSQL needs System V IPC even with mmap for its main region.
+(allow ipc-sysv-shm ipc-sysv-sem)
+; The browser registers a PID-suffixed service that its helpers look up.
+(allow mach-register mach-lookup
+  (global-name-regex #"^(org\.chromium\.Chromium|com\.google\.Chrome|com\.google\.chrome\.for\.testing)\.MachPortRendezvousServer\.[0-9]+$"))`;
+
 function assertPaths(paths: readonly string[], allowEmpty: boolean): void {
   if (!allowEmpty && paths.length === 0) {
     throw new Error("Sandbox: invalid writable roots.");
@@ -343,12 +349,9 @@ export function sandboxProfile(
           .join("\n")}`
       : ""
   }`;
-  // Local PostgreSQL needs System V IPC even with mmap for its main region.
-  const systemV =
-    writeMode === "workspace-write"
-      ? "\n(allow ipc-sysv-shm ipc-sysv-sem)"
-      : "";
-  return `${SANDBOX_PROFILE.replace("(deny default)", markedDenyDefault(marker))}${systemV}${allow}${denies ? `\n${denies}` : ""}`;
+  const ipc =
+    writeMode === "workspace-write" ? `\n${WORKSPACE_IPC_PROFILE}` : "";
+  return `${SANDBOX_PROFILE.replace("(deny default)", markedDenyDefault(marker))}${ipc}${allow}${denies ? `\n${denies}` : ""}`;
 }
 
 export function sandboxArguments(

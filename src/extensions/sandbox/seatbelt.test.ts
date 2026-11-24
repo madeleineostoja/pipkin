@@ -53,6 +53,33 @@ describe("Sandbox Seatbelt profile", () => {
     ).not.toMatch(/ipc-sysv-(shm|sem)/);
   });
 
+  it("limits Chromium Mach registration and lookup to browser rendezvous in workspace-write mode", () => {
+    const rule = sandboxProfile(policy).match(
+      /^\(allow mach-register mach-lookup\n  \(global-name-regex #"(.+)"\)\)$/m,
+    );
+    expect(rule).not.toBeNull();
+    const service = new RegExp(rule![1]);
+    expect("org.chromium.Chromium.MachPortRendezvousServer.1234").toMatch(
+      service,
+    );
+    expect("com.google.Chrome.MachPortRendezvousServer.1234").toMatch(service);
+    expect(
+      "com.google.chrome.for.testing.MachPortRendezvousServer.1234",
+    ).toMatch(service);
+    expect(
+      "org.chromium.Chromium.crashpad.child_port_handshake.1234",
+    ).not.toMatch(service);
+    expect("com.example.Other.MachPortRendezvousServer.1234").not.toMatch(
+      service,
+    );
+    expect(
+      "org.chromium.Chromium.MachPortRendezvousServer.1234.extra",
+    ).not.toMatch(service);
+    expect(
+      sandboxProfile(policy, undefined, "repository-read-only"),
+    ).not.toMatch(/mach-register|MachPortRendezvousServer/);
+  });
+
   it("generates parameterized recursive and exact creation authority", () => {
     const profile = sandboxProfile(policy);
     expect(profile).toContain('(literal (param "root0"))');
