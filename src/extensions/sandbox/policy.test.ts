@@ -214,7 +214,7 @@ describe("Sandbox policy", () => {
     }
   });
 
-  it("allows a selected cache child below PATH while denying the executable authority itself", async () => {
+  it("requires an explicit grant for a cache child below PATH", async () => {
     const { home, temporary, workspace } = runtimeFixture("narrow-cache");
     const tools = join(dirname(workspace), "tools");
     const cache = join(tools, "cache");
@@ -229,9 +229,11 @@ describe("Sandbox policy", () => {
         XDG_CACHE_HOME: realpathSync(cache),
         npm_config_cache: realpathSync(tools),
       },
+      configured: { global: [realpathSync(cache)] },
     });
 
-    expect(policy.runtimeRoots).toContain(realpathSync(cache));
+    expect(policy.runtimeRoots).not.toContain(realpathSync(cache));
+    expect(policy.configuredWritableRoots).toContain(realpathSync(cache));
     expect(policy.runtimeRoots).not.toContain(realpathSync(tools));
   });
 
@@ -417,6 +419,20 @@ describe("Sandbox policy", () => {
       env: {},
     });
     expect(linked.dependencyRoots).toEqual([]);
+  });
+
+  it("does not grant a custom host TMPDIR as a temporary root", async () => {
+    const { home, temporary, workspace } = runtimeFixture("custom-temp");
+    const policy = await resolveSandboxPolicy({
+      sessionCwd: workspace,
+      homeDir: home,
+      temporaryDir: temporary,
+      standardTemporaryRoots: [],
+      env: { TMPDIR: home },
+    });
+    expect(policy.temporaryRoots).toEqual([realpathSync(temporary)]);
+    expect(policy.preferredTemporaryDirectory).toBe(realpathSync(temporary));
+    expect(policy.writableRoots).not.toContain(realpathSync(home));
   });
 
   it("normalizes aliases among temporary roots", async () => {

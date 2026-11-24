@@ -290,16 +290,20 @@ function exceptionIndices(
   );
 }
 
-export function sandboxTemporaryDirectory(
+export function effectiveSeatbeltPolicy(
   policy: SandboxPolicy,
   writeMode: SandboxWriteMode,
-): string | undefined {
+) {
   const writableRoots = writableProjection(policy, writeMode);
   const locked = lockedRoots(policy, writeMode);
   const repositoryRoots =
     writeMode === "repository-read-only" ? protectedRoots(policy) : [];
   const exceptions = repositoryExceptions(policy, repositoryRoots);
-  return [policy.preferredTemporaryDirectory, ...policy.temporaryRoots].find(
+  const creationRoots = creationProjection(policy, writeMode, writableRoots);
+  const temporaryDirectory = [
+    policy.preferredTemporaryDirectory,
+    ...policy.temporaryRoots,
+  ].find(
     (path) =>
       path !== undefined &&
       writableRoots.some((root) => pathIsWithin(path, root)) &&
@@ -312,6 +316,15 @@ export function sandboxTemporaryDirectory(
           ),
       ),
   );
+  return {
+    writeMode,
+    writableRoots,
+    creationRoots,
+    locked,
+    repositoryRoots,
+    exceptions,
+    temporaryDirectory,
+  };
 }
 
 function protectedFilter(
@@ -338,11 +351,21 @@ export function sandboxProfile(
   marker?: string,
   writeMode: SandboxWriteMode = "workspace-write",
 ): string {
-  const writableRoots = writableProjection(policy, writeMode);
-  const creationRoots = creationProjection(policy, writeMode, writableRoots);
-  const repositoryRoots = protectedRoots(policy);
-  const locked = lockedRoots(policy, writeMode);
-  const exceptions = repositoryExceptions(policy, repositoryRoots);
+  return renderProfile(effectiveSeatbeltPolicy(policy, writeMode), marker);
+}
+
+function renderProfile(
+  effective: ReturnType<typeof effectiveSeatbeltPolicy>,
+  marker?: string,
+): string {
+  const {
+    writeMode,
+    writableRoots,
+    creationRoots,
+    repositoryRoots,
+    locked,
+    exceptions,
+  } = effective;
   assertPaths(writableRoots, true);
   assertPaths(repositoryRoots, true);
   assertCreationRoots(creationRoots, writableRoots);
@@ -389,17 +412,29 @@ export function sandboxArguments(
     writeMode?: SandboxWriteMode;
   }>,
 ): string[] {
-  const writeMode = options.writeMode ?? "workspace-write";
-  const writableRoots = writableProjection(options.policy, writeMode);
-  const repositoryRoots = protectedRoots(options.policy);
-  const locked = lockedRoots(options.policy, writeMode);
-  const exceptions = repositoryExceptions(options.policy, repositoryRoots);
-  assertPaths(repositoryRoots, true);
-  const creationRoots = creationProjection(
-    options.policy,
+  return launchArguments(
+    effectiveSeatbeltPolicy(
+      options.policy,
+      options.writeMode ?? "workspace-write",
+    ),
+    options.shell,
+    options.marker,
+  );
+}
+
+export function launchArguments(
+  effective: ReturnType<typeof effectiveSeatbeltPolicy>,
+  shell: Readonly<{ shell: string; args: readonly string[] }>,
+  marker?: string,
+): string[] {
+  const {
     writeMode,
     writableRoots,
-  );
+    creationRoots,
+    repositoryRoots,
+    locked,
+    exceptions,
+  } = effective;
   const definitions = [
     ...writableRoots.map((root, index) => `root${index}=${root}`),
     ...creationParameters(creationRoots),
@@ -414,9 +449,9 @@ export function sandboxArguments(
   return [
     ...definitions.flatMap((value) => ["-D", value]),
     "-p",
-    sandboxProfile(options.policy, options.marker, writeMode),
+    renderProfile(effective, marker),
     "--",
-    options.shell.shell,
-    ...options.shell.args,
+    shell.shell,
+    ...shell.args,
   ];
 }

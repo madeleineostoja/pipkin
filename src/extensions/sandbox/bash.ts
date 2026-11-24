@@ -16,8 +16,8 @@ import type { SandboxPolicy } from "./policy.js";
 import { waitForProcessTree } from "./process-group.js";
 import {
   SANDBOX_EXECUTABLE,
-  sandboxArguments,
-  sandboxTemporaryDirectory,
+  launchArguments,
+  effectiveSeatbeltPolicy,
 } from "./seatbelt.js";
 import {
   SandboxCleanupError,
@@ -187,6 +187,14 @@ export function createSandboxBashRuntime(
   }>();
   const supportedMac = options.supportedMac ?? process.platform === "darwin";
   const protectedMode = () => options.enabled();
+  const effective =
+    options.policy &&
+    effectiveSeatbeltPolicy(
+      options.policy,
+      options.repositoryReadOnly?.()
+        ? "repository-read-only"
+        : "workspace-write",
+    );
   let disposed = false;
   let disposing: Promise<void> | undefined;
   const terminationWaitMs = options.terminationWaitMs ?? TERMINATION_WAIT_MS;
@@ -202,20 +210,15 @@ export function createSandboxBashRuntime(
     const marker = request.protectedLaunch
       ? denialMarker(request.correlation)
       : undefined;
-    const writeMode =
-      request.protectedLaunch && options.repositoryReadOnly?.()
-        ? "repository-read-only"
-        : "workspace-write";
     const args = request.protectedLaunch
-      ? sandboxArguments({
-          policy: options.policy!,
-          shell: {
+      ? launchArguments(
+          effective!,
+          {
             shell: shell.shell,
             args: shell.commandTransport === "stdin" ? shell.args : ["-s"],
           },
-          marker: marker!,
-          writeMode,
-        })
+          marker,
+        )
       : shell.commandTransport === "stdin"
         ? shell.args
         : [...shell.args, request.command];
@@ -230,10 +233,7 @@ export function createSandboxBashRuntime(
           cwd: request.cwd,
           detached: process.platform !== "win32",
           env: request.protectedLaunch
-            ? protectedEnvironment(
-                request.env,
-                sandboxTemporaryDirectory(options.policy!, writeMode),
-              )
+            ? protectedEnvironment(request.env, effective!.temporaryDirectory)
             : request.env,
           stdio: [
             shell.commandTransport === "stdin" || request.protectedLaunch

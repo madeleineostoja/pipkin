@@ -1,6 +1,6 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import type { ConfigIssue } from "#lib/config";
 import {
   basename,
@@ -203,6 +203,22 @@ async function resolveGit(
     worktreeGitDir: canonicalExisting(resolve(cwd, lines[2])),
     commonGitDir: canonicalExisting(resolve(cwd, lines[3])),
   });
+}
+
+function systemTemporaryDirectory(): string | undefined {
+  if (process.platform !== "darwin") {
+    return undefined;
+  }
+  try {
+    return execFileSync("/usr/bin/getconf", ["DARWIN_USER_TEMP_DIR"], {
+      env: {},
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 1000,
+    }).trimEnd();
+  } catch {
+    return undefined;
+  }
 }
 
 function absoluteDirectory(value: string | undefined): string | undefined {
@@ -617,6 +633,7 @@ function globalCandidateIsSafe(
     configurationRoots: readonly string[];
     env: NodeJS.ProcessEnv;
   }>,
+  source: "cache" | "configured",
 ): boolean {
   const pathDirectories = (options.env.PATH ?? "")
     .split(":")
@@ -652,8 +669,10 @@ function globalCandidateIsSafe(
   ) {
     return false;
   }
-  return !directional.some(
-    (root) => candidate === root || isUnder(root, candidate),
+  return !directional.some((root) =>
+    source === "cache"
+      ? pathOverlaps(candidate, root)
+      : isUnder(root, candidate),
   );
 }
 
@@ -680,7 +699,7 @@ function standardRuntimeRootCandidates(
   ];
   return values.flatMap((value) => {
     const candidate = cacheRootCandidate(value);
-    return candidate && globalCandidateIsSafe(candidate.path, options)
+    return candidate && globalCandidateIsSafe(candidate.path, options, "cache")
       ? [candidate]
       : [];
   });
@@ -748,7 +767,7 @@ async function configuredRoots(
         }
         let safe = false;
         if (scope === "global") {
-          safe = globalCandidateIsSafe(candidate, context);
+          safe = globalCandidateIsSafe(candidate, context, "configured");
           if (!safe) {
             issue(scope, index, "overlaps protected filesystem authority");
           }
@@ -830,13 +849,12 @@ export async function resolveSandboxPolicy(
   const env = options.env ?? process.env;
   const home = canonicalExisting(options.homeDir ?? homedir());
   const inheritedTemporaryDirectory = absoluteDirectory(env.TMPDIR);
-  const nodeTemporaryDirectory = absoluteDirectory(
-    options.temporaryDir ?? tmpdir(),
+  const systemTemp = absoluteDirectory(
+    options.temporaryDir ?? systemTemporaryDirectory(),
   );
   const temporaryRoots = normalizeRoots(
     [
-      inheritedTemporaryDirectory,
-      nodeTemporaryDirectory,
+      systemTemp,
       ...(options.standardTemporaryRoots ?? ["/tmp", "/var/tmp"]).map(
         absoluteDirectory,
       ),
@@ -903,7 +921,12 @@ export async function resolveSandboxPolicy(
     ...(git ? { git } : {}),
     temporaryRoots,
     preferredTemporaryDirectory:
-      inheritedTemporaryDirectory ?? nodeTemporaryDirectory,
+      inheritedTemporaryDirectory &&
+      [...temporaryRoots, ...configuredWritableRoots].some((root) =>
+        isUnder(inheritedTemporaryDirectory, root),
+      )
+        ? inheritedTemporaryDirectory
+        : systemTemp,
     runtimeRoots,
     dependencyRoots,
     configuredWritableRoots,

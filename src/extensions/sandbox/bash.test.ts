@@ -728,6 +728,7 @@ printf last`,
     vi.stubEnv("TMPDIR", workspace);
     const policy = await resolveSandboxPolicy({
       sessionCwd: workspace,
+      temporaryDir: workspace,
       standardTemporaryRoots: [],
     });
     vi.stubEnv("TMPDIR", laterTemporaryDirectory);
@@ -868,6 +869,56 @@ printf last`,
       await runtime.dispose();
     }
   });
+
+  it.skipIf(
+    process.platform !== "darwin" || process.env.PIPKIN_SEATBELT_SMOKE !== "1",
+  )(
+    "enforces repository protection while allowing temp writes, child signals and managed stop",
+    async () => {
+      const { workspace } = fixture();
+      const runtime = createSandboxBashRuntime({
+        policy: await resolveSandboxPolicy({ sessionCwd: workspace }),
+        enabled: () => true,
+        repositoryReadOnly: () => true,
+      });
+      try {
+        const exec = (command: string) =>
+          runtime.operations.exec(command, workspace, {
+            onData: () => {},
+            timeout: 5,
+          });
+        expect(
+          (await exec('f=$(mktemp "$TMPDIR/pipkin-smoke.XXXXXXXX") && rm "$f"'))
+            .exitCode,
+        ).toBe(0);
+        expect((await exec("touch denied")).exitCode).not.toBe(0);
+        expect(existsSync(join(workspace, "denied"))).toBe(false);
+        expect(
+          (
+            await exec(
+              'sleep 30 & pid=$!; kill -TERM "$pid" && { wait "$pid"; test "$?" = 143; }',
+            )
+          ).exitCode,
+        ).toBe(0);
+        const lease = await runtime.startManaged({
+          toolCallId: "smoke",
+          command: "exec sleep 30",
+          cwd: workspace,
+          ctx: {
+            sessionManager: {
+              getSessionId: () => "smoke",
+              getSessionFile: () => undefined,
+            },
+          } as never,
+          signal: undefined,
+          onOutput: () => {},
+        });
+        expect(await lease.stop()).toMatchObject({ termination: "stopped" });
+      } finally {
+        await runtime.dispose();
+      }
+    },
+  );
 
   it("gives SIGKILL a fresh deadline when a managed child ignores SIGTERM", async () => {
     const { executable, policy, workspace } = fixture();
