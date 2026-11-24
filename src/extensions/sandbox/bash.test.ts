@@ -19,7 +19,7 @@ import {
   createSandboxBashRuntime,
 } from "./bash.js";
 import type { SandboxDenialObserver } from "./denial-observer.js";
-import type { SandboxPolicy } from "./policy.js";
+import { resolveSandboxPolicy, type SandboxPolicy } from "./policy.js";
 import * as processGroup from "./process-group.js";
 
 const directories: string[] = [];
@@ -58,6 +58,7 @@ function executionEnv(values: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
 }
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   while (directories.length) {
     rmSync(directories.pop()!, { force: true, recursive: true });
   }
@@ -640,23 +641,28 @@ printf last`,
     ]) {
       const runtime = createSandboxBashRuntime({ policy, ...options });
       const output: string[] = [];
+      const temporaryDirectory = tmpdir();
       await expect(
-        runtime.operations.exec("printf local", workspace, {
+        runtime.operations.exec('printf "%s" "$TMPDIR"', workspace, {
           onData: (data) => output.push(data.toString()),
+          env: executionEnv({ TMPDIR: temporaryDirectory }),
         }),
       ).resolves.toEqual({ exitCode: 0, signal: null, outputComplete: true });
-      expect(output.join("")).toBe("local");
+      expect(output.join("")).toBe(temporaryDirectory);
     }
   });
 
   it("uses the same repository-read-only profile for ordinary and managed launches", async () => {
     const { executable, policy, workspace } = fixture();
     const arguments_: string[][] = [];
+    const temporaryDirectories: Array<string | undefined> = [];
+    const fallback = realpathSync("/tmp");
     const runtime = createSandboxBashRuntime({
       policy: {
         ...policy,
-        temporaryRoots: ["/tmp"],
-        writableRoots: [workspace, "/tmp"],
+        preferredTemporaryDirectory: workspace,
+        temporaryRoots: [workspace, fallback],
+        writableRoots: [workspace, fallback],
       },
       enabled: () => true,
       repositoryReadOnly: () => true,
@@ -664,6 +670,7 @@ printf last`,
       sandboxExecutable: executable,
       spawn: (command, args, options) => {
         arguments_.push([...args]);
+        temporaryDirectories.push(options?.env?.TMPDIR);
         return spawn(command, args, options);
       },
     });
@@ -692,13 +699,14 @@ printf last`,
     });
     await lease.completion;
 
+    expect(temporaryDirectories).toEqual([fallback, fallback]);
     expect(arguments_).toHaveLength(2);
     for (const args of arguments_) {
       const profile = args[args.indexOf("-p") + 1]!;
       expect(args).toEqual(
         expect.arrayContaining([
           "-D",
-          "root0=/tmp",
+          `root0=${fallback}`,
           "-D",
           `protected0=${workspace}`,
         ]),
@@ -715,7 +723,14 @@ printf last`,
   });
 
   it("gives public Bash and managed leases the same protected environment", async () => {
-    const { executable, policy, workspace } = fixture();
+    const { executable, workspace } = fixture();
+    const laterTemporaryDirectory = tmpdir();
+    vi.stubEnv("TMPDIR", workspace);
+    const policy = await resolveSandboxPolicy({
+      sessionCwd: workspace,
+      standardTemporaryRoots: [],
+    });
+    vi.stubEnv("TMPDIR", laterTemporaryDirectory);
     const runtime = createSandboxBashRuntime({
       policy,
       enabled: () => true,
@@ -731,7 +746,7 @@ printf last`,
       },
     } as never;
     const sessionFile = join(workspace, "session.jsonl");
-    const command = `test "$PI_SESSION_FILE" = ${JSON.stringify(sessionFile)} && printf "%s|%s|%s|%s|%s" "$GIT_OPTIONAL_LOCKS" "$PI_SESSION_ID" "$PI_PROVIDER" "$PI_MODEL" "$PI_REASONING_LEVEL"`;
+    const command = `test "$PI_SESSION_FILE" = ${JSON.stringify(sessionFile)} && printf "%s|%s|%s|%s|%s|%s" "$GIT_OPTIONAL_LOCKS" "$PI_SESSION_ID" "$PI_PROVIDER" "$PI_MODEL" "$PI_REASONING_LEVEL" "$TMPDIR"`;
     const definition = createSandboxBashDefinition(workspace, runtime);
     const foreground = await definition.execute(
       "foreground-call",
@@ -750,7 +765,7 @@ printf last`,
       onOutput: ({ data }) => managedOutput.push(data),
     });
     await lease.completion;
-    const expected = "0|shared-session|test-provider|test-model|high";
+    const expected = `0|shared-session|test-provider|test-model|high|${realpathSync(workspace)}`;
     expect(
       foreground.content[0]?.type === "text" ? foreground.content[0].text : "",
     ).toBe(expected);

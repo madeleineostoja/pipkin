@@ -14,7 +14,11 @@ import {
 } from "./denial-observer.js";
 import type { SandboxPolicy } from "./policy.js";
 import { waitForProcessTree } from "./process-group.js";
-import { SANDBOX_EXECUTABLE, sandboxArguments } from "./seatbelt.js";
+import {
+  SANDBOX_EXECUTABLE,
+  sandboxArguments,
+  sandboxTemporaryDirectory,
+} from "./seatbelt.js";
 import {
   SandboxCleanupError,
   type SandboxExecutionLease,
@@ -48,9 +52,13 @@ type PreparedBashLaunch = Readonly<{
   start: (child: ChildProcess) => void;
 }>;
 
-function protectedEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+function protectedEnvironment(
+  env: NodeJS.ProcessEnv,
+  temporaryDirectory: string | undefined,
+): NodeJS.ProcessEnv {
   return {
     ...env,
+    TMPDIR: temporaryDirectory,
     ...(env.GIT_OPTIONAL_LOCKS === undefined
       ? { GIT_OPTIONAL_LOCKS: "0" }
       : {}),
@@ -194,6 +202,10 @@ export function createSandboxBashRuntime(
     const marker = request.protectedLaunch
       ? denialMarker(request.correlation)
       : undefined;
+    const writeMode =
+      request.protectedLaunch && options.repositoryReadOnly?.()
+        ? "repository-read-only"
+        : "workspace-write";
     const args = request.protectedLaunch
       ? sandboxArguments({
           policy: options.policy!,
@@ -202,9 +214,7 @@ export function createSandboxBashRuntime(
             args: shell.commandTransport === "stdin" ? shell.args : ["-s"],
           },
           marker: marker!,
-          writeMode: options.repositoryReadOnly?.()
-            ? "repository-read-only"
-            : "workspace-write",
+          writeMode,
         })
       : shell.commandTransport === "stdin"
         ? shell.args
@@ -220,7 +230,10 @@ export function createSandboxBashRuntime(
           cwd: request.cwd,
           detached: process.platform !== "win32",
           env: request.protectedLaunch
-            ? protectedEnvironment(request.env)
+            ? protectedEnvironment(
+                request.env,
+                sandboxTemporaryDirectory(options.policy!, writeMode),
+              )
             : request.env,
           stdio: [
             shell.commandTransport === "stdin" || request.protectedLaunch

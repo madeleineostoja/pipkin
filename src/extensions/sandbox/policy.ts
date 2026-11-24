@@ -24,6 +24,8 @@ export type SandboxPolicy = Readonly<{
   workspaceRoot: string;
   git?: SandboxGit;
   temporaryRoots: readonly string[];
+  /** The host temp directory can be nested under a broader temporary root. */
+  preferredTemporaryDirectory?: string;
   /** Standard disposable cache roots available to managed Bash and processes. */
   runtimeRoots: readonly string[];
   /** Package dependency trees treated as disposable Bash runtime state. */
@@ -827,10 +829,14 @@ export async function resolveSandboxPolicy(
   const workspaceRoot = git?.worktreeRoot ?? sessionCwd;
   const env = options.env ?? process.env;
   const home = canonicalExisting(options.homeDir ?? homedir());
+  const inheritedTemporaryDirectory = absoluteDirectory(env.TMPDIR);
+  const nodeTemporaryDirectory = absoluteDirectory(
+    options.temporaryDir ?? tmpdir(),
+  );
   const temporaryRoots = normalizeRoots(
     [
-      absoluteDirectory(env.TMPDIR),
-      absoluteDirectory(options.temporaryDir ?? tmpdir()),
+      inheritedTemporaryDirectory,
+      nodeTemporaryDirectory,
       ...(options.standardTemporaryRoots ?? ["/tmp", "/var/tmp"]).map(
         absoluteDirectory,
       ),
@@ -896,6 +902,8 @@ export async function resolveSandboxPolicy(
     workspaceRoot,
     ...(git ? { git } : {}),
     temporaryRoots,
+    preferredTemporaryDirectory:
+      inheritedTemporaryDirectory ?? nodeTemporaryDirectory,
     runtimeRoots,
     dependencyRoots,
     configuredWritableRoots,

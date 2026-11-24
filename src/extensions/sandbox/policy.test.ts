@@ -420,7 +420,8 @@ describe("Sandbox policy", () => {
   });
 
   it("normalizes aliases among temporary roots", async () => {
-    const { home, temporary, workspace } = runtimeFixture("temporary-roots");
+    const { root, home, temporary, workspace } =
+      runtimeFixture("temporary-roots");
     const alias = join(dirname(temporary), `${basename(temporary)}-alias`);
     directories.push(alias);
     symlinkSync(temporary, alias);
@@ -428,10 +429,11 @@ describe("Sandbox policy", () => {
       sessionCwd: workspace,
       homeDir: home,
       temporaryDir: alias,
-      standardTemporaryRoots: [temporary],
+      standardTemporaryRoots: [root],
       env: { TMPDIR: alias },
     });
-    expect(policy.temporaryRoots).toEqual([realpathSync(temporary)]);
+    expect(policy.temporaryRoots).toEqual([realpathSync(root)]);
+    expect(policy.preferredTemporaryDirectory).toBe(realpathSync(temporary));
   });
 
   it("resolves ignored project exact and wildcard roots, including absent leaves", async () => {

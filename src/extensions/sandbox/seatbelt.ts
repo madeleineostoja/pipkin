@@ -290,6 +290,30 @@ function exceptionIndices(
   );
 }
 
+export function sandboxTemporaryDirectory(
+  policy: SandboxPolicy,
+  writeMode: SandboxWriteMode,
+): string | undefined {
+  const writableRoots = writableProjection(policy, writeMode);
+  const locked = lockedRoots(policy, writeMode);
+  const repositoryRoots =
+    writeMode === "repository-read-only" ? protectedRoots(policy) : [];
+  const exceptions = repositoryExceptions(policy, repositoryRoots);
+  return [policy.preferredTemporaryDirectory, ...policy.temporaryRoots].find(
+    (path) =>
+      path !== undefined &&
+      writableRoots.some((root) => pathIsWithin(path, root)) &&
+      !locked.some((root) => pathIsWithin(path, root)) &&
+      repositoryRoots.every(
+        (root) =>
+          !pathIsWithin(path, root) ||
+          exceptionIndices(root, exceptions).some((index) =>
+            pathIsWithin(path, exceptions[index]!),
+          ),
+      ),
+  );
+}
+
 function protectedFilter(
   kind: "literal" | "subpath",
   protectedIndex: number,
